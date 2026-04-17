@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepx-postdock"
+version = "0.1.0"
+description = "Post-processing tools for DeepX Hamiltonian workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "h5py",
+  "plotly",
+  "pymatgen",
+]
+
+[project.optional-dependencies]
+jobflow = ["jobflow"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deepx_postdock*"]
