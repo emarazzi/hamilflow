@@ -20,14 +20,14 @@ class RemovalRule:
 
 @dataclass(frozen=True)
 class RemovalPlan:
-    """Normalized removal plan model used internally by the pipeline."""
+    """Normalized removal plan model used internally by the projection flow."""
 
     rules: list[RemovalRule] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class PipelineConfig:
-    """Runtime configuration for the k->R reduction pipeline."""
+class ProjectionConfig:
+    """Runtime configuration for the k->R reduction projection."""
 
     input_dir: Path
     output_dir: Path
@@ -40,8 +40,8 @@ class PipelineConfig:
 
 
 @dataclass(frozen=True)
-class PipelineResult:
-    """Serializable pipeline outputs for scripts and workflow engines."""
+class ProjectionResult:
+    """Serializable projection outputs for scripts and workflow engines."""
 
     output_dir: Path
     hamiltonian_path: Path

@@ -13,17 +13,22 @@ from deepx_dock.CONSTANT import (
 )
 
 from .io import dump_reduced_matrix_h5, hermitize_real_space_blocks, write_reduced_info_json
-from .kspace import apply_custom_kspace_transform, apply_truncation_kspace_transform, build_uniform_kmesh
-from .models import PipelineConfig, PipelineResult, RemovalPlanLike
+from .kspace import (
+    apply_custom_kspace_transform,
+    apply_truncation_kspace_transform,
+    build_uniform_kmesh,
+    hk_and_sk_to_real,
+)
+from .models import ProjectionConfig, ProjectionResult, RemovalPlanLike
 from .removal import coerce_removal_plan, resolve_indices_from_rules
 
 
-def run_pipeline(
-    config: PipelineConfig,
+def run_projection(
+    config: ProjectionConfig,
     removal_plan: RemovalPlanLike,
-) -> PipelineResult:
+) -> ProjectionResult:
     """
-    Run the k->R orbital-reduction pipeline.
+    Run the k->R orbital-reduction projection.
 
     The reduction plan can be provided as a model, dict/list payload, or JSON file path.
     Hamiltonian and overlap are always written to files in config.output_dir.
@@ -56,10 +61,15 @@ def run_pipeline(
             f"Unsupported reduction_mode '{config.reduction_mode}'. Expected 'schur' or 'truncate'."
         )
 
-    HR_new, SR_new = obj.Hk_and_Sk_to_real(ks=ks, Hk=Hk_new, Sk=Sk_new)
-
     if obj.Rijk_list is None:
         raise ValueError("Rijk_list is None")
+    HR_new, SR_new = hk_and_sk_to_real(
+        ks=ks,
+        Hk=Hk_new,
+        Sk=Sk_new,
+        Rijk_list=obj.Rijk_list,
+    )
+
     HR_new = hermitize_real_space_blocks(HR_new, obj.Rijk_list)
     SR_new = hermitize_real_space_blocks(SR_new, obj.Rijk_list)
 
@@ -114,7 +124,7 @@ def run_pipeline(
         json.dump(metadata, fw, indent=2)
         fw.write("\n")
 
-    return PipelineResult(
+    return ProjectionResult(
         output_dir=config.output_dir,
         hamiltonian_path=hamiltonian_path,
         overlap_path=overlap_path,

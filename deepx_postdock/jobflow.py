@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .models import PipelineConfig, RemovalPlanLike
-from .pipeline import run_pipeline
+from .models import ProjectionConfig, RemovalPlanLike
+from .projection import run_projection
 
 if TYPE_CHECKING:
     from jobflow import Job
 
 
-def make_run_pipeline_job() -> Any:
+def make_run_projection_job() -> Any:
     """
     Create a jobflow-decorated job function lazily.
 
@@ -20,12 +20,12 @@ def make_run_pipeline_job() -> Any:
         from jobflow import job
     except ImportError as exc:
         raise ImportError(
-            "jobflow is not installed. Install jobflow to use make_run_pipeline_job()."
+            "jobflow is not installed. Install jobflow to use make_run_projection_job()."
         ) from exc
 
     @job
-    def run_pipeline_job(config: PipelineConfig, removal_plan: RemovalPlanLike) -> dict[str, object]:
-        result = run_pipeline(config=config, removal_plan=removal_plan)
+    def run_projection_job(config: ProjectionConfig, removal_plan: RemovalPlanLike) -> dict[str, object]:
+        result = run_projection(config=config, removal_plan=removal_plan)
         return result.to_dict()
 
-    return run_pipeline_job
+    return run_projection_job

@@ -1,14 +1,14 @@
 # deepx-postdock
 
-Initial package scaffold for DeepX post-processing utilities and k->R reduction pipeline.
+Initial package scaffold for DeepX post-processing utilities and k->R reduction projection.
 
 ## Core API
 
-- `deepx_postdock.run_pipeline`
-- `deepx_postdock.PipelineConfig`
+- `deepx_postdock.run_projection`
+- `deepx_postdock.ProjectionConfig`
 - `deepx_postdock.RemovalPlan` / `deepx_postdock.RemovalRule`
 
-The pipeline accepts removal plans as:
+The projection accepts removal plans as:
 
 - JSON file path
 - Python dict/list payload

@@ -7,13 +7,13 @@ from .band_analysis import (
     shift_midgap,
     shift_vbm,
 )
-from .models import PipelineConfig, PipelineResult, RemovalPlan, RemovalRule
-from .pipeline import run_pipeline
+from .models import ProjectionConfig, ProjectionResult, RemovalPlan, RemovalRule
+from .projection import run_projection
 from .removal import coerce_removal_plan
 
 __all__ = [
-    "PipelineConfig",
-    "PipelineResult",
+    "ProjectionConfig",
+    "ProjectionResult",
     "RemovalPlan",
     "RemovalRule",
     "band_comparison",
@@ -21,7 +21,7 @@ __all__ = [
     "correct_k_points",
     "get_bandgap",
     "get_shift",
-    "run_pipeline",
+    "run_projection",
     "shift_cbm",
     "shift_midgap",
     "shift_vbm",

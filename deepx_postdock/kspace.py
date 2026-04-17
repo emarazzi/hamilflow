@@ -145,3 +145,56 @@ def k_to_r_operator(
     Mk_flat = Mk.reshape(nk, -1)
     MR_flat = np.matmul(wr, Mk_flat)
     return MR_flat.reshape(len(Rs), Mk.shape[1], Mk.shape[2])
+
+
+def hk_and_sk_to_real(
+    ks: np.ndarray,
+    Hk: np.ndarray,
+    Sk: np.ndarray,
+    Rijk_list: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Inverse Fourier transform k-space H/S matrices back to real space.
+
+    Parameters
+    ----------
+    ks : np.ndarray, shape (Nk, 3)
+        k-points in fractional coordinates.
+    Hk : np.ndarray, shape (Nk, Nb, Nb)
+        Hamiltonian matrices in reciprocal space.
+    Sk : np.ndarray, shape (Nk, Nb, Nb)
+        Overlap matrices in reciprocal space.
+    Rijk_list : np.ndarray, shape (N_R, 3), dtype=int
+        Lattice displacements for inter-cell hoppings.
+    weights : np.ndarray, shape (Nk,), optional
+        Weights for k-points. Default uses uniform 1/Nk weights.
+
+    Returns
+    -------
+    HR : np.ndarray, shape (N_R, Nb, Nb)
+        Hamiltonian matrices in real space on Rijk_list.
+    SR : np.ndarray, shape (N_R, Nb, Nb)
+        Overlap matrices in real space on Rijk_list.
+    """
+    from deepx_dock.compute.eigen.matrix_obj import AOMatrixK
+
+    ks = np.asarray(ks)
+    Hk = np.asarray(Hk)
+    Sk = np.asarray(Sk)
+    Rs = np.asarray(Rijk_list)
+
+    if ks.ndim != 2 or ks.shape[1] != 3:
+        raise ValueError(f"ks must have shape (Nk, 3), got {ks.shape}")
+    if Rs.ndim != 2 or Rs.shape[1] != 3:
+        raise ValueError(f"Rijk_list must have shape (N_R, 3), got {Rs.shape}")
+    if Hk.shape != Sk.shape:
+        raise ValueError(f"Hk/Sk shape mismatch: {Hk.shape} vs {Sk.shape}")
+    if Hk.ndim != 3:
+        raise ValueError(f"Hk/Sk must have shape (Nk, Nb, Nb), got {Hk.shape}")
+    if Hk.shape[0] != ks.shape[0]:
+        raise ValueError(f"Nk mismatch between ks and Hk: {ks.shape[0]} vs {Hk.shape[0]}")
+
+    HR = AOMatrixK(ks, Hk).k2r(Rs, weights=weights)
+    SR = AOMatrixK(ks, Sk).k2r(Rs, weights=weights)
+    return HR, SR

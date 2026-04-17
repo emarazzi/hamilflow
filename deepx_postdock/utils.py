@@ -74,11 +74,6 @@ def get_hamiltonian(workdir: str | Path = ".") -> HamiltonianObj:
     return HamiltonianObj(data_path)
 
 
-def get_Hamiltonian(workdir: str | Path = ".") -> HamiltonianObj:
-    """Backward-compatible alias for get_hamiltonian."""
-    return get_hamiltonian(workdir=workdir)
-
-
 def get_hsk_symbol_list(bd_gen) -> list[str]:
     """Prepare pretty labels for high-symmetry k-points."""
     hsk_symbol_list = ["" for _ in range(bd_gen.k_path_quantity + 1)]
