@@ -1,12 +1,12 @@
-# deepx-postdock
+# hamilflow
 
-Initial package scaffold for DeepX post-processing utilities and k->R reduction projection.
+Community-maintained utilities for DeepH workflows (not an official DeepH package).
 
 ## Core API
 
-- `deepx_postdock.run_projection`
-- `deepx_postdock.ProjectionConfig`
-- `deepx_postdock.RemovalPlan` / `deepx_postdock.RemovalRule`
+- `hamilflow.run_projection`
+- `hamilflow.ProjectionConfig`
+- `hamilflow.RemovalPlan` / `hamilflow.RemovalRule`
 
 The projection accepts removal plans as:
 

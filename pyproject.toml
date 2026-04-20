@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "deepx-postdock"
+name = "hamilflow"
 version = "0.1.0"
-description = "Post-processing tools for DeepX Hamiltonian workflows"
+description = "Community-maintained utilities for DeepH workflows (not an official DeepH package)."
 authors = [
   {name = "Enrico Marazzi", email = "enrico.marazzi@uclouvain.be"}
 ]
@@ -24,4 +24,4 @@ jobflow = ["jobflow"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["deepx_postdock*"]
+include = ["hamilflow*"]
