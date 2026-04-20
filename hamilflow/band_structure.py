@@ -110,7 +110,12 @@ def get_hsk_symbol_list(bd_gen) -> list[str]:
     return hsk_symbol_list
 
 
-def plot_band(bd_gen):
+def plot_band(
+    bd_gen,
+    *,
+    show_fig: bool = True,
+    save_path: str | Path | None = None,
+) -> go.Figure:
     """Plot an electronic band structure with high-symmetry separators and Fermi level."""
     fig = go.Figure()
 
@@ -176,5 +181,10 @@ def plot_band(bd_gen):
         paper_bgcolor="white",
         plot_bgcolor="white",
     )
-    fig.show()
+    if save_path is not None:
+        output = Path(save_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fig.write_image(str(output))
+    if show_fig:
+        fig.show()
     return fig

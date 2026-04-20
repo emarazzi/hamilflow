@@ -15,6 +15,7 @@ dependencies = [
   "numpy",
   "h5py",
   "plotly",
+  "kaleido",
   "pymatgen",
   "deepx-dock"
 ]
