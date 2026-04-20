@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pymatgen.core import Structure
 
-from hamilflow.band_structure import get_band_conf_from_struc, get_hamiltonian
+from hamilflow.band_structure import get_band_conf_from_file, get_band_conf_from_struc, get_hamiltonian
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +31,8 @@ class BatchOptions:
     parent_dir: Path
     pattern: str
     structure_filename: str
+    k_path_parent_dir: Path | None
+    k_path_filename: str
     output_filename: str
     workers: int
 
@@ -41,7 +43,7 @@ def load_band_data_generator() -> type:
     return module.BandDataGenerator
 
 
-def build_band_structure(paths: BandStructurePaths):
+def build_band_structure(paths: BandStructurePaths, options: BatchOptions):
     """Build the band structure object for one input directory."""
     if not paths.structure_path.exists():
         raise FileNotFoundError(f"Structure file not found: {paths.structure_path}")
@@ -49,7 +51,21 @@ def build_band_structure(paths: BandStructurePaths):
         raise FileNotFoundError(f"Working directory not found: {paths.workdir}")
 
     structure = Structure.from_file(paths.structure_path)
-    band_conf = get_band_conf_from_struc(structure)
+    try:
+        band_conf = get_band_conf_from_struc(structure)
+    except Exception as auto_kpath_exc:
+        if options.k_path_parent_dir is None:
+            k_path_dir = paths.workdir
+        else:
+            k_path_dir = options.k_path_parent_dir / paths.workdir.name
+
+        k_path_path = k_path_dir / options.k_path_filename
+        if not k_path_path.exists():
+            raise RuntimeError(
+                f"Automatic k-path generation failed and fallback file is missing: {k_path_path}"
+            ) from auto_kpath_exc
+        band_conf = get_band_conf_from_file(k_path_dir, k_path_filename=options.k_path_filename)
+
     hamiltonian = get_hamiltonian(paths.workdir)
 
     band_data_generator = load_band_data_generator()
@@ -81,6 +97,20 @@ def parse_args() -> BatchOptions:
         help="Structure filename expected inside each child directory.",
     )
     parser.add_argument(
+        "--k-path-parent-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional parent directory for fallback K_PATH lookup. "
+            "When set, each case reads K_PATH from <k_path_parent_dir>/<case_name>/<k_path_filename>."
+        ),
+    )
+    parser.add_argument(
+        "--k-path-filename",
+        default="K_PATH",
+        help="Fallback K-path filename expected inside each child directory.",
+    )
+    parser.add_argument(
         "--output-filename",
         default="band_data.h5",
         help="Output filename written inside each child directory.",
@@ -96,6 +126,8 @@ def parse_args() -> BatchOptions:
         parent_dir=args.parent_dir,
         pattern=args.pattern,
         structure_filename=args.structure_filename,
+        k_path_parent_dir=args.k_path_parent_dir,
+        k_path_filename=args.k_path_filename,
         output_filename=args.output_filename,
         workers=args.workers,
     )
@@ -121,7 +153,7 @@ def run_single_case(case_dir: Path, options: BatchOptions) -> tuple[Path, bool, 
     )
 
     try:
-        band_data = build_band_structure(paths)
+        band_data = build_band_structure(paths, options)
         paths.output_path.parent.mkdir(parents=True, exist_ok=True)
         band_data.dump_band_data(str(paths.output_path))
         return case_dir, True, None

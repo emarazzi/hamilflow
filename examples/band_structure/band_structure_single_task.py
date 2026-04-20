@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pymatgen.core import Structure
 
-from hamilflow.band_structure import get_band_conf_from_struc, get_hamiltonian
+from hamilflow.band_structure import get_band_conf_from_file, get_band_conf_from_struc, get_hamiltonian
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,8 @@ class TaskPaths:
 
     case_dir: Path
     structure_filename: str
+    k_path_dir: Path | None
+    k_path_filename: str
     output_filename: str
 
 
@@ -36,7 +38,17 @@ def build_band_data(paths: TaskPaths):
         raise FileNotFoundError(f"Structure file not found: {structure_path}")
 
     structure = Structure.from_file(structure_path)
-    band_conf = get_band_conf_from_struc(structure)
+    try:
+        band_conf = get_band_conf_from_struc(structure)
+    except Exception as auto_kpath_exc:
+        k_path_dir = paths.case_dir if paths.k_path_dir is None else paths.k_path_dir
+        k_path_path = k_path_dir / paths.k_path_filename
+        if not k_path_path.exists():
+            raise RuntimeError(
+                f"Automatic k-path generation failed and fallback file is missing: {k_path_path}"
+            ) from auto_kpath_exc
+        band_conf = get_band_conf_from_file(k_path_dir, k_path_filename=paths.k_path_filename)
+
     hamiltonian = get_hamiltonian(workdir)
 
     band_data_generator = load_band_data_generator()
@@ -62,6 +74,17 @@ def parse_args() -> TaskPaths:
         help="Structure filename inside the case directory.",
     )
     parser.add_argument(
+        "--k-path-dir",
+        type=Path,
+        default=None,
+        help="Optional directory containing fallback K_PATH for this case.",
+    )
+    parser.add_argument(
+        "--k-path-filename",
+        default="K_PATH",
+        help="Fallback K-path filename inside the case directory.",
+    )
+    parser.add_argument(
         "--output-filename",
         default="band_data.h5",
         help="HDF5 filename written inside the case directory.",
@@ -70,6 +93,8 @@ def parse_args() -> TaskPaths:
     return TaskPaths(
         case_dir=args.case_dir,
         structure_filename=args.structure_filename,
+        k_path_dir=args.k_path_dir,
+        k_path_filename=args.k_path_filename,
         output_filename=args.output_filename,
     )
 

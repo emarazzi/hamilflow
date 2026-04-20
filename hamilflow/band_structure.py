@@ -10,9 +10,15 @@ from pymatgen.symmetry.kpath import KPathSetyawanCurtarolo
 from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 
 
-def get_band_conf_from_file(workdir: str | Path = ".", num_band: int = 50, e_min: float = -0.5, maxiter: int = 300) -> dict[str, object]:
+def get_band_conf_from_file(
+    workdir: str | Path = ".",
+    num_band: int = 50,
+    e_min: float = -0.5,
+    maxiter: int = 300,
+    k_path_filename: str = "K_PATH",
+) -> dict[str, object]:
     data_path = Path(workdir).resolve()
-    with open(data_path / "K_PATH", "r", encoding="utf-8") as f:
+    with open(data_path / k_path_filename, "r", encoding="utf-8") as f:
         k_list_spell = f.read()
     return {
         "k_list_spell": k_list_spell,
@@ -31,6 +37,12 @@ def get_band_conf_from_struc(
 ) -> dict[str, object]:
     """Build a band configuration from a structure object and an auto-generated high-symmetry path."""
     kpath = KPathSetyawanCurtarolo(struc)
+    if kpath.kpath is None:
+        raise ValueError(
+            "Automatic high-symmetry k-path generation failed for this structure. "
+            "Use get_band_conf_from_file(...) with a K_PATH fallback."
+        )
+
     path_symbols = kpath.kpath["path"]
     kpoint_coords = kpath.kpath["kpoints"]
 
