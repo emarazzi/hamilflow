@@ -57,7 +57,7 @@ def build_band_structure(paths: BandStructurePaths, options: BatchOptions):
         if options.k_path_parent_dir is None:
             k_path_dir = paths.workdir
         else:
-            k_path_dir = options.k_path_parent_dir / paths.workdir.name
+            k_path_dir = options.k_path_parent_dir
 
         k_path_path = k_path_dir / options.k_path_filename
         if not k_path_path.exists():
