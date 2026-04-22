@@ -61,13 +61,13 @@ This is useful to debug one failing case before launching full batch jobs.
 Submit one array job where each task handles one structure directory:
 
 ```bash
-bash examples/projection/run_projection_submit_slurm.sh \
-  /path/to/parent_input \
-  /path/to/parent_output \
-  /path/to/removal_plan.json \
-  "structure_*" \
-  1 \
-  --reduction-mode schur \
+    bash examples/projection/run_projection_submit_slurm.sh \
+    /path/to/parent_input \
+    /path/to/parent_output \
+    /path/to/removal_plan.json \
+    "structure_*" \
+    1 \
+    --reduction-mode schur \
   --account my_account \
   --partition cpu \
   --time 04:00:00 \

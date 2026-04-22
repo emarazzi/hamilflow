@@ -16,8 +16,9 @@ dependencies = [
   "h5py",
   "plotly",
   "kaleido",
-  "pymatgen",
-  "deepx-dock"
+  "pymatgen==2024.9.10",
+  "deepx-dock",
+  "atomate2"
 ]
 
 [project.optional-dependencies]
