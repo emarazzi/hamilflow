@@ -81,7 +81,7 @@ class GenerateAimsDFTData:
             )
             aims_jobs = build_aims_dft_jobs(structures_filenames, self.aims_maker)
             jobs.extend(aims_jobs)
-            source_run_dirs = [job.output.run_dir for job in aims_jobs]
+            source_run_dirs = [job.output.dir_name for job in aims_jobs]
             structure_names = [path.parent.name for path in structures_filenames]
         else:
             source_run_dirs = [str(Path(path)) for path in self.source_run_dirs or []]

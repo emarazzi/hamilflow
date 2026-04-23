@@ -11,15 +11,6 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-  "numpy",
-  "h5py",
-  "plotly",
-  "kaleido",
-  "pymatgen==2024.9.10",
-  "deepx-dock",
-  "atomate2"
-]
 
 [project.optional-dependencies]
 jobflow = ["jobflow"]

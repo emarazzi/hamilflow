@@ -41,7 +41,12 @@ def collect_aims_outputs(
 
     collected_dirs: list[str] = []
     for source, structure_name in zip(source_run_dirs, structure_names, strict=True):
-        source_dir = Path(source)
+        source_path = str(source)
+        # Strip cluster name if path is remote (e.g., "cluster.host.com:/path/to/dir")
+        if ":" in source_path and not source_path.startswith("/"):
+            source_path = source_path.split(":", 1)[1]
+        
+        source_dir = Path(source_path)
         if not source_dir.is_dir():
             raise ValueError(f"AIMS output directory does not exist: {source_dir}")
 

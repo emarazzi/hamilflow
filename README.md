@@ -16,6 +16,17 @@ The projection accepts removal plans as:
 
 Outputs always include written Hamiltonian and overlap files and return a serializable result object with paths and metadata.
 
+## DFT Workflows (`dft_workflows`)
+
+The `hamilflow.dft_workflows` subpackage provides workflow helpers for FHI-aims data generation and collection.
+
+- Main entry point: `hamilflow.dft_workflows.GenerateAimsDFTData`
+- Supports two modes:
+	- Run-and-collect: generate new AIMS runs from structure folders and collect outputs.
+	- Collect-only: collect existing AIMS run directories into a single organized root.
+
+Collected run folders preserve structure-oriented naming to keep downstream mapping explicit.
+
 ## Band Structure Calculation (`band_structure`)
 
 The `hamilflow.band_structure` module provides utilities to build k-paths and compute band structures from Hamiltonian/overlap data. It is intended for scripted workflows where you want reproducible, file-driven post-processing.
