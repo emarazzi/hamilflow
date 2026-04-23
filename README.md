@@ -24,6 +24,7 @@ The `hamilflow.dft_workflows` subpackage provides workflow helpers for FHI-aims 
 - Supports two modes:
 	- Run-and-collect: generate new AIMS runs from structure folders and collect outputs.
 	- Collect-only: collect existing AIMS run directories into a single organized root.
+- Optional conversion: provide `aims_to_deeph_config` to append an AIMS-to-DeepH conversion step after collection.
 
 Collected run folders preserve structure-oriented naming to keep downstream mapping explicit.
 

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 from atomate2.aims.jobs.core import StaticMaker
 from jobflow.core.flow import Flow
@@ -7,39 +8,59 @@ from jobflow.core.job import Job
 from jobflow.core.maker import Maker
 from pymatgen.io.aims.sets.core import StaticSetGenerator
 
-from .jobs import build_aims_dft_jobs, collect_aims_outputs
+from .jobs import build_aims_dft_jobs, collect_aims_outputs, convert_aims_to_deeph
 from .utils import resolve_structure_path
 
-DEFAULT_AIMS_KWARGS = {"output_rs_matrices": "plain"}
+DEFAULT_AIMS_KWARGS: dict[str, Any] = {"output_rs_matrices": "plain"}
+
+
+@dataclass(frozen=True, slots=True)
+class ConvertAimsToDeephConfig:
+    """Configuration for the optional AIMS-to-DeepH conversion step."""
+
+    output_dirs: str | Path
+    minus_h0: bool = True
+    jobs_num: int = 1
+    tier_num: int = 1
 
 
 @dataclass
 class GenerateAimsDFTData:
     """
-        Create a flow for FHI-aims calculations and output collection.
+    Create a flow for FHI-aims calculations, output collection, and optional
+    DeepH input conversion.
 
-        Two modes are supported:
+    Two modes are supported:
 
-        - Run-and-collect: provide ``aims_maker`` and ``structures_path``. The flow
-            resolves structures under ``structures_path``, launches AIMS jobs, and then
-            moves the produced run directories into ``collected_runs_root``.
-        - Collect-only: provide ``source_run_dirs`` and set ``aims_maker`` to ``None``.
-            In this mode the flow skips structure discovery and only moves the existing
-            run directories into ``collected_runs_root``.
+    - Run-and-collect: provide ``aims_maker`` and ``structures_path``. The flow
+      resolves structures under ``structures_path``, launches AIMS jobs, and then
+      moves the produced run directories into ``collected_runs_root``.
+    - Collect-only: provide ``source_run_dirs`` and set ``aims_maker`` to ``None``.
+      In this mode the flow skips structure discovery and only moves the existing
+      run directories into ``collected_runs_root``.
 
-        The collected directory names are derived from the original structure names so
-        downstream outputs remain easy to map back to their source structures.
+    If ``aims_to_deeph_config`` is provided, the collected runs are passed to the
+    DeepH conversion job and the resulting output root is included in the flow
+    outputs.
+
+    ``aims_kwargs`` are applied only when a ``StaticMaker`` is used. If an explicit
+    ``StaticMaker`` is provided and ``aims_kwargs`` is empty, the maker is preserved
+    as-is.
+
+    The collected directory names are derived from the original structure names so
+    downstream outputs remain easy to map back to their source structures.
     """
 
     structures_path: str | Path | None = None
     structure_pattern: str = "structure_*"
     name: str = "generate_aims_dft_data"
-    aims_kwargs: dict = field(default_factory=dict)
+    aims_kwargs: dict[str, Any] = field(default_factory=dict)
     aims_maker: Maker | None = field(
         default_factory=lambda: StaticMaker(input_set_generator=StaticSetGenerator())
     )
     collected_runs_root: str | Path = "./aims_calculations"
     source_run_dirs: list[str | Path] | None = None
+    aims_to_deeph_config: ConvertAimsToDeephConfig | None = None
 
     def __post_init__(self):
         merged_aims_kwargs = {**DEFAULT_AIMS_KWARGS, **self.aims_kwargs}
@@ -57,9 +78,11 @@ class GenerateAimsDFTData:
             )
 
         if self.aims_maker is not None and isinstance(self.aims_maker, StaticMaker):
-            self.aims_maker = StaticMaker(
-                input_set_generator=StaticSetGenerator(user_params=dict(**merged_aims_kwargs))
-            )
+            if self.aims_kwargs:
+                static_maker = cast(StaticMaker, self.aims_maker)
+                static_maker.input_set_generator = StaticSetGenerator(
+                    user_params=dict(**merged_aims_kwargs)
+                )
         elif self.aims_maker is not None and self.aims_kwargs:
             raise ValueError(
                 "aims_kwargs are only supported with StaticMaker. Provide a configured "
@@ -68,8 +91,9 @@ class GenerateAimsDFTData:
 
         self.aims_kwargs = merged_aims_kwargs
 
-    def make(self):
+    def make(self) -> Flow:
         jobs: list[Flow | Job] = []
+        convert_job: Job | None = None
         if self.aims_maker is not None:
             if self.structures_path is None:
                 raise ValueError(
@@ -94,8 +118,19 @@ class GenerateAimsDFTData:
         )
         jobs.append(collect_job)
 
+        if self.aims_to_deeph_config is not None:
+            convert_job = convert_aims_to_deeph(
+                input_root=collect_job.output["collected_runs_root"],
+                output_dirs=self.aims_to_deeph_config.output_dirs,
+                minus_h0=self.aims_to_deeph_config.minus_h0,
+                jobs_num=self.aims_to_deeph_config.jobs_num,
+                tier_num=self.aims_to_deeph_config.tier_num,
+            )
+            jobs.append(convert_job)
+
         outputs = {
             "aims_kwargs": self.aims_kwargs,
             "collection": collect_job.output,
+            "deeph_inputs": convert_job.output if convert_job is not None else None,
         }
         return Flow(jobs=jobs, name=self.name, output=outputs)

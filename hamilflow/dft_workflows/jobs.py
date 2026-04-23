@@ -6,6 +6,7 @@ from jobflow.core.flow import Flow
 from jobflow.core.job import Job, job
 from jobflow.core.maker import Maker
 from pymatgen.core import Structure
+from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
 
 
 def build_aims_dft_jobs(
@@ -45,7 +46,7 @@ def collect_aims_outputs(
         # Strip cluster name if path is remote (e.g., "cluster.host.com:/path/to/dir")
         if ":" in source_path and not source_path.startswith("/"):
             source_path = source_path.split(":", 1)[1]
-        
+
         source_dir = Path(source_path)
         if not source_dir.is_dir():
             raise ValueError(f"AIMS output directory does not exist: {source_dir}")
@@ -60,4 +61,36 @@ def collect_aims_outputs(
     return {
         "collected_runs_root": str(output_root.resolve()),
         "collected_dirs": collected_dirs,
+    }
+
+
+@job
+def convert_aims_to_deeph(
+    input_root: str | Path,
+    output_dirs: str | Path,
+    minus_h0: bool = True,
+    jobs_num: int = 1,
+    tier_num: int = 1,
+) -> dict[str, str]:
+    input_root = Path(input_root)
+    if not input_root.is_dir():
+        raise ValueError(f"Input directory does not exist: {input_root}")
+
+    output_dirs = Path(output_dirs)
+    output_dirs.mkdir(parents=True, exist_ok=True)
+
+    translator = PeriodicAimsDataTranslator(
+        input_root,
+        output_dirs,
+        export_rho=False,
+        export_r=False,
+        minus_H0=minus_h0,
+        n_jobs=jobs_num,
+        n_tier=tier_num,
+    )
+
+    translator.transfer_all_aims_to_deeph()
+
+    return {
+        "deeph_inputs_root": str(output_dirs.resolve()),
     }
