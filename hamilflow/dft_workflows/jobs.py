@@ -69,7 +69,7 @@ def convert_aims_to_deeph(
     input_root: str | Path,
     output_dirs: str | Path,
     jobs_num: int = 1,
-    tier_num: int = 1,
+    tier_num: int = 0,
 ) -> dict[str, str]:
     input_root = Path(input_root)
     if not input_root.is_dir():

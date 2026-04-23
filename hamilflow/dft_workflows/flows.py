@@ -20,7 +20,7 @@ class ConvertAimsToDeephConfig:
 
     output_dirs: str | Path
     jobs_num: int = 1
-    tier_num: int = 1
+    tier_num: int = 0
 
 
 @dataclass
