@@ -68,7 +68,6 @@ def collect_aims_outputs(
 def convert_aims_to_deeph(
     input_root: str | Path,
     output_dirs: str | Path,
-    minus_h0: bool = True,
     jobs_num: int = 1,
     tier_num: int = 1,
 ) -> dict[str, str]:
@@ -84,7 +83,6 @@ def convert_aims_to_deeph(
         output_dirs,
         export_rho=False,
         export_r=False,
-        minus_H0=minus_h0,
         n_jobs=jobs_num,
         n_tier=tier_num,
     )

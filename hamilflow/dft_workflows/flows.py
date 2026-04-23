@@ -19,7 +19,6 @@ class ConvertAimsToDeephConfig:
     """Configuration for the optional AIMS-to-DeepH conversion step."""
 
     output_dirs: str | Path
-    minus_h0: bool = True
     jobs_num: int = 1
     tier_num: int = 1
 
@@ -122,7 +121,6 @@ class GenerateAimsDFTData:
             convert_job = convert_aims_to_deeph(
                 input_root=collect_job.output["collected_runs_root"],
                 output_dirs=self.aims_to_deeph_config.output_dirs,
-                minus_h0=self.aims_to_deeph_config.minus_h0,
                 jobs_num=self.aims_to_deeph_config.jobs_num,
                 tier_num=self.aims_to_deeph_config.tier_num,
             )
