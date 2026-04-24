@@ -7,6 +7,7 @@ from jobflow.core.flow import Flow
 from jobflow.core.job import Job
 from jobflow.core.maker import Maker
 from pymatgen.io.aims.sets.core import StaticSetGenerator
+from pymatgen.core.structure import FileFormats
 
 from .jobs import build_aims_dft_jobs, collect_aims_outputs, convert_aims_to_deeph
 from .utils import resolve_structure_path
@@ -51,7 +52,8 @@ class GenerateAimsDFTData:
     """
 
     structures_path: str | Path | None = None
-    structure_pattern: str = "structure_*"
+    structure_pattern: str = "*"
+    structure_file_format: FileFormats = "poscar"
     name: str = "generate_aims_dft_data"
     aims_kwargs: dict[str, Any] = field(default_factory=dict)
     aims_maker: Maker | None = field(
@@ -63,6 +65,13 @@ class GenerateAimsDFTData:
 
     def __post_init__(self):
         merged_aims_kwargs = {**DEFAULT_AIMS_KWARGS, **self.aims_kwargs}
+
+        if self.structure_file_format and self.structure_file_format not in FileFormats:
+            raise ValueError(
+                f"Unsupported structure_file_format: {self.structure_file_format}. "
+                f"Supported formats are: {[fmt for fmt in FileFormats]}"
+            )
+
 
         if self.aims_maker is not None and self.structures_path is None:
             raise ValueError(
@@ -100,7 +109,7 @@ class GenerateAimsDFTData:
                     "AIMS jobs."
                 )
             structures_filenames = resolve_structure_path(
-                self.structures_path, self.structure_pattern
+                self.structures_path, self.structure_pattern, self.structure_file_format
             )
             aims_jobs = build_aims_dft_jobs(structures_filenames, self.aims_maker)
             jobs.extend(aims_jobs)
