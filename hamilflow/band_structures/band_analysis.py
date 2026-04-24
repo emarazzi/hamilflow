@@ -99,28 +99,6 @@ def shift_vbm(bands: list | ndarray, fermie: float) -> ndarray:
 
     Finds the highest energy band below the Fermi level and shifts all bands
     so that this energy becomes zero. Returns a copy of the shifted bands.
-
-    Parameters
-    ----------
-    bands : list | ndarray
-        Band energies with shape (n_bands, n_kpoints) or (n_kpoints,)
-    fermie : float
-        Fermi energy level
-
-    Returns
-    -------
-    ndarray
-        Shifted band energies (copy of input)
-
-    Raises
-    ------
-    ValueError
-        If no bands exist below the Fermi level
-
-    Examples
-    --------
-    >>> bands = np.array([[-1.0, -0.9], [0.5, 0.6], [2.0, 2.1]])
-    >>> shifted = shift_vbm(bands, fermie=1.0)
     """
     bands_array = _validate_bands_input(bands, "bands")
 
@@ -142,28 +120,6 @@ def shift_cbm(bands: list | ndarray, fermie: float) -> ndarray:
 
     Finds the lowest energy band above the Fermi level and shifts all bands
     so that this energy becomes zero. Returns a copy of the shifted bands.
-
-    Parameters
-    ----------
-    bands : list | ndarray
-        Band energies with shape (n_bands, n_kpoints) or (n_kpoints,)
-    fermie : float
-        Fermi energy level
-
-    Returns
-    -------
-    ndarray
-        Shifted band energies (copy of input)
-
-    Raises
-    ------
-    ValueError
-        If no bands exist above the Fermi level
-
-    Examples
-    --------
-    >>> bands = np.array([[-1.0, -0.9], [0.5, 0.6], [2.0, 2.1]])
-    >>> shifted = shift_cbm(bands, fermie=0.0)
     """
     bands_array = _validate_bands_input(bands, "bands")
 
@@ -180,35 +136,7 @@ def shift_cbm(bands: list | ndarray, fermie: float) -> ndarray:
 
 
 def shift_midgap(bands: list | ndarray, fermie: float) -> ndarray:
-    """
-    Shift band energies so the mid-gap energy is at zero.
-
-    Computes the mid-gap energy as the average of the conduction band minimum
-    and valence band maximum, then shifts all bands so that this energy becomes zero.
-    Returns a copy of the shifted bands.
-
-    Parameters
-    ----------
-    bands : list | ndarray
-        Band energies with shape (n_bands, n_kpoints) or (n_kpoints,)
-    fermie : float
-        Fermi energy level
-
-    Returns
-    -------
-    ndarray
-        Shifted band energies (copy of input)
-
-    Raises
-    ------
-    ValueError
-        If no bands exist above or below the Fermi level
-
-    Examples
-    --------
-    >>> bands = np.array([[-1.0, -0.9], [0.5, 0.6], [2.0, 2.1]])
-    >>> shifted = shift_midgap(bands, fermie=0.0)
-    """
+    """Shift band energies so the mid-gap energy is at zero."""
     bands_array = _validate_bands_input(bands, "bands")
 
     below_fermi_mask = bands_array < fermie
@@ -234,35 +162,7 @@ def shift_midgap(bands: list | ndarray, fermie: float) -> ndarray:
 
 
 def get_bandgap(bands: list | ndarray, fermie: float) -> float:
-    """
-    Calculate the band gap energy.
-
-    Computes the difference between the conduction band minimum (lowest energy
-    above Fermi level) and the valence band maximum (highest energy below Fermi level).
-
-    Parameters
-    ----------
-    bands : list | ndarray
-        Band energies with shape (n_bands, n_kpoints) or (n_kpoints,)
-    fermie : float
-        Fermi energy level
-
-    Returns
-    -------
-    float
-        Band gap energy (always positive)
-
-    Raises
-    ------
-    ValueError
-        If no bands exist above or below the Fermi level
-
-    Examples
-    --------
-    >>> bands = np.array([[-1.0, -0.9], [0.5, 0.6], [2.0, 2.1]])
-    >>> gap = get_bandgap(bands, fermie=0.0)
-    >>> print(f"Band gap: {gap:.3f} eV")
-    """
+    """Calculate the band gap energy."""
     bands_array = _validate_bands_input(bands, "bands")
 
     below_fermi_mask = bands_array < fermie
@@ -291,31 +191,7 @@ def get_shift(
     band_new: list | ndarray,
     shift_range: tuple[float, float],
 ) -> tuple[float, float]:
-    """
-    Find the optimal energy shift to align two band structures.
-
-    Uses scipy optimization to find the shift that minimizes RMSE between
-    band_ref and (band_new + shift), constrained to shift_range.
-
-    Parameters
-    ----------
-    band_ref : list | ndarray
-        Reference band structure with shape (n_bands, n_kpoints)
-    band_new : list | ndarray
-        New band structure to shift with shape (n_bands, n_kpoints)
-    shift_range : tuple[float, float]
-        (min_shift, max_shift) bounds for the shift value
-
-    Returns
-    -------
-    tuple[float, float]
-        (optimal_shift, minimum_rmse)
-
-    Raises
-    ------
-    ValueError
-        If bands have incompatible shapes
-    """
+    """Find the optimal energy shift to align two band structures."""
     band_ref = _validate_bands_input(band_ref, "band_ref")
     band_new = _validate_bands_input(band_new, "band_new")
 
@@ -335,28 +211,7 @@ def get_shift(
 
 
 def correct_k_points(bands: list | ndarray, remove_indices: Sequence[int]) -> ndarray:
-    """
-    Remove k-point indices from band structure along the second axis.
-
-    Parameters
-    ----------
-    bands : list | ndarray
-        Band energies with shape (n_bands, n_kpoints)
-    remove_indices : Sequence[int]
-        0-based k-point indices to remove
-
-    Returns
-    -------
-    ndarray
-        Band structure with removed k-points, shape (n_bands, n_kpoints_kept)
-
-    Examples
-    --------
-    >>> bands = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-    >>> result = correct_k_points(bands, [1])
-    >>> result.shape
-    (2, 2)
-    """
+    """Remove k-point indices from band structure along the second axis."""
     bands_array = _validate_bands_input(bands, "bands")
     remove_set = set(int(i) for i in remove_indices)
 

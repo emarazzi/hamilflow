@@ -5,12 +5,12 @@ import shutil
 
 import numpy as np
 
-from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 from deepx_dock.CONSTANT import (
     DEEPX_HAMILTONIAN_FILENAME,
     DEEPX_OVERLAP_FILENAME,
     DEEPX_POSCAR_FILENAME,
 )
+from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 
 from .io import dump_reduced_matrix_h5, hermitize_real_space_blocks, write_reduced_info_json
 from .kspace import (

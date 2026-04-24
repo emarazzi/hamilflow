@@ -25,16 +25,17 @@ The `hamilflow.dft_workflows` subpackage provides workflow helpers for FHI-aims 
 	- Run-and-collect: generate new AIMS runs from structure folders and collect outputs.
 	- Collect-only: collect existing AIMS run directories into a single organized root.
 - Optional conversion: provide `aims_to_deeph_config` to append an AIMS-to-DeepH conversion step after collection.
+- Projection-only flow: `hamilflow.dft_workflows.GenerateProjectedDeephInputs` runs one projection job per DeepH subdirectory.
+- End-to-end wrapper: `hamilflow.dft_workflows.GenerateAimsToProjectedDeephData` chains DFT/collection/conversion with projection.
 
 Collected run folders preserve structure-oriented naming to keep downstream mapping explicit.
 
-## Band Structure Calculation (`band_structure`)
+## Band Structure Utilities (`band_structures`)
 
-The `hamilflow.band_structure` module provides utilities to build k-paths and compute band structures from Hamiltonian/overlap data. It is intended for scripted workflows where you want reproducible, file-driven post-processing.
+Band-related utilities are grouped under `hamilflow.band_structures`:
 
-## Band Structure Analysis (`band_analysis`)
-
-The `hamilflow.band_analysis` module provides analysis helpers for computed bands (for example, extracting summary quantities and comparing trends across runs). It is designed to work on top of the band-structure outputs and support downstream interpretation/automation.
+- `hamilflow.band_structures.band_calculation`: build k-path configurations, load Hamiltonians, and plot bands.
+- `hamilflow.band_structures.band_analysis`: analyze computed bands (gaps, shifts, comparisons, and k-point corrections).
 
 ## Examples
 

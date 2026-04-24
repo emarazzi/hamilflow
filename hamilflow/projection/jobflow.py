@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .core import run_projection
 from .models import ProjectionConfig, RemovalPlanLike
-from .projection import run_projection
 
 if TYPE_CHECKING:
     from jobflow import Job

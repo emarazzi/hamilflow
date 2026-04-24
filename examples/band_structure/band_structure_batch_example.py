@@ -10,7 +10,11 @@ from pathlib import Path
 
 from pymatgen.core import Structure
 
-from hamilflow.band_structure import get_band_conf_from_file, get_band_conf_from_struc, get_hamiltonian
+from hamilflow.band_structures.band_calculation import (
+    get_band_conf_from_file,
+    get_band_conf_from_struc,
+    get_hamiltonian,
+)
 
 LOGGER = logging.getLogger(__name__)
 

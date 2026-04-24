@@ -1,12 +1,15 @@
 from pathlib import Path
+from fnmatch import fnmatch
 from shutil import move, rmtree
-from typing import Sequence
+from typing import Any, Sequence
 
 from jobflow.core.flow import Flow
 from jobflow.core.job import Job, job
 from jobflow.core.maker import Maker
 from pymatgen.core import Structure
 from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
+
+from ..projection import ProjectionConfig, RemovalPlanLike, ReductionMode, run_projection
 
 
 def build_aims_dft_jobs(
@@ -67,7 +70,7 @@ def collect_aims_outputs(
 @job
 def convert_aims_to_deeph(
     input_root: str | Path,
-    output_dirs: str | Path,
+    output_dir: str | Path,
     jobs_num: int = 1,
     tier_num: int = 0,
 ) -> dict[str, str]:
@@ -75,12 +78,12 @@ def convert_aims_to_deeph(
     if not input_root.is_dir():
         raise ValueError(f"Input directory does not exist: {input_root}")
 
-    output_dirs = Path(output_dirs)
-    output_dirs.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     translator = PeriodicAimsDataTranslator(
         input_root,
-        output_dirs,
+        output_dir,
         export_rho=False,
         export_r=False,
         n_jobs=jobs_num,
@@ -90,5 +93,83 @@ def convert_aims_to_deeph(
     translator.transfer_all_aims_to_deeph()
 
     return {
-        "deeph_inputs_root": str(output_dirs.resolve()),
+        "deeph_inputs_root": str(output_dir.resolve()),
     }
+
+
+def resolve_structure_removal_plan(
+    structure_name: str,
+    default_plan: RemovalPlanLike,
+    per_structure: dict[str, RemovalPlanLike] | None = None,
+    pattern_overrides: dict[str, RemovalPlanLike] | None = None,
+) -> RemovalPlanLike:
+    """
+    Resolve the removal plan for one structure directory.
+
+    Precedence is deterministic and intentionally simple:
+    1) exact per_structure match
+    2) first matching glob pattern (sorted by pattern key)
+    3) default_plan
+    """
+    if per_structure and structure_name in per_structure:
+        return per_structure[structure_name]
+
+    if pattern_overrides:
+        for pattern in sorted(pattern_overrides):
+            if fnmatch(structure_name, pattern):
+                return pattern_overrides[pattern]
+
+    return default_plan
+
+
+@job
+def run_projection_for_structure(
+    structure_name: str,
+    deeph_inputs_root: str | Path,
+    projected_root: str | Path,
+    removal_plan: RemovalPlanLike,
+    kgrid: tuple[int, int, int] = (4, 4, 4),
+    reduction_mode: ReductionMode = "schur",
+    deeph_conversion_output: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """
+    Run projection for one converted DeepH subdirectory.
+
+    ``deeph_conversion_output`` is optional and mainly used to create an explicit
+    dependency on an upstream conversion job in chained flows.
+    """
+    if deeph_conversion_output is not None:
+        if "deeph_inputs_root" not in deeph_conversion_output:
+            raise ValueError("deeph_conversion_output is missing 'deeph_inputs_root'.")
+        deeph_inputs_root = deeph_conversion_output["deeph_inputs_root"]
+
+    if reduction_mode not in ("schur", "truncate"):
+        raise ValueError(
+            f"Unsupported reduction_mode '{reduction_mode}'. Expected 'schur' or 'truncate'."
+        )
+
+    deeph_inputs_root = Path(deeph_inputs_root)
+    input_dir = deeph_inputs_root / structure_name
+    if not input_dir.is_dir():
+        raise ValueError(f"DeepH structure directory does not exist: {input_dir}")
+
+    projected_root = Path(projected_root)
+    output_dir = projected_root / structure_name
+
+    if len(kgrid) != 3:
+        raise ValueError(f"kgrid must contain exactly three integers, got: {kgrid}")
+    kgrid_3: tuple[int, int, int] = (int(kgrid[0]), int(kgrid[1]), int(kgrid[2]))
+
+    result = run_projection(
+        config=ProjectionConfig(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            kgrid=kgrid_3,
+            reduction_mode=reduction_mode,
+        ),
+        removal_plan=removal_plan,
+    )
+
+    payload = result.to_dict()
+    payload["structure_name"] = structure_name
+    return payload

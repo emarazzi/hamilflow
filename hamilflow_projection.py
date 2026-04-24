@@ -5,10 +5,20 @@ Prefer importing from hamilflow directly.
 
 from __future__ import annotations
 
+__all__ = [
+    "ProjectionConfig",
+    "ProjectionResult",
+    "RemovalPlan",
+    "RemovalRule",
+    "coerce_removal_plan",
+    "run_projection",
+    "run_projection_legacy",
+]
+
 from pathlib import Path
 
 from hamilflow import ProjectionConfig, ProjectionResult, RemovalPlan, RemovalRule, run_projection
-from hamilflow.removal import coerce_removal_plan
+from hamilflow.projection.removal import coerce_removal_plan
 
 
 def run_projection_legacy(
@@ -27,13 +37,3 @@ def run_projection_legacy(
     )
     return run_projection(config=config, removal_plan=Path(removal_plan_json))
 
-
-__all__ = [
-    "ProjectionConfig",
-    "ProjectionResult",
-    "RemovalPlan",
-    "RemovalRule",
-    "coerce_removal_plan",
-    "run_projection",
-    "run_projection_legacy",
-]

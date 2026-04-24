@@ -68,7 +68,7 @@ def get_band_conf_from_struc(
 
             line = (
                 f"{n} {kpt1_str} {kpt2_str} "
-                f"{kpt1_symbol.replace('\\', '')} {kpt2_symbol.replace('\\', '')}"
+                f"{kpt1_symbol.replace('\\\\', '')} {kpt2_symbol.replace('\\\\', '')}"
             )
             k_list_lines.append(line)
 
@@ -100,19 +100,19 @@ def get_hsk_symbol_list(bd_gen) -> list[str]:
             )
 
     greek_symbol_map = {
-        "Gamma": r"\Gamma",
-        "Delta": r"\Delta",
-        "Theta": r"\Theta",
-        "Lambda": r"\Lambda",
-        "Xi": r"\Xi",
-        "Pi": r"\Pi",
-        "Sigma": r"\Sigma",
-        "Phi": r"\Phi",
-        "Psi": r"\Psi",
-        "Omega": r"\Omega",
+        "Gamma": r"\\Gamma",
+        "Delta": r"\\Delta",
+        "Theta": r"\\Theta",
+        "Lambda": r"\\Lambda",
+        "Xi": r"\\Xi",
+        "Pi": r"\\Pi",
+        "Sigma": r"\\Sigma",
+        "Phi": r"\\Phi",
+        "Psi": r"\\Psi",
+        "Omega": r"\\Omega",
     }
     keys = [re.escape(k) for k in greek_symbol_map]
-    pattern = r"\b(" + "|".join(keys) + r")\b"
+    pattern = r"\\b(" + "|".join(keys) + r")\\b"
 
     for i, symbol in enumerate(hsk_symbol_list):
         symbol = re.sub(pattern, lambda match: greek_symbol_map[match.group(1)], symbol, flags=re.IGNORECASE)

@@ -7,7 +7,11 @@ from pathlib import Path
 
 from pymatgen.core import Structure
 
-from hamilflow.band_structure import get_band_conf_from_struc, get_hamiltonian, plot_band
+from hamilflow.band_structures.band_calculation import (
+    get_band_conf_from_struc,
+    get_hamiltonian,
+    plot_band,
+)
 
 
 @dataclass(frozen=True)
@@ -27,7 +31,7 @@ def load_band_data_generator() -> type:
 
 def parse_args() -> ExamplePaths:
     parser = argparse.ArgumentParser(
-        description="Generate and plot a band structure using hamilflow.band_structure."
+        description="Generate and plot a band structure using hamilflow.band_structures.band_calculation."
     )
     parser.add_argument(
         "--structure",
