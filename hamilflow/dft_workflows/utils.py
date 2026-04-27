@@ -1,6 +1,9 @@
 from pathlib import Path
+from typing import Any
 
-from pymatgen.core.structure import FileFormats
+from pymatgen.core.structure import FileFormats, Structure
+
+__all__ = ["resolve_structure_path"]
 
 _KNOWN_STRUCTURE_SUFFIXES = {
     ".cif",
@@ -74,3 +77,48 @@ def resolve_structure_path(
     ]
 
     return structures_filenames
+
+
+def generate_perturbed_population(
+    structure: Structure,
+    input_structures_path: str | Path,
+    num_structures: int,
+    distance: float,
+    min_distance: float | None = None,
+    supercell_size: list[int] | None = None,
+    file_format: FileFormats = "poscar"
+) -> dict[str, Any]:
+
+    normalized_format = str(file_format).lower()
+
+    def _output_filename(index: int) -> str:
+        if normalized_format == "poscar":
+            return "POSCAR"
+        if normalized_format == "aims":
+            return "geometry.in"
+        return f"structure_{index}.{normalized_format}"
+
+    if supercell_size is not None:
+        structure.make_supercell(supercell_size)
+    input_structure_path = Path(input_structures_path)
+    input_structure_path.mkdir(parents=True, exist_ok=True)
+
+    structure_0_path = input_structure_path / "structure_0"
+    structure_0_path.mkdir(parents=True, exist_ok=True)
+    structure.to(filename=structure_0_path / _output_filename(0))
+
+    for i in range(1, num_structures):
+        perturbed_structure = structure.copy()
+        perturbed_structure.perturb(distance=distance, min_distance=min_distance)
+        perturbed_structure_path = input_structure_path / f"structure_{i}"
+        perturbed_structure_path.mkdir(parents=True, exist_ok=True)
+        perturbed_structure.to(filename=perturbed_structure_path / _output_filename(i))
+    output = {
+        "input_structures_path": str(input_structure_path.resolve()),
+        "num_structures": num_structures,
+        "distance": distance,
+        "min_distance": min_distance,
+        "supercell_size": supercell_size,
+    }
+    return output
+    
