@@ -131,13 +131,20 @@ def run_projection_for_structure(
     kgrid: tuple[int, int, int] = (4, 4, 4),
     reduction_mode: ReductionMode = "schur",
     deeph_conversion_output: dict[str, str] | None = None,
+    upstream_projection_output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Run projection for one converted DeepH subdirectory.
 
     ``deeph_conversion_output`` is optional and mainly used to create an explicit
     dependency on an upstream conversion job in chained flows.
+
+    ``upstream_projection_output`` is an optional dependency-only payload used
+    to force ordering between projection stages in multi-step workflows.
     """
+    # Kept as a dependency token for chained projection stages.
+    _ = upstream_projection_output
+
     if deeph_conversion_output is not None:
         if "deeph_inputs_root" not in deeph_conversion_output:
             raise ValueError("deeph_conversion_output is missing 'deeph_inputs_root'.")

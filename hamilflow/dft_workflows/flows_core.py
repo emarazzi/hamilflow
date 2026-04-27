@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import cast
 
-__all__ = ["GenerateAimsToProjectedDeephData"]
+__all__ = ["GenerateAimsToProjectedDeephData", "GenerateTwoStepProjectedDeephInputs"]
 
 from jobflow.core.flow import Flow
 from jobflow.core.job import Job
@@ -87,4 +88,105 @@ class GenerateAimsToProjectedDeephData:
             },
         }
         return Flow(jobs=[upstream_flow, *projection_jobs], name=self.name, output=outputs)
+
+
+@dataclass
+class GenerateTwoStepProjectedDeephInputs:
+    """
+    Run two chained projection stages over an existing DeepH input root.
+
+    A common setup is stage 1 ``schur`` then stage 2 ``truncate``. Stage 2 jobs
+    depend explicitly on stage 1 outputs to prevent race conditions.
+    """
+
+    deeph_inputs_root: str | Path
+    first_projection_config: ProjectDeephInputsConfig
+    second_projection_config: ProjectDeephInputsConfig
+    name: str = "generate_two_step_projected_deeph_inputs"
+
+    def make(self) -> Flow:
+        deeph_inputs_root = Path(self.deeph_inputs_root)
+        if not deeph_inputs_root.is_dir():
+            raise ValueError(f"DeepH input root does not exist: {deeph_inputs_root}")
+
+        first_root = Path(self.first_projection_config.output_root)
+        second_root = Path(self.second_projection_config.output_root)
+        if first_root.resolve() == second_root.resolve():
+            raise ValueError(
+                "first_projection_config.output_root and second_projection_config.output_root "
+                "must be different directories."
+            )
+
+        structure_names = sorted(
+            path.name
+            for path in deeph_inputs_root.glob(self.first_projection_config.structure_pattern)
+            if path.is_dir() and fnmatch(path.name, self.second_projection_config.structure_pattern)
+        )
+        if not structure_names:
+            raise ValueError(
+                "No DeepH structure directories found under "
+                f"{deeph_inputs_root} matching both patterns "
+                f"{self.first_projection_config.structure_pattern!r} and "
+                f"{self.second_projection_config.structure_pattern!r}."
+            )
+
+        first_stage_jobs: list[Job] = []
+        second_stage_jobs: list[Job] = []
+
+        for structure_name in structure_names:
+            first_removal_plan = resolve_projection_removal_plan(
+                structure_name=structure_name,
+                removal_plan=self.first_projection_config.removal_plan,
+            )
+            first_job = cast(
+                Job,
+                run_projection_for_structure(
+                    structure_name=structure_name,
+                    deeph_inputs_root=deeph_inputs_root,
+                    projected_root=self.first_projection_config.output_root,
+                    removal_plan=first_removal_plan,
+                    kgrid=self.first_projection_config.kgrid,
+                    reduction_mode=self.first_projection_config.reduction_mode,
+                ),
+            )
+            first_stage_jobs.append(first_job)
+
+            second_removal_plan = resolve_projection_removal_plan(
+                structure_name=structure_name,
+                removal_plan=self.second_projection_config.removal_plan,
+            )
+            second_job = cast(
+                Job,
+                run_projection_for_structure(
+                    structure_name=structure_name,
+                    deeph_inputs_root=self.first_projection_config.output_root,
+                    projected_root=self.second_projection_config.output_root,
+                    removal_plan=second_removal_plan,
+                    kgrid=self.second_projection_config.kgrid,
+                    reduction_mode=self.second_projection_config.reduction_mode,
+                    upstream_projection_output=first_job.output,
+                ),
+            )
+            second_stage_jobs.append(second_job)
+
+        outputs = {
+            "deeph_inputs_root": str(deeph_inputs_root.resolve()),
+            "first_stage": {
+                "projected_root": str(first_root.resolve()),
+                "reduction_mode": self.first_projection_config.reduction_mode,
+                "structure_names": structure_names,
+                "projection_results": [job.output for job in first_stage_jobs],
+            },
+            "second_stage": {
+                "projected_root": str(second_root.resolve()),
+                "reduction_mode": self.second_projection_config.reduction_mode,
+                "structure_names": structure_names,
+                "projection_results": [job.output for job in second_stage_jobs],
+            },
+        }
+        return Flow(
+            jobs=[*first_stage_jobs, *second_stage_jobs],
+            name=self.name,
+            output=outputs,
+        )
 

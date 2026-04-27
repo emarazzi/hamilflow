@@ -3,6 +3,7 @@ __all__ = [
 	"GenerateAimsDFTData",
 	"GenerateAimsToProjectedDeephData",
 	"GenerateProjectedDeephInputs",
+	"GenerateTwoStepProjectedDeephInputs",
 	"ProjectDeephInputsConfig",
 	"ProjectionRemovalPlanConfig",
 	"build_aims_dft_jobs",
@@ -19,7 +20,7 @@ from .flows_base import (
 	ProjectDeephInputsConfig,
 	ProjectionRemovalPlanConfig,
 )
-from .flows_core import GenerateAimsToProjectedDeephData
+from .flows_core import GenerateAimsToProjectedDeephData, GenerateTwoStepProjectedDeephInputs
 from .jobs import (
 	build_aims_dft_jobs,
 	collect_aims_outputs,
