@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args
 
 __all__ = [
     "ConvertAimsToDeephConfig",
@@ -124,10 +124,10 @@ class GenerateAimsDFTData:
     def __post_init__(self):
         merged_aims_kwargs = {**DEFAULT_AIMS_KWARGS, **self.aims_kwargs}
 
-        if self.structure_file_format and self.structure_file_format not in FileFormats:
+        if self.structure_file_format and self.structure_file_format not in get_args(FileFormats):
             raise ValueError(
                 f"Unsupported structure_file_format: {self.structure_file_format}. "
-                f"Supported formats are: {[fmt for fmt in FileFormats]}"
+                f"Supported formats are: {[fmt for fmt in get_args(FileFormats)]}"
             )
 
         if self.aims_maker is not None and self.structures_path is None:
