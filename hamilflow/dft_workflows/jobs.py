@@ -71,6 +71,9 @@ def collect_aims_outputs(
 def convert_aims_to_deeph(
     input_root: str | Path,
     output_dir: str | Path,
+    export_rho: bool = False,
+    export_r: bool = False,
+    minus_H0: bool = False,
     jobs_num: int = 1,
     tier_num: int = 0,
 ) -> dict[str, str]:
@@ -84,8 +87,9 @@ def convert_aims_to_deeph(
     translator = PeriodicAimsDataTranslator(
         input_root,
         output_dir,
-        export_rho=False,
-        export_r=False,
+        export_rho=export_rho,
+        export_r=export_r,
+        minus_H0=minus_H0,
         n_jobs=jobs_num,
         n_tier=tier_num,
     )
@@ -94,6 +98,52 @@ def convert_aims_to_deeph(
 
     return {
         "deeph_inputs_root": str(output_dir.resolve()),
+    }
+
+
+@job
+def convert_aims_to_deeph_structure(
+    structure_name: str,
+    input_root: str | Path,
+    output_dir: str | Path,
+    export_rho: bool = False,
+    export_r: bool = False,
+    minus_H0: bool = False,
+    collection_output: dict[str, str | list[str]] | None = None,
+) -> dict[str, Any]:
+    """
+    Convert one collected AIMS run directory into DeepH format.
+
+    ``collection_output`` is an optional dependency token to ensure this job
+    waits for a preceding ``collect_aims_outputs`` job.
+    """
+    if collection_output is not None:
+        collected_root = collection_output.get("collected_runs_root")
+        if not isinstance(collected_root, str):
+            raise ValueError("collection_output is missing 'collected_runs_root'.")
+        input_root = collected_root
+
+    input_root = Path(input_root)
+    if not input_root.is_dir():
+        raise ValueError(f"Input directory does not exist: {input_root}")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ierr = PeriodicAimsDataTranslator.transfer_one_aims_to_deeph(
+        dir_name=structure_name,
+        aims_path=input_root,
+        deeph_path=output_dir,
+        export_rho=export_rho,
+        export_r=export_r,
+        minus_H0=minus_H0,
+    )
+
+    return {
+        "structure_name": structure_name,
+        "input_dir": str((input_root / structure_name).resolve()),
+        "deeph_dir": str((output_dir / structure_name).resolve()),
+        "ierr": ierr,
     }
 
 
@@ -130,7 +180,7 @@ def run_projection_for_structure(
     removal_plan: RemovalPlanLike,
     kgrid: tuple[int, int, int] = (4, 4, 4),
     reduction_mode: ReductionMode = "schur",
-    deeph_conversion_output: dict[str, str] | None = None,
+    deeph_conversion_output: dict[str, Any] | None = None,
     upstream_projection_output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -148,7 +198,10 @@ def run_projection_for_structure(
     if deeph_conversion_output is not None:
         if "deeph_inputs_root" not in deeph_conversion_output:
             raise ValueError("deeph_conversion_output is missing 'deeph_inputs_root'.")
-        deeph_inputs_root = deeph_conversion_output["deeph_inputs_root"]
+        deeph_root = deeph_conversion_output["deeph_inputs_root"]
+        if not isinstance(deeph_root, str):
+            raise ValueError("deeph_conversion_output['deeph_inputs_root'] must be a string.")
+        deeph_inputs_root = deeph_root
 
     if reduction_mode not in ("schur", "truncate"):
         raise ValueError(

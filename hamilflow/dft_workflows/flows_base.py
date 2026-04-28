@@ -24,6 +24,7 @@ from .jobs import (
     build_aims_dft_jobs,
     collect_aims_outputs,
     convert_aims_to_deeph,
+    convert_aims_to_deeph_structure,
     resolve_structure_removal_plan,
     run_projection_for_structure,
 )
@@ -37,6 +38,10 @@ class ConvertAimsToDeephConfig:
     """Configuration for the optional AIMS-to-DeepH conversion step."""
 
     output_dir: str | Path
+    export_rho: bool = False
+    export_r: bool = False
+    minus_H0: bool = False
+    per_structure_jobs: bool = True
     jobs_num: int = 1
     tier_num: int = 0
 
@@ -98,8 +103,9 @@ class GenerateAimsDFTData:
       run directories into ``collected_runs_root``.
 
     If ``aims_to_deeph_config`` is provided, the collected runs are passed to the
-    DeepH conversion job and the resulting output root is included in the flow
-    outputs.
+    DeepH conversion stage and the resulting output root is included in the flow
+    outputs. By default this stage runs one job per structure by calling
+    ``PeriodicAimsDataTranslator.transfer_one_aims_to_deeph``.
 
     ``aims_kwargs`` are applied only when a ``StaticMaker`` is used. If an explicit
     ``StaticMaker`` is provided and ``aims_kwargs`` is empty, the maker is preserved
@@ -159,6 +165,9 @@ class GenerateAimsDFTData:
     def make(self) -> Flow:
         jobs: list[Flow | Job] = []
         convert_job: Job | None = None
+        convert_jobs: list[Job] = []
+        source_run_dirs: list[str | Path]
+        structure_names: list[str]
         if self.aims_maker is not None:
             if self.structures_path is None:
                 raise ValueError(
@@ -170,32 +179,72 @@ class GenerateAimsDFTData:
             )
             aims_jobs = build_aims_dft_jobs(structures_filenames, self.aims_maker)
             jobs.extend(aims_jobs)
-            source_run_dirs = [job.output.dir_name for job in aims_jobs]
+            source_run_dirs = [cast(str, job.output.dir_name) for job in aims_jobs]
             structure_names = [path.parent.name for path in structures_filenames]
         else:
             source_run_dirs = [str(Path(path)) for path in self.source_run_dirs or []]
             structure_names = [Path(path).name for path in source_run_dirs]
 
-        collect_job = collect_aims_outputs(
-            source_run_dirs=source_run_dirs,
-            structure_names=structure_names,
-            collected_runs_root=self.collected_runs_root,
+        collect_job = cast(
+            Job,
+            collect_aims_outputs(
+                source_run_dirs=source_run_dirs,
+                structure_names=structure_names,
+                collected_runs_root=self.collected_runs_root,
+            ),
         )
         jobs.append(collect_job)
 
         if self.aims_to_deeph_config is not None:
-            convert_job = convert_aims_to_deeph(
-                input_root=collect_job.output["collected_runs_root"],
-                output_dir=self.aims_to_deeph_config.output_dir,
-                jobs_num=self.aims_to_deeph_config.jobs_num,
-                tier_num=self.aims_to_deeph_config.tier_num,
-            )
-            jobs.append(convert_job)
+            if self.aims_to_deeph_config.per_structure_jobs:
+                convert_jobs = [
+                    cast(
+                        Job,
+                        convert_aims_to_deeph_structure(
+                            structure_name=structure_name,
+                            input_root=self.collected_runs_root,
+                            output_dir=self.aims_to_deeph_config.output_dir,
+                            export_rho=self.aims_to_deeph_config.export_rho,
+                            export_r=self.aims_to_deeph_config.export_r,
+                            minus_H0=self.aims_to_deeph_config.minus_H0,
+                            collection_output=collect_job.output,
+                        ),
+                    )
+                    for structure_name in structure_names
+                ]
+                jobs.extend(convert_jobs)
+            else:
+                convert_job = cast(
+                    Job,
+                    convert_aims_to_deeph(
+                        input_root=collect_job.output["collected_runs_root"],
+                        output_dir=self.aims_to_deeph_config.output_dir,
+                        export_rho=self.aims_to_deeph_config.export_rho,
+                        export_r=self.aims_to_deeph_config.export_r,
+                        minus_H0=self.aims_to_deeph_config.minus_H0,
+                        jobs_num=self.aims_to_deeph_config.jobs_num,
+                        tier_num=self.aims_to_deeph_config.tier_num,
+                    ),
+                )
+                jobs.append(convert_job)
+
+        deeph_outputs = None
+        if self.aims_to_deeph_config is not None:
+            deeph_outputs = {
+                "deeph_inputs_root": str(Path(self.aims_to_deeph_config.output_dir).resolve()),
+                "conversion_mode": (
+                    "per_structure"
+                    if self.aims_to_deeph_config.per_structure_jobs
+                    else "bulk"
+                ),
+                "structure_results": [job.output for job in convert_jobs],
+                "bulk_result": convert_job.output if convert_job is not None else None,
+            }
 
         outputs = {
             "aims_kwargs": self.aims_kwargs,
             "collection": collect_job.output,
-            "deeph_inputs": convert_job.output if convert_job is not None else None,
+            "deeph_inputs": deeph_outputs,
         }
         return Flow(jobs=jobs, name=self.name, output=outputs)
 
