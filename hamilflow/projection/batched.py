@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import multiprocessing as mp
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -47,6 +48,18 @@ def _worker_init(
     r_batch_size: int,
     k_weight: float,
 ) -> None:
+    # Limit BLAS / OpenMP threads inside each worker to avoid oversubscription
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    # If threadpoolctl is available, also request single-threaded native pools
+    try:
+        from threadpoolctl import threadpool_limits
+
+        threadpool_limits(1)
+    except Exception:
+        pass
+
     _WORKER_STATE["obj"] = HamiltonianObj(Path(input_dir))
     _WORKER_STATE["reduction_mode"] = reduction_mode
     _WORKER_STATE["remove_indices"] = list(remove_indices)
