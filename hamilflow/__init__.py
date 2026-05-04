@@ -10,6 +10,7 @@ __all__ = [
     "get_shift",
     "run_projection",
     "run_projection_batched",
+    "run_projection_batched_parallel",
     "shift_cbm",
     "shift_midgap",
     "shift_vbm",
@@ -32,4 +33,5 @@ from .projection import (
     coerce_removal_plan,
     run_projection,
     run_projection_batched,
+    run_projection_batched_parallel,
 )

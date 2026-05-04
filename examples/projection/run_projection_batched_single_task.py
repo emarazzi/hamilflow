@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from hamilflow import ProjectionConfig
-from hamilflow.projection.batched import run_projection_batched
+from hamilflow.projection.batched import run_projection_batched, run_projection_batched_parallel
 
 DEFAULT_STRUCTURE_PATTERN = "structure_*"
 ReductionMode = Literal["schur", "truncate"]
@@ -64,6 +64,12 @@ def parse_args() -> argparse.Namespace:
         default=32,
         help="Number of R blocks to accumulate per batch.",
     )
+    parser.add_argument(
+        "--n-workers",
+        type=int,
+        default=1,
+        help="Number of worker processes for parallel k-batch execution. Use 1 for serial mode.",
+    )
     return parser.parse_args()
 
 
@@ -90,6 +96,7 @@ def run_structure_projection(
     reduction_mode: ReductionMode,
     k_batch_size: int,
     r_batch_size: int,
+    n_workers: int,
 ) -> Path:
     config = ProjectionConfig(
         input_dir=structure_directory,
@@ -97,12 +104,21 @@ def run_structure_projection(
         kgrid=(9, 9, 1),
         reduction_mode=reduction_mode,
     )
-    result = run_projection_batched(
-        config=config,
-        removal_plan=str(removal_plan),
-        k_batch_size=k_batch_size,
-        r_batch_size=r_batch_size,
-    )
+    if n_workers > 1:
+        result = run_projection_batched_parallel(
+            config=config,
+            removal_plan=str(removal_plan),
+            k_batch_size=k_batch_size,
+            r_batch_size=r_batch_size,
+            n_workers=n_workers,
+        )
+    else:
+        result = run_projection_batched(
+            config=config,
+            removal_plan=str(removal_plan),
+            k_batch_size=k_batch_size,
+            r_batch_size=r_batch_size,
+        )
     return result.output_dir
 
 
@@ -135,6 +151,7 @@ def main() -> None:
         reduction_mode=reduction_mode,
         k_batch_size=args.k_batch_size,
         r_batch_size=args.r_batch_size,
+        n_workers=args.n_workers,
     )
     print(f"Completed {structure_directory} -> {output_dir}")
 
