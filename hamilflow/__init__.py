@@ -9,6 +9,7 @@ __all__ = [
     "get_bandgap",
     "get_shift",
     "run_projection",
+    "run_projection_batched",
     "shift_cbm",
     "shift_midgap",
     "shift_vbm",
@@ -23,4 +24,12 @@ from .band_structures import (
     shift_midgap,
     shift_vbm,
 )
-from .projection import ProjectionConfig, ProjectionResult, RemovalPlan, RemovalRule, coerce_removal_plan, run_projection
+from .projection import (
+    ProjectionConfig,
+    ProjectionResult,
+    RemovalPlan,
+    RemovalRule,
+    coerce_removal_plan,
+    run_projection,
+    run_projection_batched,
+)

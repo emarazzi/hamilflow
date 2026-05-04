@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 from fnmatch import fnmatch
 from shutil import move, rmtree
@@ -7,19 +8,56 @@ from jobflow.core.flow import Flow
 from jobflow.core.job import Job, job
 from jobflow.core.maker import Maker
 from pymatgen.core import Structure
+from atomate2.aims.jobs.core import StaticMaker
+from pymatgen.io.aims.sets.core import StaticSetGenerator
 from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
 
 from ..projection import ProjectionConfig, RemovalPlanLike, ReductionMode, run_projection
+from .kpoints import get_ksampling
 
 
 def build_aims_dft_jobs(
-    structures_filenames: Sequence[Path], aims_maker: Maker
+    structures_filenames: Sequence[Path],
+    aims_maker: Maker,
+    aims_kwargs: dict[str, Any] | None = None,
+    kgrid: tuple[int, int, int] | None = None,
+    kpoints_updates: dict[str, Any] | None = None,
+    user_kpoints_settings: dict[str, Any] | Any | None = None,
+    force_gamma: bool = True,
+    symprec: float | None = None,
 ) -> list[Flow | Job]:
     jobs: list[Flow | Job] = []
     for structure_file in structures_filenames:
         structure = Structure.from_file(structure_file)
         structure_name = structure_file.parent.name
-        aims_job = aims_maker.make(structure)
+        structure_aims_kwargs = dict(aims_kwargs or {})
+        if kgrid is not None and (kpoints_updates or user_kpoints_settings not in (None, {})):
+            raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
+        kpoints_settings = get_ksampling(
+            structure=structure,
+            kpoints_updates={"k_grid": kgrid} if kgrid is not None else kpoints_updates,
+            user_kpoints_settings=user_kpoints_settings,
+            force_gamma=force_gamma,
+            symprec=symprec or 1e-5,
+        )
+
+        if isinstance(aims_maker, StaticMaker):
+            maker = copy.deepcopy(aims_maker)
+            if kpoints_settings is not None:
+                maker.input_set_generator = StaticSetGenerator(
+                    user_params=structure_aims_kwargs,
+                    user_kpoints_settings=kpoints_settings,
+                )
+            else:
+                maker.input_set_generator = StaticSetGenerator(user_params=structure_aims_kwargs)
+            aims_job = maker.make(structure)
+        else:
+            if structure_aims_kwargs or kpoints_settings is not None:
+                raise ValueError(
+                    "aims_kwargs and k-point sampling options are only supported with StaticMaker. "
+                    "Provide a configured custom maker or use the default StaticMaker path."
+                )
+            aims_job = aims_maker.make(structure)
         aims_job.name = f"aims_static_{structure_name}"
         jobs.append(aims_job)
     return jobs

@@ -100,7 +100,7 @@ class GenerateTwoStepProjectedDeephInputs:
     """
 
     deeph_inputs_root: str | Path
-    first_projection_config: ProjectDeephInputsConfig
+    first_projection_config:    
     second_projection_config: ProjectDeephInputsConfig
     name: str = "generate_two_step_projected_deeph_inputs"
 

@@ -20,6 +20,7 @@ from pymatgen.core.structure import FileFormats
 from pymatgen.io.aims.sets.core import StaticSetGenerator
 
 from ..projection.models import ReductionMode, RemovalPlanLike
+
 from .jobs import (
     build_aims_dft_jobs,
     collect_aims_outputs,
@@ -107,9 +108,14 @@ class GenerateAimsDFTData:
     outputs. By default this stage runs one job per structure by calling
     ``PeriodicAimsDataTranslator.transfer_one_aims_to_deeph``.
 
-    ``aims_kwargs`` are applied only when a ``StaticMaker`` is used. If an explicit
-    ``StaticMaker`` is provided and ``aims_kwargs`` is empty, the maker is preserved
-    as-is.
+    ``aims_kwargs`` are applied only when a ``StaticMaker`` is used. K-point
+    sampling can be provided either as a direct ``kgrid`` or as richer sampling
+    settings through ``kpoints_updates`` or ``user_kpoints_settings``; those are
+    resolved into an AIMS k-point payload before job construction. Provide either
+    ``kgrid`` or a k-point sampling payload, not both.
+
+    If an explicit ``StaticMaker`` is provided and no overrides are supplied, the
+    maker is preserved as-is.
 
     The collected directory names are derived from the original structure names so
     downstream outputs remain easy to map back to their source structures.
@@ -120,6 +126,11 @@ class GenerateAimsDFTData:
     structure_file_format: FileFormats = "poscar"
     name: str = "generate_aims_dft_data"
     aims_kwargs: dict[str, Any] = field(default_factory=dict)
+    kgrid: tuple[int, int, int] | None = None
+    kpoints_updates: dict[str, Any] | None = None
+    user_kpoints_settings: dict[str, Any] | Any | None = None
+    force_gamma: bool = True
+    symprec: float = 1e-5
     aims_maker: Maker | None = field(
         default_factory=lambda: StaticMaker(input_set_generator=StaticSetGenerator())
     )
@@ -148,17 +159,15 @@ class GenerateAimsDFTData:
                 "existing runs."
             )
 
-        if self.aims_maker is not None and isinstance(self.aims_maker, StaticMaker):
-            if self.aims_kwargs:
-                static_maker = cast(StaticMaker, self.aims_maker)
-                static_maker.input_set_generator = StaticSetGenerator(
-                    user_params=dict(**merged_aims_kwargs)
+        if self.kgrid is not None and (self.kpoints_updates or self.user_kpoints_settings not in (None, {})):
+            raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
+
+        if self.aims_maker is not None and not isinstance(self.aims_maker, StaticMaker):
+            if self.aims_kwargs or self.kgrid is not None or self.kpoints_updates or self.user_kpoints_settings not in (None, {}):
+                raise ValueError(
+                    "aims_kwargs and k-point sampling options are only supported with StaticMaker. "
+                    "Provide a configured custom maker or use the default StaticMaker path."
                 )
-        elif self.aims_maker is not None and self.aims_kwargs:
-            raise ValueError(
-                "aims_kwargs are only supported with StaticMaker. Provide a configured "
-                "custom maker or use the default StaticMaker path."
-            )
 
         self.aims_kwargs = merged_aims_kwargs
 
@@ -177,7 +186,16 @@ class GenerateAimsDFTData:
             structures_filenames = resolve_structure_path(
                 self.structures_path, self.structure_pattern, self.structure_file_format
             )
-            aims_jobs = build_aims_dft_jobs(structures_filenames, self.aims_maker)
+            aims_jobs = build_aims_dft_jobs(
+                structures_filenames,
+                self.aims_maker,
+                aims_kwargs=self.aims_kwargs,
+                kgrid=self.kgrid,
+                kpoints_updates=self.kpoints_updates,
+                user_kpoints_settings=self.user_kpoints_settings,
+                force_gamma=self.force_gamma,
+                symprec=self.symprec,
+            )
             jobs.extend(aims_jobs)
             source_run_dirs = [cast(str, job.output.dir_name) for job in aims_jobs]
             structure_names = [path.parent.name for path in structures_filenames]

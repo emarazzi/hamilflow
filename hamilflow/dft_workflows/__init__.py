@@ -6,6 +6,7 @@ __all__ = [
 	"GenerateTwoStepProjectedDeephInputs",
 	"ProjectDeephInputsConfig",
 	"ProjectionRemovalPlanConfig",
+	"get_ksampling",
 	"build_aims_dft_jobs",
 	"collect_aims_outputs",
 	"resolve_structure_removal_plan",
@@ -20,6 +21,7 @@ from .flows_base import (
 	GenerateProjectedDeephInputs,
 	ProjectDeephInputsConfig,
 	ProjectionRemovalPlanConfig,
+	get_ksampling,
 )
 from .flows_core import GenerateAimsToProjectedDeephData, GenerateTwoStepProjectedDeephInputs
 from .jobs import (
