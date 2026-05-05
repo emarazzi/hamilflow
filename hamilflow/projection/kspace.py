@@ -65,6 +65,51 @@ def apply_truncation_kspace_transform(
     return Hk_new, Sk_new
 
 
+def apply_custom_kspace_transform_overlap_only(
+    Sk: np.ndarray,
+    remove_indices: list[int],
+) -> np.ndarray:
+    """Apply Schur-style elimination transform to overlap only in k-space."""
+    if Sk.ndim != 3:
+        raise ValueError(f"Sk must have shape (Nk, Nb, Nb), got {Sk.shape}")
+
+    rm = sorted(set(int(i) for i in remove_indices))
+    if len(rm) == 0:
+        return Sk
+
+    Tk, _, _ = build_elimination_tk(Sk, rm)
+    Tc = np.conjugate(np.swapaxes(Tk, 1, 2))
+    Sk_new = np.matmul(np.matmul(Tc, Sk), Tk)
+    return Sk_new
+
+
+def apply_truncation_kspace_transform_overlap_only(
+    Sk: np.ndarray,
+    remove_indices: list[int],
+) -> np.ndarray:
+    """Reduce overlap matrix by direct truncation (delete rows/cols) on all k points."""
+    if Sk.ndim != 3:
+        raise ValueError(f"Sk must have shape (Nk, Nb, Nb), got {Sk.shape}")
+
+    _nk, nb, nb2 = Sk.shape
+    if nb != nb2:
+        raise ValueError(f"Sk must be square in last two dims, got {Sk.shape}")
+
+    rm = sorted(set(int(i) for i in remove_indices))
+    if len(rm) == 0:
+        return Sk
+    if rm[0] < 0 or rm[-1] >= nb:
+        raise ValueError(f"remove_indices out of range for Nb={nb}: {rm}")
+
+    rm_set = set(rm)
+    keep = np.array([i for i in range(nb) if i not in rm_set], dtype=int)
+    if keep.size == 0:
+        raise ValueError("Cannot remove all orbitals")
+
+    Sk_new = Sk[:, keep, :][:, :, keep]
+    return Sk_new
+
+
 def build_elimination_tk(
     Sk: np.ndarray,
     remove_indices: list[int],
@@ -198,3 +243,47 @@ def hk_and_sk_to_real(
     HR = AOMatrixK(ks, Hk).k2r(Rs, weights=weights)
     SR = AOMatrixK(ks, Sk).k2r(Rs, weights=weights)
     return HR, SR
+
+
+def sk_to_real(
+    ks: np.ndarray,
+    Sk: np.ndarray,
+    Rijk_list: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Inverse Fourier transform k-space overlap matrix back to real space.
+
+    Parameters
+    ----------
+    ks : np.ndarray, shape (Nk, 3)
+        k-points in fractional coordinates.
+    Sk : np.ndarray, shape (Nk, Nb, Nb)
+        Overlap matrices in reciprocal space.
+    Rijk_list : np.ndarray, shape (N_R, 3), dtype=int
+        Lattice displacements for inter-cell hoppings.
+    weights : np.ndarray, shape (Nk,), optional
+        Weights for k-points. Default uses uniform 1/Nk weights.
+
+    Returns
+    -------
+    SR : np.ndarray, shape (N_R, Nb, Nb)
+        Overlap matrices in real space on Rijk_list.
+    """
+    from deepx_dock.compute.eigen.matrix_obj import AOMatrixK
+
+    ks = np.asarray(ks)
+    Sk = np.asarray(Sk)
+    Rs = np.asarray(Rijk_list)
+
+    if ks.ndim != 2 or ks.shape[1] != 3:
+        raise ValueError(f"ks must have shape (Nk, 3), got {ks.shape}")
+    if Rs.ndim != 2 or Rs.shape[1] != 3:
+        raise ValueError(f"Rijk_list must have shape (N_R, 3), got {Rs.shape}")
+    if Sk.ndim != 3:
+        raise ValueError(f"Sk must have shape (Nk, Nb, Nb), got {Sk.shape}")
+    if Sk.shape[0] != ks.shape[0]:
+        raise ValueError(f"Nk mismatch between ks and Sk: {ks.shape[0]} vs {Sk.shape[0]}")
+
+    SR = AOMatrixK(ks, Sk).k2r(Rs, weights=weights)
+    return SR

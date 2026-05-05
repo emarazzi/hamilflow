@@ -15,9 +15,12 @@ from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 from .io import dump_reduced_matrix_h5, hermitize_real_space_blocks, write_reduced_info_json
 from .kspace import (
     apply_custom_kspace_transform,
+    apply_custom_kspace_transform_overlap_only,
     apply_truncation_kspace_transform,
+    apply_truncation_kspace_transform_overlap_only,
     build_uniform_kmesh,
     hk_and_sk_to_real,
+    sk_to_real,
 )
 from .models import ProjectionConfig, ProjectionResult, RemovalPlanLike
 from .removal import coerce_removal_plan, resolve_indices_from_rules
@@ -31,11 +34,26 @@ def run_projection(
     Run the k->R orbital-reduction projection.
 
     The reduction plan can be provided as a model, dict/list payload, or JSON file path.
-    Hamiltonian and overlap are always written to files in config.output_dir.
+    By default, both Hamiltonian and overlap are written to files in config.output_dir.
+    When overlap_only=True, only the overlap is processed. If write_dummy_hamiltonian=True,
+    a zero-filled hamiltonian.h5 is also written to enable sequential projections.
     """
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     shutil.copy2(config.input_dir / DEEPX_POSCAR_FILENAME, config.output_dir / DEEPX_POSCAR_FILENAME)
+    
+    # HamiltonianObj requires hamiltonian.h5 to exist to load metadata (elements, atom_pairs, etc.)
+    # even in overlap_only mode where we don't process the Hamiltonian itself
+    hamiltonian_file = config.input_dir / DEEPX_HAMILTONIAN_FILENAME
+    if not hamiltonian_file.exists():
+        raise FileNotFoundError(
+            f"Hamiltonian file '{DEEPX_HAMILTONIAN_FILENAME}' not found in {config.input_dir}.\n"
+            f"Note: overlap_only mode still requires this file to exist for loading structure metadata "
+            f"(elements, atom pairs, etc.), even though the Hamiltonian won't be processed or written to output.\n"
+            f"To generate a dummy hamiltonian.h5 file with matching structure, you can use:\n"
+            f"  deepx_dock write --output hamiltonian.h5 [other args]"
+        )
+    
     obj = HamiltonianObj(config.input_dir)
 
     plan_model = coerce_removal_plan(removal_plan)
@@ -52,38 +70,76 @@ def run_projection(
     nb = Sk.shape[-1]
     keep_global = [i for i in range(nb) if i not in rm]
 
-    if config.reduction_mode == "schur":
-        Hk_new, Sk_new = apply_custom_kspace_transform(Hk, Sk, remove_indices=rm)
-    elif config.reduction_mode == "truncate":
-        Hk_new, Sk_new = apply_truncation_kspace_transform(Hk, Sk, remove_indices=rm)
+    if config.overlap_only:
+        # Skip Hamiltonian k-space transform, only process overlap
+        if config.reduction_mode == "schur":
+            Sk_new = apply_custom_kspace_transform_overlap_only(Sk, remove_indices=rm)
+        elif config.reduction_mode == "truncate":
+            Sk_new = apply_truncation_kspace_transform_overlap_only(Sk, remove_indices=rm)
+        else:
+            raise ValueError(
+                f"Unsupported reduction_mode '{config.reduction_mode}'. Expected 'schur' or 'truncate'."
+            )
+
+        if obj.Rijk_list is None:
+            raise ValueError("Rijk_list is None")
+        SR_new = sk_to_real(
+            ks=ks,
+            Sk=Sk_new,
+            Rijk_list=obj.Rijk_list,
+        )
+        HR_new = None
     else:
-        raise ValueError(
-            f"Unsupported reduction_mode '{config.reduction_mode}'. Expected 'schur' or 'truncate'."
+        # Standard mode: transform both Hamiltonian and Overlap
+        if config.reduction_mode == "schur":
+            Hk_new, Sk_new = apply_custom_kspace_transform(Hk, Sk, remove_indices=rm)
+        elif config.reduction_mode == "truncate":
+            Hk_new, Sk_new = apply_truncation_kspace_transform(Hk, Sk, remove_indices=rm)
+        else:
+            raise ValueError(
+                f"Unsupported reduction_mode '{config.reduction_mode}'. Expected 'schur' or 'truncate'."
+            )
+
+        if obj.Rijk_list is None:
+            raise ValueError("Rijk_list is None")
+        HR_new, SR_new = hk_and_sk_to_real(
+            ks=ks,
+            Hk=Hk_new,
+            Sk=Sk_new,
+            Rijk_list=obj.Rijk_list,
         )
 
-    if obj.Rijk_list is None:
-        raise ValueError("Rijk_list is None")
-    HR_new, SR_new = hk_and_sk_to_real(
-        ks=ks,
-        Hk=Hk_new,
-        Sk=Sk_new,
-        Rijk_list=obj.Rijk_list,
-    )
+    # Process and store Hamiltonian only if not overlap_only mode
+    if not config.overlap_only:
+        HR_new = hermitize_real_space_blocks(HR_new, obj.Rijk_list)
+        hamiltonian_path = dump_reduced_matrix_h5(
+            config.output_dir / DEEPX_HAMILTONIAN_FILENAME,
+            HR_new,
+            obj.Rijk_list,
+            obj.atom_pairs,
+            obj.atom_num_orbits_cumsum,
+            keep_global,
+        )
+    elif config.overlap_only and config.write_dummy_hamiltonian:
+        # Write dummy zeros hamiltonian for chaining overlaps in sequence
+        HR_dummy = np.zeros_like(SR_new, dtype=np.float64)
+        hamiltonian_path = dump_reduced_matrix_h5(
+            config.output_dir / DEEPX_HAMILTONIAN_FILENAME,
+            HR_dummy,
+            obj.Rijk_list,
+            obj.atom_pairs,
+            obj.atom_num_orbits_cumsum,
+            keep_global,
+        )
+    else:
+        hamiltonian_path = None
 
-    HR_new = hermitize_real_space_blocks(HR_new, obj.Rijk_list)
+    # Process and store Overlap
     SR_new = hermitize_real_space_blocks(SR_new, obj.Rijk_list)
 
     overlap_imag_max = float(np.max(np.abs(np.imag(SR_new)))) if SR_new.size > 0 else 0.0
     SR_new = np.asarray(np.real(SR_new), dtype=np.float64)
 
-    hamiltonian_path = dump_reduced_matrix_h5(
-        config.output_dir / DEEPX_HAMILTONIAN_FILENAME,
-        HR_new,
-        obj.Rijk_list,
-        obj.atom_pairs,
-        obj.atom_num_orbits_cumsum,
-        keep_global,
-    )
     overlap_path = dump_reduced_matrix_h5(
         config.output_dir / DEEPX_OVERLAP_FILENAME,
         SR_new,
@@ -103,6 +159,8 @@ def run_projection(
 
     metadata = {
         "reduction_mode": config.reduction_mode,
+        "overlap_only": config.overlap_only,
+        "write_dummy_hamiltonian": config.write_dummy_hamiltonian,
         "removed_global_indices": rm,
         "kept_global_indices": keep_global,
         "original_orbits_quantity": int(nb),

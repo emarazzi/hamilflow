@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, Optional, TypeAlias
 
 
 ReductionMode: TypeAlias = Literal["schur", "truncate"]
@@ -33,6 +33,8 @@ class ProjectionConfig:
     output_dir: Path
     kgrid: tuple[int, int, int] = (4, 4, 4)
     reduction_mode: ReductionMode = "schur"
+    overlap_only: bool = False
+    write_dummy_hamiltonian: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_dir", Path(self.input_dir))
@@ -44,7 +46,7 @@ class ProjectionResult:
     """Serializable projection outputs for scripts and workflow engines."""
 
     output_dir: Path
-    hamiltonian_path: Path
+    hamiltonian_path: Optional[Path]
     overlap_path: Path
     info_path: Path
     meta_path: Path
@@ -53,7 +55,7 @@ class ProjectionResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "output_dir": str(self.output_dir),
-            "hamiltonian_path": str(self.hamiltonian_path),
+            "hamiltonian_path": str(self.hamiltonian_path) if self.hamiltonian_path else None,
             "overlap_path": str(self.overlap_path),
             "info_path": str(self.info_path),
             "meta_path": str(self.meta_path),
