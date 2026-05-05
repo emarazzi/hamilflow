@@ -73,7 +73,7 @@ def _worker_compute_k_batch(
     task_id: int,
     ks_batch: np.ndarray,
     partial_dir: str,
-) -> tuple[str, str]:
+) -> tuple[list[str], list[str]]:
     obj = _WORKER_STATE["obj"]
     reduction_mode = _WORKER_STATE["reduction_mode"]
     remove_indices = _WORKER_STATE["remove_indices"]
@@ -105,23 +105,8 @@ def _worker_compute_k_batch(
     Sk_flat = Sk_new.reshape(Sk_new.shape[0], -1)
 
     partial_root = Path(partial_dir)
-    hr_path = partial_root / f"partial_hr_{task_id:06d}.npy"
-    sr_path = partial_root / f"partial_sr_{task_id:06d}.npy"
-
-    hr_memmap = np.lib.format.open_memmap(
-        hr_path,
-        mode="w+",
-        dtype=np.complex128,
-        shape=(nR, reduced_nb, reduced_nb),
-    )
-    sr_memmap = np.lib.format.open_memmap(
-        sr_path,
-        mode="w+",
-        dtype=np.complex128,
-        shape=(nR, reduced_nb, reduced_nb),
-    )
-    hr_memmap.fill(0)
-    sr_memmap.fill(0)
+    hr_paths: list[str] = []
+    sr_paths: list[str] = []
 
     for r_slice in _iter_slices(nR, r_batch_size):
         R_batch = Rijk_list[r_slice]
@@ -131,15 +116,15 @@ def _worker_compute_k_batch(
         hr_batch = np.matmul(coeff, Hk_flat).reshape(r_slice.stop - r_slice.start, reduced_nb, reduced_nb)
         sr_batch = np.matmul(coeff, Sk_flat).reshape(r_slice.stop - r_slice.start, reduced_nb, reduced_nb)
 
-        hr_memmap[r_slice] += hr_batch
-        sr_memmap[r_slice] += sr_batch
+        hr_path = partial_root / f"partial_hr_{task_id:06d}_{r_slice.start:06d}_{r_slice.stop:06d}.npy"
+        sr_path = partial_root / f"partial_sr_{task_id:06d}_{r_slice.start:06d}_{r_slice.stop:06d}.npy"
+        # Save compact per-R-block partials
+        np.save(hr_path, hr_batch)
+        np.save(sr_path, sr_batch)
+        hr_paths.append(str(hr_path))
+        sr_paths.append(str(sr_path))
 
-    hr_memmap.flush()
-    sr_memmap.flush()
-    del hr_memmap
-    del sr_memmap
-
-    return str(hr_path), str(sr_path)
+    return hr_paths, sr_paths
 
 
 def _build_per_atom_reduced_indices(
@@ -542,15 +527,22 @@ def run_projection_batched_parallel(
             ]
 
             for future in as_completed(futures):
-                hr_path_str, sr_path_str = future.result()
-                hr_part = np.load(hr_path_str, mmap_mode="r")
-                sr_part = np.load(sr_path_str, mmap_mode="r")
-                hr_memmap += hr_part
-                sr_memmap += sr_part
-                del hr_part
-                del sr_part
-                Path(hr_path_str).unlink(missing_ok=True)
-                Path(sr_path_str).unlink(missing_ok=True)
+                hr_paths, sr_paths = future.result()
+                # Each worker produced several small partial files; read and accumulate
+                for hp, sp in zip(hr_paths, sr_paths):
+                    hr_part = np.load(hp, mmap_mode="r")
+                    sr_part = np.load(sp, mmap_mode="r")
+                    # determine r slice from filename
+                    parts = Path(hp).stem.split("_")
+                    # pattern: partial_hr_{task}_{rstart}_{rstop}
+                    rstart = int(parts[-2])
+                    rstop = int(parts[-1])
+                    hr_memmap[rstart:rstop] += hr_part
+                    sr_memmap[rstart:rstop] += sr_part
+                    del hr_part
+                    del sr_part
+                    Path(hp).unlink(missing_ok=True)
+                    Path(sp).unlink(missing_ok=True)
 
         return _finalize_projection_outputs(
             config=config,
