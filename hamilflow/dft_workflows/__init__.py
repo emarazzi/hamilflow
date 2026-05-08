@@ -21,7 +21,6 @@ from .flows_base import (
 	GenerateProjectedDeephInputs,
 	ProjectDeephInputsConfig,
 	ProjectionRemovalPlanConfig,
-	get_ksampling,
 )
 from .flows_core import GenerateAimsToProjectedDeephData, GenerateTwoStepProjectedDeephInputs
 from .jobs import (

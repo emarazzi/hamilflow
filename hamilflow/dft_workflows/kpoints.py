@@ -15,7 +15,7 @@ def get_ksampling(
     kpoints_updates: dict[str, Any] | None = None,
     user_kpoints_settings: dict[str, Any] | None = None,
     force_gamma: bool = True,
-    symprec: float = SETTINGS.SYMPREC,
+    symprec: float = 0.01,
 ) -> dict[str, Any] | None:
     """Resolve k-point settings into a single payload for AIMS input generation."""
     if user_kpoints_settings not in (None, {}):
