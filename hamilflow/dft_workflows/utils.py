@@ -1,5 +1,7 @@
 from pathlib import Path
+from typing import Sequence
 
+from ase.io import read as ase_read
 from pymatgen.core.structure import FileFormats
 
 __all__ = ["resolve_structure_path", "get_structure_names_from_path"]
@@ -61,12 +63,12 @@ def resolve_structure_path(
     structures_path: str | Path,
     structure_pattern: str = "*",
     structure_file_format: FileFormats = "poscar",
-) -> list[Path]:
+) -> Path | list[Path]:
     path = Path(structures_path)
     
     # Handle single trajectory file (e.g., xyz, extxyz)
     if path.is_file():
-        return [path]
+        return path
     
     if not path.is_dir():
         raise ValueError(f"The provided structures_path is not a directory or file: {structures_path}")
@@ -85,7 +87,7 @@ def resolve_structure_path(
 
 def get_structure_names_from_path(
     structures_path: str | Path,
-    structures_filenames: list[Path],
+    structures_filenames: Path | Sequence[Path],
 ) -> list[str]:
     """
     Extract structure names from either trajectory file or directory structure.
@@ -96,13 +98,16 @@ def get_structure_names_from_path(
     If structures_path is a directory, returns parent directory names for each file.
     """
     path = Path(structures_path)
-    
+
     if path.is_file():
-        # Trajectory file: return indexed names
-        return [f"structure_{i:04d}" for i in range(len(structures_filenames))]
-    else:
-        # Directory structure: return parent directory names
-        return [file_path.parent.name for file_path in structures_filenames]
+        # Trajectory file: determine number of frames using ASE and return indexed names
+        ase_structures = ase_read(str(path), index=":")
+        if not isinstance(ase_structures, list):
+            ase_structures = [ase_structures]
+        return [f"structure_{i:04d}" for i in range(len(ase_structures))]
+
+    # Directory structure: return parent directory names
+    return [file_path.parent.name for file_path in structures_filenames]
 
 
 
