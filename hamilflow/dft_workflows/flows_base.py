@@ -29,7 +29,7 @@ from .jobs import (
     resolve_structure_removal_plan,
     run_projection_for_structure,
 )
-from .utils import resolve_structure_path
+from .utils import resolve_structure_path, get_structure_names_from_path
 
 DEFAULT_AIMS_KWARGS: dict[str, Any] = {"output_rs_matrices": "plain"}
 
@@ -198,7 +198,7 @@ class GenerateAimsDFTData:
             )
             jobs.extend(aims_jobs)
             source_run_dirs = [cast(str, job.output.dir_name) for job in aims_jobs]
-            structure_names = [path.parent.name for path in structures_filenames]
+            structure_names = get_structure_names_from_path(self.structures_path, structures_filenames)
         else:
             source_run_dirs = [str(Path(path)) for path in self.source_run_dirs or []]
             structure_names = [Path(path).name for path in source_run_dirs]

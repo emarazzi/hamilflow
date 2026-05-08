@@ -20,7 +20,7 @@ def _normalize_supercell_size(supercell_size: list[int] | tuple[int, int, int]) 
 
 def generate_perturbed_population(
     structure: Structure,
-    input_structures_path: str | Path,
+        : str | Path,
     num_structures: int,
     distance: float,
     min_distance: float | None = None,

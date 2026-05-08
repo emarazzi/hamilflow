@@ -4,10 +4,12 @@ from fnmatch import fnmatch
 from shutil import move, rmtree
 from typing import Any, Sequence
 
+from ase.io import read as ase_read
 from jobflow.core.flow import Flow
 from jobflow.core.job import Job, job
 from jobflow.core.maker import Maker
 from pymatgen.core import Structure
+from pymatgen.io.ase import AseAtomsAdaptor as AseAtomsAdaptor
 from atomate2.aims.jobs.core import StaticMaker
 from pymatgen.io.aims.sets.core import StaticSetGenerator
 from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
@@ -17,7 +19,7 @@ from .kpoints import get_ksampling
 
 
 def build_aims_dft_jobs(
-    structures_filenames: Sequence[Path],
+    structures_filenames: Path | Sequence[Path],
     aims_maker: Maker,
     aims_kwargs: dict[str, Any] | None = None,
     kgrid: tuple[int, int, int] | None = None,
@@ -27,9 +29,28 @@ def build_aims_dft_jobs(
     symprec: float | None = None,
 ) -> list[Flow | Job]:
     jobs: list[Flow | Job] = []
-    for structure_file in structures_filenames:
-        structure = Structure.from_file(structure_file)
-        structure_name = structure_file.parent.name
+    
+    # Handle both single trajectory file and multiple individual structure files
+    structure_data: list[tuple[Structure, str]] = []
+    
+    if isinstance(structures_filenames, (str, Path)):
+        # Single trajectory file (xyz, extxyz, etc.)
+        trajectory_file = Path(structures_filenames)
+        ase_structures = ase_read(str(trajectory_file), index=":")
+        if not isinstance(ase_structures, list):
+            ase_structures = [ase_structures]
+        
+        for idx, ase_structure in enumerate(ase_structures):
+            structure = AseAtomsAdaptor.get_structure(ase_structure)
+            structure_data.append((structure, f"structure_{idx:04d}"))
+    else:
+        # Multiple individual structure files
+        for structure_file in structures_filenames:
+            structure = Structure.from_file(structure_file)
+            structure_name = structure_file.parent.name
+            structure_data.append((structure, structure_name))
+    
+    for structure, structure_name in structure_data:
         structure_aims_kwargs = dict(aims_kwargs or {})
         if kgrid is not None and (kpoints_updates or user_kpoints_settings not in (None, {})):
             raise ValueError("Provide either kgrid or k-point sampling settings, not both.")

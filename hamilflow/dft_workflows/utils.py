@@ -2,7 +2,7 @@ from pathlib import Path
 
 from pymatgen.core.structure import FileFormats
 
-__all__ = ["resolve_structure_path"]
+__all__ = ["resolve_structure_path", "get_structure_names_from_path"]
 
 _KNOWN_STRUCTURE_SUFFIXES = {
     ".cif",
@@ -63,8 +63,13 @@ def resolve_structure_path(
     structure_file_format: FileFormats = "poscar",
 ) -> list[Path]:
     path = Path(structures_path)
+    
+    # Handle single trajectory file (e.g., xyz, extxyz)
+    if path.is_file():
+        return [path]
+    
     if not path.is_dir():
-        raise ValueError(f"The provided structures_path is not a directory: {structures_path}")
+        raise ValueError(f"The provided structures_path is not a directory or file: {structures_path}")
 
     structure_dirs = sorted(candidate for candidate in path.glob(structure_pattern) if candidate.is_dir())
     if not structure_dirs:
@@ -76,5 +81,28 @@ def resolve_structure_path(
     ]
 
     return structures_filenames
+
+
+def get_structure_names_from_path(
+    structures_path: str | Path,
+    structures_filenames: list[Path],
+) -> list[str]:
+    """
+    Extract structure names from either trajectory file or directory structure.
+    
+    If structures_path is a file (trajectory file), returns indexed names like
+    structure_0000, structure_0001, etc. for each structure in the file.
+    
+    If structures_path is a directory, returns parent directory names for each file.
+    """
+    path = Path(structures_path)
+    
+    if path.is_file():
+        # Trajectory file: return indexed names
+        return [f"structure_{i:04d}" for i in range(len(structures_filenames))]
+    else:
+        # Directory structure: return parent directory names
+        return [file_path.parent.name for file_path in structures_filenames]
+
 
 

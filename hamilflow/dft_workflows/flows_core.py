@@ -14,7 +14,7 @@ from .flows_base import (
     resolve_projection_removal_plan,
 )
 from .jobs import run_projection_for_structure
-from .utils import resolve_structure_path
+from .utils import resolve_structure_path, get_structure_names_from_path
 
 
 @dataclass
@@ -41,7 +41,9 @@ class GenerateAimsToProjectedDeephData:
                 self.dft_data_flow.structure_pattern,
                 self.dft_data_flow.structure_file_format,
             )
-            structure_names = [path.parent.name for path in structures_filenames]
+            structure_names = get_structure_names_from_path(
+                self.dft_data_flow.structures_path, structures_filenames
+            )
         else:
             source_run_dirs = [str(Path(path)) for path in self.dft_data_flow.source_run_dirs or []]
             structure_names = [Path(path).name for path in source_run_dirs]
