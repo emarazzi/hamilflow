@@ -26,7 +26,7 @@ def build_aims_dft_jobs(
     kpoints_updates: dict[str, Any] | None = None,
     user_kpoints_settings: dict[str, Any] | Any | None = None,
     force_gamma: bool = True,
-    symprec: float | None = None,
+    symprec: float = 0.01,
 ) -> list[Flow | Job]:
     jobs: list[Flow | Job] = []
     
@@ -59,15 +59,17 @@ def build_aims_dft_jobs(
             kpoints_updates={"k_grid": kgrid} if kgrid is not None else kpoints_updates,
             user_kpoints_settings=user_kpoints_settings,
             force_gamma=force_gamma,
-            symprec=symprec or 1e-5,
+            symprec=symprec,
         )
+        # Merge k-point settings into aims_kwargs for StaticSetGenerator if applicable
+        if kpoints_settings is not None:
+            structure_aims_kwargs.update(kpoints_settings)
 
         if isinstance(aims_maker, StaticMaker):
             maker = copy.deepcopy(aims_maker)
             if kpoints_settings is not None:
                 maker.input_set_generator = StaticSetGenerator(
-                    user_params=structure_aims_kwargs,
-                    user_kpoints_settings=kpoints_settings,
+                    user_params=structure_aims_kwargs
                 )
             else:
                 maker.input_set_generator = StaticSetGenerator(user_params=structure_aims_kwargs)
