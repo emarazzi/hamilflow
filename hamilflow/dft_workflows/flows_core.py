@@ -22,11 +22,13 @@ class GenerateAimsToProjectedDeephData:
     """
     Convenience wrapper flow chaining:
 
-    AIMS run/collect -> optional AIMS-to-DeepH conversion (required here) -> projection.
+    AIMS run/collect -> optional AIMS-to-DeepH conversion (required here) -> projection
+    -> optional second projection stage.
     """
 
     dft_data_flow: GenerateAimsDFTData
     projection_config: ProjectDeephInputsConfig
+    second_projection_config: ProjectDeephInputsConfig | None = None
     name: str = "generate_aims_to_projected_deeph_data"
 
     def _resolve_structure_names(self) -> list[str]:
@@ -65,6 +67,7 @@ class GenerateAimsToProjectedDeephData:
         structure_names = self._resolve_structure_names()
 
         projection_jobs: list[Job] = []
+        first_projection_outputs: dict[str, dict[str, object]] = {}
         for structure_name in structure_names:
             removal_plan = resolve_projection_removal_plan(
                 structure_name=structure_name,
@@ -80,6 +83,51 @@ class GenerateAimsToProjectedDeephData:
                 deeph_conversion_output=upstream_flow.output["deeph_inputs"],
             )
             projection_jobs.append(projection_job)
+            first_projection_outputs[structure_name] = cast(dict[str, object], projection_job.output)
+
+        second_projection_jobs: list[Job] = []
+        second_outputs: dict[str, object] | None = None
+        if self.second_projection_config is not None:
+            first_root = Path(self.projection_config.output_root)
+            second_root = Path(self.second_projection_config.output_root)
+            if first_root.resolve() == second_root.resolve():
+                raise ValueError(
+                    "projection_config.output_root and second_projection_config.output_root "
+                    "must be different directories."
+                )
+
+            second_structure_names = [
+                name
+                for name in structure_names
+                if fnmatch(name, self.second_projection_config.structure_pattern)
+            ]
+            if not second_structure_names:
+                raise ValueError(
+                    "No projected DeepH structure directories matched the second projection "
+                    f"pattern {self.second_projection_config.structure_pattern!r}."
+                )
+
+            for structure_name in second_structure_names:
+                removal_plan = resolve_projection_removal_plan(
+                    structure_name=structure_name,
+                    removal_plan=self.second_projection_config.removal_plan,
+                )
+                second_projection_job = run_projection_for_structure(
+                    structure_name=structure_name,
+                    deeph_inputs_root=self.projection_config.output_root,
+                    projected_root=self.second_projection_config.output_root,
+                    removal_plan=removal_plan,
+                    kgrid=self.second_projection_config.kgrid,
+                    reduction_mode=self.second_projection_config.reduction_mode,
+                    upstream_projection_output=first_projection_outputs[structure_name],
+                )
+                second_projection_jobs.append(second_projection_job)
+
+            second_outputs = {
+                "projected_root": str(second_root.resolve()),
+                "structure_names": second_structure_names,
+                "projection_results": [job.output for job in second_projection_jobs],
+            }
 
         outputs = {
             "upstream": upstream_flow.output,
@@ -88,8 +136,13 @@ class GenerateAimsToProjectedDeephData:
                 "structure_names": structure_names,
                 "projection_results": [job.output for job in projection_jobs],
             },
+            "second_projected_deeph_inputs": second_outputs,
         }
-        return Flow(jobs=[upstream_flow, *projection_jobs], name=self.name, output=outputs)
+        return Flow(
+            jobs=[upstream_flow, *projection_jobs, *second_projection_jobs],
+            name=self.name,
+            output=outputs,
+        )
 
 
 @dataclass

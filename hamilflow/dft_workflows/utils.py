@@ -78,7 +78,7 @@ def resolve_structure_path(
         raise ValueError(f"No structure directories found matching pattern: {structure_pattern}")
 
     structures_filenames = [
-        _resolve_structure_file(directory, str(structure_file_format).lower())
+        _resolve_structure_file(directory, structure_file_format)
         for directory in structure_dirs
     ]
 
@@ -100,13 +100,21 @@ def get_structure_names_from_path(
     path = Path(structures_path)
 
     if path.is_file():
-        # Trajectory file: determine number of frames using ASE and return indexed names
         ase_structures = ase_read(str(path), index=":")
         if not isinstance(ase_structures, list):
             ase_structures = [ase_structures]
+
+        if path.suffix.lower() == ".extxyz":
+            structure_indices = [atoms.info.get("index") for atoms in ase_structures]
+            if all(index is not None for index in structure_indices):
+                return [str(index) for index in structure_indices]
+
         return [f"structure_{i:04d}" for i in range(len(ase_structures))]
 
     # Directory structure: return parent directory names
+    if isinstance(structures_filenames, Path):
+        return [structures_filenames.parent.name]
+
     return [file_path.parent.name for file_path in structures_filenames]
 
 

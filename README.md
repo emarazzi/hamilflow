@@ -27,7 +27,7 @@ The `hamilflow.dft_workflows` subpackage provides workflow helpers for FHI-aims 
 - K-point handling can be provided either as a plain `kgrid` or via `hamilflow.dft_workflows.get_ksampling`-style sampling settings that are resolved into `k_grid` for AIMS inputs.
 - Optional conversion: provide `aims_to_deeph_config` to append an AIMS-to-DeepH conversion step after collection.
 - Projection-only flow: `hamilflow.dft_workflows.GenerateProjectedDeephInputs` runs one projection job per DeepH subdirectory.
-- End-to-end wrapper: `hamilflow.dft_workflows.GenerateAimsToProjectedDeephData` chains DFT/collection/conversion with projection.
+- End-to-end wrapper: `hamilflow.dft_workflows.GenerateAimsToProjectedDeephData` chains DFT/collection/conversion with projection, and can optionally add a second truncation projection stage.
 
 Collected run folders preserve structure-oriented naming to keep downstream mapping explicit.
 
