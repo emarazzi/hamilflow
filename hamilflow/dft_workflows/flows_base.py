@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast, get_args
 
+from hamilflow.dft_workflows.aims_makers import OvlOnlyAimsMaker
+
 __all__ = [
     "ConvertAimsToDeephConfig",
     "DEFAULT_AIMS_KWARGS",
@@ -162,7 +164,7 @@ class GenerateAimsDFTData:
         if self.kgrid is not None and (self.kpoints_updates or self.user_kpoints_settings not in (None, {})):
             raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
 
-        if self.aims_maker is not None and not isinstance(self.aims_maker, StaticMaker):
+        if self.aims_maker is not None and not isinstance(self.aims_maker, (StaticMaker, OvlOnlyAimsMaker)):
             if self.aims_kwargs or self.kgrid is not None or self.kpoints_updates or self.user_kpoints_settings not in (None, {}):
                 raise ValueError(
                     "aims_kwargs and k-point sampling options are only supported with StaticMaker. "
