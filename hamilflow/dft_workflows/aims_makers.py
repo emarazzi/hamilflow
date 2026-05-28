@@ -12,7 +12,7 @@ from atomate2.aims.files import (
     copy_aims_outputs,
     write_aims_input_set,
 )
-from atomate2.aims.job.base import _FILES_TO_ZIP
+from atomate2.aims.jobs.base import _FILES_TO_ZIP
 from atomate2.aims.run import run_aims
 from atomate2.common.files import gzip_output_folder
 from emmet.core.structure import MoleculeMetadata, StructureMetadata
