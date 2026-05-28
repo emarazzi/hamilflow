@@ -129,8 +129,10 @@ class ModAimsTaskDoc(BaseTaskDocument, StructureMetadata, MoleculeMetadata):
         The directory for this FHI-aims task
     """
 
+    calc_code: str = "aims"
     dir_name: str | Path | None = Field(None, description="The directory for this FHI-aims task")
     task_label: str | None = Field(None, description="A description of the task")
+    
 
     @classmethod
     def from_directory(

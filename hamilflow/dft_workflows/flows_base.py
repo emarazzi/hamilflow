@@ -163,7 +163,6 @@ class GenerateAimsDFTData:
 
         if self.kgrid is not None and (self.kpoints_updates or self.user_kpoints_settings not in (None, {})):
             raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
-
         if self.aims_maker is not None and not isinstance(self.aims_maker, (StaticMaker, OvlOnlyAimsMaker)):
             if self.aims_kwargs or self.kgrid is not None or self.kpoints_updates or self.user_kpoints_settings not in (None, {}):
                 raise ValueError(
