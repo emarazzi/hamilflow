@@ -13,6 +13,7 @@ from pymatgen.io.ase import AseAtomsAdaptor as AseAtomsAdaptor
 from atomate2.aims.jobs.core import StaticMaker
 from pymatgen.io.aims.sets.core import StaticSetGenerator
 from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
+from hamilflow.dft_workflows.aims_makers import OvlOnlyAimsMaker
 
 from ..projection import ProjectionConfig, RemovalPlanLike, ReductionMode, run_projection
 from .kpoints import get_ksampling
@@ -65,7 +66,7 @@ def build_aims_dft_jobs(
         if kpoints_settings is not None:
             structure_aims_kwargs.update(kpoints_settings)
 
-        if isinstance(aims_maker, StaticMaker):
+        if isinstance(aims_maker, (StaticMaker, OvlOnlyAimsMaker)):
             maker = copy.deepcopy(aims_maker)
             if kpoints_settings is not None:
                 maker.input_set_generator = StaticSetGenerator(
