@@ -9,6 +9,7 @@ __all__ = [
     "DEFAULT_AIMS_KWARGS",
     "GenerateAimsDFTData",
     "GenerateAimsToProjectedDeephData",
+    "GenerateOvlOnlyAimsToProjectedDeephData",
     "GenerateProjectedDeephInputs",
     "GenerateTwoStepProjectedDeephInputs",
     "ProjectDeephInputsConfig",
@@ -28,4 +29,5 @@ from .flows_base import (
     resolve_projection_removal_plan,
 )
 from .flows_core import GenerateAimsToProjectedDeephData
+from .flows_core import GenerateOvlOnlyAimsToProjectedDeephData
 from .flows_core import GenerateTwoStepProjectedDeephInputs

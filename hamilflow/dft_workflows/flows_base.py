@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast, get_args
 
-from hamilflow.dft_workflows.aims_makers import OvlOnlyAimsMaker
+
 
 __all__ = [
     "ConvertAimsToDeephConfig",
@@ -21,6 +21,7 @@ from jobflow.core.maker import Maker
 from pymatgen.core.structure import FileFormats
 from pymatgen.io.aims.sets.core import StaticSetGenerator
 
+from .aims_makers import OvlOnlyAimsMaker
 from ..projection.models import ReductionMode, RemovalPlanLike
 
 from .jobs import (

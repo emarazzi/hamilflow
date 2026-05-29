@@ -1,21 +1,29 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-__all__ = ["GenerateAimsToProjectedDeephData", "GenerateTwoStepProjectedDeephInputs"]
+from pymatgen.core.structure import FileFormats
+
+__all__ = [
+    "GenerateAimsToProjectedDeephData",
+    "GenerateOvlOnlyAimsToProjectedDeephData",
+    "GenerateTwoStepProjectedDeephInputs",
+]
 
 from jobflow.core.flow import Flow
 from jobflow.core.job import Job
 
+from .aims_makers import OvlOnlyAimsMaker
 from .flows_base import (
+    ConvertAimsToDeephConfig,
     GenerateAimsDFTData,
     ProjectDeephInputsConfig,
     resolve_projection_removal_plan,
 )
 from .jobs import run_projection_for_structure
 from .utils import resolve_structure_path, get_structure_names_from_path
-
+from pymatgen.io.aims.sets.core import StaticSetGenerator
 
 @dataclass
 class GenerateAimsToProjectedDeephData:
@@ -143,6 +151,62 @@ class GenerateAimsToProjectedDeephData:
             name=self.name,
             output=outputs,
         )
+
+
+@dataclass
+class GenerateOvlOnlyAimsToProjectedDeephData:
+    """
+    Convenience wrapper flow chaining:
+
+    AIMS run/collect using ``OvlOnlyAimsMaker`` -> optional AIMS-to-DeepH
+    conversion (required here) -> projection -> optional second projection stage.
+    """
+
+    projection_config: ProjectDeephInputsConfig
+    second_projection_config: ProjectDeephInputsConfig | None = None
+    structures_path: str | Path | None = None
+    structure_pattern: str = "*"
+    structure_file_format: FileFormats = "poscar"
+    name: str = "generate_ovl_only_aims_to_projected_deeph_data"
+    aims_kwargs: dict[str, Any] = field(default_factory=dict)
+    kgrid: tuple[int, int, int] | None = None
+    kpoints_updates: dict[str, Any] | None = None
+    user_kpoints_settings: dict[str, Any] | Any | None = None
+    force_gamma: bool = True
+    symprec: float = 1e-5
+    aims_maker: OvlOnlyAimsMaker = field(
+        default_factory=lambda: OvlOnlyAimsMaker(input_set_generator=StaticSetGenerator())
+        )
+                                   
+    collected_runs_root: str | Path = "./aims_calculations"
+    source_run_dirs: list[str | Path] | None = None
+    aims_to_deeph_config: ConvertAimsToDeephConfig | None = None
+
+    def _build_dft_data_flow(self) -> GenerateAimsDFTData:
+        return GenerateAimsDFTData(
+            structures_path=self.structures_path,
+            structure_pattern=self.structure_pattern,
+            structure_file_format=self.structure_file_format,
+            name=self.name,
+            aims_kwargs=self.aims_kwargs,
+            kgrid=self.kgrid,
+            kpoints_updates=self.kpoints_updates,
+            user_kpoints_settings=self.user_kpoints_settings,
+            force_gamma=self.force_gamma,
+            symprec=self.symprec,
+            aims_maker=self.aims_maker,
+            collected_runs_root=self.collected_runs_root,
+            source_run_dirs=self.source_run_dirs,
+            aims_to_deeph_config=self.aims_to_deeph_config,
+        )
+
+    def make(self) -> Flow:
+        return GenerateAimsToProjectedDeephData(
+            dft_data_flow=self._build_dft_data_flow(),
+            projection_config=self.projection_config,
+            second_projection_config=self.second_projection_config,
+            name=self.name,
+        ).make()
 
 
 @dataclass
