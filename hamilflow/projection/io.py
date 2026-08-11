@@ -52,11 +52,43 @@ def build_reduced_elements_orbital_map(
     return per_element_kept_shells
 
 
+def reduce_occupation_value(
+    occupation: object,
+    removed_indices: list[int],
+    reduction_mode: str,
+    original_orbits_quantity: int | None,
+) -> object:
+    """
+    Reduce the occupation metadata after orbitals are removed.
+
+    Occupation is treated as a scalar total. Schur reduction removes occupied
+    valence states, so subtract two electrons per removed orbital. Truncation
+    keeps the occupation unchanged.
+    """
+    if occupation is None:
+        return None
+
+    if not isinstance(occupation, (int, float, np.integer, np.floating)):
+        raise ValueError("Unsupported occupation format in info.json. Expected a scalar total.")
+
+    if reduction_mode == "truncate":
+        return occupation
+    if reduction_mode != "schur":
+        raise ValueError(f"Unsupported reduction_mode '{reduction_mode}'. Expected 'schur' or 'truncate'.")
+
+    removed_count = len(set(int(i) for i in removed_indices))
+    reduced = float(occupation) - 2 * removed_count
+    if reduced.is_integer():
+        return int(reduced)
+    return reduced
+
+
 def write_reduced_info_json(
     input_dir: Path,
     output_dir: Path,
     elements: list[str],
     removed_indices: list[int],
+    reduction_mode: str,
 ) -> Path:
     """Write updated info.json matching the reduced basis and return the output path."""
     with open(input_dir / DEEPX_INFO_FILENAME, "r", encoding="utf-8") as fr:
@@ -65,6 +97,12 @@ def write_reduced_info_json(
     raw_map = raw_info["elements_orbital_map"]
     new_map = build_reduced_elements_orbital_map(elements, raw_map, removed_indices)
 
+    raw_info["occupation"] = reduce_occupation_value(
+        raw_info.get("occupation"),
+        removed_indices,
+        reduction_mode,
+        raw_info.get("orbits_quantity"),
+    )
     new_orbits = int(sum(np.sum(2 * np.array(new_map[el], dtype=int) + 1) for el in elements))
     raw_info["elements_orbital_map"] = new_map
     raw_info["orbits_quantity"] = new_orbits

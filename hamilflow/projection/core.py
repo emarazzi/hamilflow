@@ -111,6 +111,7 @@ def run_projection(
 
     # Process and store Hamiltonian only if not overlap_only mode
     if not config.overlap_only:
+        assert HR_new is not None
         HR_new = hermitize_real_space_blocks(HR_new, obj.Rijk_list)
         hamiltonian_path = dump_reduced_matrix_h5(
             config.output_dir / DEEPX_HAMILTONIAN_FILENAME,
@@ -175,6 +176,7 @@ def run_projection(
         output_dir=config.output_dir,
         elements=[str(el) for el in obj.elements],
         removed_indices=rm,
+        reduction_mode=config.reduction_mode,
     )
 
     meta_path = config.output_dir / "reduced_basis_meta.json"
