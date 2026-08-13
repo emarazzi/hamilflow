@@ -43,7 +43,8 @@ def build_aims_dft_jobs(
         
         for idx, ase_structure in enumerate(ase_structures):
             structure = AseAtomsAdaptor.get_structure(ase_structure)
-            structure_data.append((structure, f"structure_{idx:04d}"))
+            trajectory_name = ase_structure.info.get("index", f"structure_{idx:04d}")
+            structure_data.append((structure, trajectory_name))
     else:
         # Multiple individual structure files
         for structure_file in structures_filenames:
