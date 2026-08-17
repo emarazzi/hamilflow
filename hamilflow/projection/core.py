@@ -25,11 +25,12 @@ from .kspace import (
 )
 from .models import ProjectionConfig, ProjectionResult, RemovalPlanLike
 from .removal import coerce_removal_plan, resolve_indices_from_rules
-from ..dft_workflows.kpoints import get_ksampling
 
 
 def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
     if config.user_kpoints_settings not in (None, {}):
+        from ..dft_workflows.kpoints import get_ksampling
+
         structure = Structure.from_file(config.input_dir / DEEPX_POSCAR_FILENAME)
         ksampling = get_ksampling(
             structure=structure,
