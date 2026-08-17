@@ -27,6 +27,7 @@ def build_aims_dft_jobs(
     kpoints_updates: dict[str, Any] | None = None,
     user_kpoints_settings: dict[str, Any] | Any | None = None,
     force_gamma: bool = True,
+    force_2d: bool = False,
     symprec: float = 0.01,
 ) -> list[Flow | Job]:
     jobs: list[Flow | Job] = []
@@ -61,6 +62,7 @@ def build_aims_dft_jobs(
             kpoints_updates={"k_grid": kgrid} if kgrid is not None else kpoints_updates,
             user_kpoints_settings=user_kpoints_settings,
             force_gamma=force_gamma,
+            force_2d=force_2d,
             symprec=symprec,
         )
         # Merge k-point settings into aims_kwargs for StaticSetGenerator if applicable
@@ -243,6 +245,7 @@ def run_projection_for_structure(
     removal_plan: RemovalPlanLike,
     kgrid: tuple[int, int, int] = (4, 4, 4),
     user_kpoints_settings: dict[str, Any] | Any | None = None,
+    force_2d: bool = False,
     reduction_mode: ReductionMode = "schur",
     deeph_conversion_output: dict[str, Any] | None = None,
     upstream_projection_output: dict[str, Any] | None = None,
@@ -290,6 +293,7 @@ def run_projection_for_structure(
             output_dir=output_dir,
             kgrid=kgrid_3,
             user_kpoints_settings=user_kpoints_settings,
+            force_2d=force_2d,
             reduction_mode=reduction_mode,
         ),
         removal_plan=removal_plan,

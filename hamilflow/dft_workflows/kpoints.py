@@ -15,9 +15,19 @@ def get_ksampling(
     kpoints_updates: dict[str, Any] | None = None,
     user_kpoints_settings: dict[str, Any] | None = None,
     force_gamma: bool = True,
+    force_2d: bool = False,
     symprec: float = 0.01,
 ) -> dict[str, Any] | None:
     """Resolve k-point settings into a single payload for AIMS input generation."""
+
+    def normalize_k_grid(k_grid: tuple[int, int, int] | list[int] | tuple[Any, ...]) -> list[int]:
+        k_grid_values = [int(value) for value in k_grid]
+        if len(k_grid_values) != 3:
+            raise ValueError(f"k_grid must contain exactly three integers, got: {k_grid_values}")
+        if force_2d:
+            k_grid_values[2] = 1
+        return k_grid_values
+
     if user_kpoints_settings not in (None, {}):
         kconfig: dict[str, Any] = copy.deepcopy(user_kpoints_settings)
     elif kpoints_updates:
@@ -37,22 +47,19 @@ def get_ksampling(
         k_grid = kconfig.get("k_grid", kconfig.get("kgrid"))
         if k_grid is None:
             raise ValueError("k_grid resolution failed.")
-        k_grid_values = tuple(int(value) for value in k_grid)
-        if len(k_grid_values) != 3:
-            raise ValueError(f"k_grid must contain exactly three integers, got: {k_grid_values}")
-        return {"k_grid": [int(k_grid_values[0]), int(k_grid_values[1]), int(k_grid_values[2])]}
+        return {"k_grid": normalize_k_grid(k_grid)}
 
     if kconfig.get("grid_density"):
         kpoints = Kpoints.automatic_density(structure, int(kconfig["grid_density"]), force_gamma)
         k_grid = kpoints.kpts[0]
-        return {"k_grid": [int(k_grid[0]), int(k_grid[1]), int(k_grid[2])]}
+        return {"k_grid": normalize_k_grid(k_grid)}
 
     if kconfig.get("reciprocal_density"):
         kpoints = Kpoints.automatic_density_by_vol(
             structure, kconfig["reciprocal_density"], force_gamma
         )
         k_grid = kpoints.kpts[0]
-        return {"k_grid": [int(k_grid[0]), int(k_grid[1]), int(k_grid[2])]}
+        return {"k_grid": normalize_k_grid(k_grid)}
 
     if kconfig.get("line_density"):
         kpath_kwargs = dict(kconfig.get("kpath_kwargs", {}))

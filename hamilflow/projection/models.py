@@ -37,6 +37,7 @@ class ProjectionConfig:
     output_dir: Path
     kgrid: tuple[int, int, int] = (4, 4, 4)
     user_kpoints_settings: dict[str, Any] | Any | None = None
+    force_2d: bool = False
     reduction_mode: ReductionMode = "schur"
     overlap_only: bool = False
     write_dummy_hamiltonian: bool = False

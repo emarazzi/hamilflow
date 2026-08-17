@@ -88,6 +88,7 @@ class GenerateAimsToProjectedDeephData:
                 removal_plan=removal_plan,
                 kgrid=self.projection_config.kgrid,
                 user_kpoints_settings=self.projection_config.user_kpoints_settings,
+                force_2d=self.projection_config.force_2d,
                 reduction_mode=self.projection_config.reduction_mode,
                 deeph_conversion_output=upstream_flow.output["deeph_inputs"],
             )
@@ -128,6 +129,7 @@ class GenerateAimsToProjectedDeephData:
                     removal_plan=removal_plan,
                     kgrid=self.second_projection_config.kgrid,
                     user_kpoints_settings=self.second_projection_config.user_kpoints_settings,
+                    force_2d=self.second_projection_config.force_2d,
                     reduction_mode=self.second_projection_config.reduction_mode,
                     upstream_projection_output=first_projection_outputs[structure_name],
                 )
@@ -268,6 +270,7 @@ class GenerateTwoStepProjectedDeephInputs:
                     removal_plan=first_removal_plan,
                     kgrid=self.first_projection_config.kgrid,
                     user_kpoints_settings=self.first_projection_config.user_kpoints_settings,
+                    force_2d=self.first_projection_config.force_2d,
                     reduction_mode=self.first_projection_config.reduction_mode,
                 ),
             )
@@ -286,6 +289,7 @@ class GenerateTwoStepProjectedDeephInputs:
                     removal_plan=second_removal_plan,
                     kgrid=self.second_projection_config.kgrid,
                     user_kpoints_settings=self.second_projection_config.user_kpoints_settings,
+                    force_2d=self.second_projection_config.force_2d,
                     reduction_mode=self.second_projection_config.reduction_mode,
                     upstream_projection_output=first_job.output,
                 ),

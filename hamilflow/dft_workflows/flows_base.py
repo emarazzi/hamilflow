@@ -75,6 +75,7 @@ class ProjectDeephInputsConfig:
     structure_pattern: str = "*"
     kgrid: tuple[int, int, int] = (4, 4, 4)
     user_kpoints_settings: dict[str, Any] | Any | None = None
+    force_2d: bool = False
     reduction_mode: ReductionMode = "schur"
 
 
@@ -134,6 +135,7 @@ class GenerateAimsDFTData:
     kpoints_updates: dict[str, Any] | None = None
     user_kpoints_settings: dict[str, Any] | Any | None = None
     force_gamma: bool = True
+    force_2d: bool = False
     symprec: float = 1e-5
     aims_maker: Maker | None = field(
         default_factory=lambda: StaticMaker(input_set_generator=StaticSetGenerator())
@@ -197,6 +199,7 @@ class GenerateAimsDFTData:
                 kpoints_updates=self.kpoints_updates,
                 user_kpoints_settings=self.user_kpoints_settings,
                 force_gamma=self.force_gamma,
+                force_2d=self.force_2d,
                 symprec=self.symprec,
             )
             jobs.extend(aims_jobs)
@@ -311,6 +314,7 @@ class GenerateProjectedDeephInputs:
                 removal_plan=removal_plan,
                 kgrid=self.projection_config.kgrid,
                 user_kpoints_settings=self.projection_config.user_kpoints_settings,
+                force_2d=self.projection_config.force_2d,
                 reduction_mode=self.projection_config.reduction_mode,
             )
             projection_jobs.append(projection_job)
