@@ -27,11 +27,16 @@ class RemovalPlan:
 
 @dataclass(frozen=True)
 class ProjectionConfig:
-    """Runtime configuration for the k->R reduction projection."""
+    """Runtime configuration for the k->R reduction projection.
+
+    If ``user_kpoints_settings`` is provided, the projection core resolves the
+    k-mesh from the POSCAR stored in ``input_dir`` and ignores ``kgrid``.
+    """
 
     input_dir: Path
     output_dir: Path
     kgrid: tuple[int, int, int] = (4, 4, 4)
+    user_kpoints_settings: dict[str, Any] | Any | None = None
     reduction_mode: ReductionMode = "schur"
     overlap_only: bool = False
     write_dummy_hamiltonian: bool = False

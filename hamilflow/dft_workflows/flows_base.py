@@ -74,6 +74,7 @@ class ProjectDeephInputsConfig:
     removal_plan: RemovalPlanLike | ProjectionRemovalPlanConfig
     structure_pattern: str = "*"
     kgrid: tuple[int, int, int] = (4, 4, 4)
+    user_kpoints_settings: dict[str, Any] | Any | None = None
     reduction_mode: ReductionMode = "schur"
 
 
@@ -309,6 +310,7 @@ class GenerateProjectedDeephInputs:
                 projected_root=self.projection_config.output_root,
                 removal_plan=removal_plan,
                 kgrid=self.projection_config.kgrid,
+                user_kpoints_settings=self.projection_config.user_kpoints_settings,
                 reduction_mode=self.projection_config.reduction_mode,
             )
             projection_jobs.append(projection_job)

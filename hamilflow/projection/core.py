@@ -4,6 +4,7 @@ import json
 import shutil
 
 import numpy as np
+from pymatgen.core import Structure
 
 from deepx_dock.CONSTANT import (
     DEEPX_HAMILTONIAN_FILENAME,
@@ -24,6 +25,26 @@ from .kspace import (
 )
 from .models import ProjectionConfig, ProjectionResult, RemovalPlanLike
 from .removal import coerce_removal_plan, resolve_indices_from_rules
+from ..dft_workflows.kpoints import get_ksampling
+
+
+def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
+    if config.user_kpoints_settings not in (None, {}):
+        structure = Structure.from_file(config.input_dir / DEEPX_POSCAR_FILENAME)
+        ksampling = get_ksampling(
+            structure=structure,
+            user_kpoints_settings=config.user_kpoints_settings,
+        )
+        if not ksampling or "k_grid" not in ksampling:
+            raise ValueError(
+                "user_kpoints_settings must resolve to a uniform k_grid for projection."
+            )
+        k_grid = ksampling["k_grid"]
+        if len(k_grid) != 3:
+            raise ValueError(f"Resolved k_grid must contain three integers, got: {k_grid}")
+        return (int(k_grid[0]), int(k_grid[1]), int(k_grid[2]))
+
+    return tuple(int(value) for value in config.kgrid)
 
 
 def run_projection(
@@ -65,7 +86,8 @@ def run_projection(
 
     rm = sorted(set(rm))
 
-    ks = build_uniform_kmesh(config.kgrid)
+    resolved_kgrid = _resolve_projection_kgrid(config)
+    ks = build_uniform_kmesh(resolved_kgrid)
     Sk, Hk = obj.Sk_and_Hk(ks)
     nb = Sk.shape[-1]
     keep_global = [i for i in range(nb) if i not in rm]
@@ -162,6 +184,7 @@ def run_projection(
         "reduction_mode": config.reduction_mode,
         "overlap_only": config.overlap_only,
         "write_dummy_hamiltonian": config.write_dummy_hamiltonian,
+        "resolved_kgrid": list(resolved_kgrid),
         "removed_global_indices": rm,
         "kept_global_indices": keep_global,
         "original_orbits_quantity": int(nb),
