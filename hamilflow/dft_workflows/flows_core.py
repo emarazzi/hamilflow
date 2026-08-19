@@ -92,7 +92,7 @@ class GenerateAimsToProjectedDeephData:
                 reduction_mode=self.projection_config.reduction_mode,
                 deeph_conversion_output=upstream_flow.output["deeph_inputs"],
             )
-            projection_job.name = f"{projection_job.kwargs['structure_name']}_{projection_job.kwargs['reduction_mode']}"
+            projection_job.name = f"{projection_job._kwargs['structure_name']}_{projection_job._kwargs['reduction_mode']}"
             projection_jobs.append(projection_job)
             first_projection_outputs[structure_name] = cast(dict[str, object], projection_job.output)
 
@@ -134,7 +134,7 @@ class GenerateAimsToProjectedDeephData:
                     reduction_mode=self.second_projection_config.reduction_mode,
                     upstream_projection_output=first_projection_outputs[structure_name],
                 )
-                second_projection_job.name = f"{second_projection_job.kwargs['structure_name']}_{second_projection_job.kwargs['reduction_mode']}"
+                second_projection_job.name = f"{second_projection_job._kwargs['structure_name']}_{second_projection_job._kwargs['reduction_mode']}"
                 second_projection_jobs.append(second_projection_job)
 
             second_outputs = {
@@ -276,7 +276,7 @@ class GenerateTwoStepProjectedDeephInputs:
                     reduction_mode=self.first_projection_config.reduction_mode,
                 ),
             )
-            first_job.name = f"{first_job.kwargs['structure_name']}_{first_job.kwargs['reduction_mode']}"
+            first_job.name = f"{first_job._kwargs['structure_name']}_{first_job._kwargs['reduction_mode']}"
             first_stage_jobs.append(first_job)
 
             second_removal_plan = resolve_projection_removal_plan(
@@ -297,7 +297,7 @@ class GenerateTwoStepProjectedDeephInputs:
                     upstream_projection_output=first_job.output,
                 ),
             )
-            second_job.name = f"{second_job.kwargs['structure_name']}_{second_job.kwargs['reduction_mode']}"
+            second_job.name = f"{second_job._kwargs['structure_name']}_{second_job._kwargs['reduction_mode']}"
             second_stage_jobs.append(second_job)
 
         outputs = {
