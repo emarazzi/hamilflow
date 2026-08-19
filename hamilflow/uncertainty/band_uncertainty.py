@@ -1,0 +1,236 @@
+from pathlib import Path
+from typing import Iterable
+import numpy as np
+from dataclasses import dataclass
+import concurrent.futures
+import os
+
+from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
+
+import spglib
+
+@dataclass
+class BandUncertaintyCalculator:
+    """Compute band-energy uncertainty across an ensemble of models.
+
+    Example usage:
+      calc = BandUncertaintyCalculator()
+      output = calc.compute(model_dirs, dft_dir)
+    """
+
+    GRID_MESH: tuple[int, int, int] = (2, 2, 2)
+    ANCHOR_K: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    SYMPREC: float = 1e-5
+    WINDOW_EV: float | None = None
+    SPECIES_NUMBER: dict[str, int] = {"Mo": 42, "S": 16}
+
+    def build_irreducible_kpoints(self, h_obj, mesh, symprec):
+        try:
+            species = [self.SPECIES_NUMBER[el] for el in h_obj.elements]
+        except KeyError as e:
+            raise ValueError(f"No SPECIES_NUMBER tag for element {e}") from e
+
+        cell = (h_obj.lattice, h_obj.frac_coords, species)
+        mapping, grid = spglib.get_ir_reciprocal_mesh(mesh, cell, is_shift=[0, 0, 0], symprec=symprec)
+
+        ir_indices = np.unique(mapping)
+        weights = np.array([np.sum(mapping == idx) for idx in ir_indices])
+        k_frac = grid[ir_indices] / np.array(mesh)
+
+        anchor_idx = int(np.argmin(np.linalg.norm(k_frac - np.array(self.ANCHOR_K), axis=1)))
+        assert np.allclose(k_frac[anchor_idx], self.ANCHOR_K, atol=1e-8)
+        return k_frac, weights, anchor_idx
+
+    def homo_lumo_indices(self, h_obj):
+        if h_obj.occupation is None:
+            raise ValueError(f"{h_obj.info_dir_path}: 'occupation' not set in info.json")
+        n_elec = h_obj.occupation
+        if not h_obj.spinful and n_elec % 2 != 0:
+            raise ValueError(f"Odd electron count ({n_elec}) with spinful=False -- unexpected for closed shell")
+        n_occ = n_elec // 2 if not h_obj.spinful else n_elec
+        return n_occ - 1, n_occ
+
+    def align_to_midgap(self, eigvals, h_obj, anchor_k_idx):
+        homo_idx, lumo_idx = self.homo_lumo_indices(h_obj)
+        mid_gap = (eigvals[homo_idx, anchor_k_idx] + eigvals[lumo_idx, anchor_k_idx]) / 2
+        shift = -mid_gap
+        return eigvals + shift, shift
+
+    def band_window_mask(self, eigvals, window_ev):
+        if window_ev is None:
+            return np.ones_like(eigvals, dtype=bool)
+        return np.abs(eigvals) <= window_ev
+
+    def compute(self, model_dirs: Iterable[Path], structure_pattern: str | None = None):
+        model_dirs = [Path(p) for p in model_dirs]
+        if structure_pattern:
+            structures = [p.name for p in (model_dirs[0] / structure_pattern).parent.glob(structure_pattern)]
+        else:
+            structures = [p.name for p in (model_dirs[0] / "*").parent.glob("*") if (model_dirs[0] / p).is_dir()]
+        
+
+        output = {}
+        for structure_name in structures:
+            h_obj = HamiltonianObj(model_dirs[0] / structure_name)
+            ks, weights, anchor_k_idx = self.build_irreducible_kpoints(h_obj, self.GRID_MESH, self.SYMPREC)
+           
+            n_irr = len(ks)
+
+            aligned_eigvals = []
+            shifts = []
+            for model in model_dirs:
+                h_obj = HamiltonianObj(model / structure_name)
+                raw = h_obj.diag(ks, bands_only=True)
+                aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
+                aligned_eigvals.append(aligned)
+                shifts.append(shift)
+
+            window_mask = self.band_window_mask(aligned_eigvals[0], self.WINDOW_EV)
+
+            aligned_stack = np.stack(aligned_eigvals, axis=0)
+            sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
+            mean_eigvals = np.mean(aligned_stack, axis=0)
+
+            result_per_k = {}
+            for i_k in range(n_irr):
+                mask_k = window_mask[:, i_k]
+                band_indices = np.nonzero(mask_k)[0]
+                result_per_k[f"k{i_k}"] = {
+                    "k_frac": ks[i_k].tolist(),
+                    "weight": int(weights[i_k]),
+                    "band_index": band_indices.tolist(),
+                    "sigma_eV": sigma_eigvals[mask_k, i_k].tolist(),
+                    "n_bands_in_window": int(mask_k.sum()),
+                }
+
+            output[structure_name] = {
+                "grid_mesh": list(self.GRID_MESH),
+                "n_irreducible_kpoints": n_irr,
+                "per_model_shift_eV": shifts,
+                "kpoints": result_per_k,
+            }
+
+
+        return output
+
+    def _compute_structure(self, structure_name: str, model_dirs: list[Path]):
+        """Compute uncertainty for a single structure (helper for parallel runs)."""
+        ks_obj = HamiltonianObj(model_dirs[0] / structure_name)
+        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ks_obj, self.GRID_MESH, self.SYMPREC)
+
+        aligned_eigvals = []
+        shifts = []
+        for model in model_dirs:
+            h_obj = HamiltonianObj(model / structure_name)
+            raw = h_obj.diag(ks, bands_only=True)
+            aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
+            aligned_eigvals.append(aligned)
+            shifts.append(shift)
+
+        window_mask = self.band_window_mask(aligned_eigvals[0], self.WINDOW_EV)
+
+        aligned_stack = np.stack(aligned_eigvals, axis=0)
+        sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
+
+        n_irr = len(ks)
+        result_per_k = {}
+        for i_k in range(n_irr):
+            mask_k = window_mask[:, i_k]
+            band_indices = np.nonzero(mask_k)[0]
+            result_per_k[f"k{i_k}"] = {
+                "k_frac": ks[i_k].tolist(),
+                "weight": int(weights[i_k]),
+                "band_index": band_indices.tolist(),
+                "sigma_eV": sigma_eigvals[mask_k, i_k].tolist(),
+                "n_bands_in_window": int(mask_k.sum()),
+            }
+
+        return structure_name, {
+            "grid_mesh": list(self.GRID_MESH),
+            "n_irreducible_kpoints": n_irr,
+            "per_model_shift_eV": shifts,
+            "kpoints": result_per_k,
+        }
+
+    def compute_parallel(self, model_dirs: Iterable[Path], structure_pattern: str | None = None, max_workers: int | None = None):
+        """Parallelized version of `compute` that runs per-structure work in separate processes.
+
+        - `max_workers`: number of worker processes (defaults to number of CPU cores).
+        """
+        model_dirs = [Path(p) for p in model_dirs]
+        if structure_pattern:
+            structures = [p.name for p in (model_dirs[0] / structure_pattern).parent.glob(structure_pattern)]
+        else:
+            structures = [p.name for p in (model_dirs[0] / "*").parent.glob("*") if (model_dirs[0] / p).is_dir()]
+
+        if max_workers is None:
+            max_workers = min(len(structures), os.cpu_count() or 1)
+
+        output = {}
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(self._compute_structure, s, model_dirs): s for s in structures}
+            for fut in concurrent.futures.as_completed(futures):
+                name, res = fut.result()
+                output[name] = res
+
+        return output
+
+    def compare_averaged_to_dft(self, averaged_model_root: Path, dft_root: Path, structure_pattern: str | None = None):
+        """Compare averaged Hamiltonian (stored per-structure under `averaged_model_root`) to DFT reference.
+
+        Expects `averaged_model_root/<structure_name>/hamiltonian.h5` and supporting files
+        (info.json, overlap.h5) to be present so `HamiltonianObj` can read the averaged result.
+
+        Returns a dict keyed by structure with MAE and per-k error lists similar to `compute`.
+        """
+        averaged_model_root = Path(averaged_model_root)
+        dft_root = Path(dft_root)
+
+        if structure_pattern:
+            structures = [p.name for p in (averaged_model_root / structure_pattern).parent.glob(structure_pattern)]
+        else:
+            structures = [p.name for p in averaged_model_root.glob("*") if (averaged_model_root / p.name).is_dir()]
+
+        results = {}
+        for structure_name in structures:
+            avg_obj = HamiltonianObj(averaged_model_root / structure_name)
+            dft_obj = HamiltonianObj(dft_root / structure_name)
+
+            ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, self.GRID_MESH, self.SYMPREC)
+
+            avg_raw = avg_obj.diag(ks, bands_only=True)
+            dft_raw = dft_obj.diag(ks, bands_only=True)
+
+            avg_aligned, _ = self.align_to_midgap(avg_raw, avg_obj, anchor_k_idx)
+            dft_aligned, _ = self.align_to_midgap(dft_raw, dft_obj, anchor_k_idx)
+
+            window_mask = self.band_window_mask(avg_aligned, self.WINDOW_EV)
+
+            abs_err = np.abs(avg_aligned - dft_aligned)
+
+            per_k = {}
+            mae_values = []
+            for i_k in range(len(ks)):
+                mask_k = window_mask[:, i_k]
+                vals = abs_err[mask_k, i_k].tolist()
+                per_k[f"k{i_k}"] = {
+                    "k_frac": ks[i_k].tolist(),
+                    "weight": int(weights[i_k]),
+                    "band_index": np.nonzero(mask_k)[0].tolist(),
+                    "abs_err_eV": vals,
+                    "n_bands_in_window": int(mask_k.sum()),
+                }
+                if vals:
+                    mae_values.append(float(np.mean(vals)))
+
+            overall_mae = float(np.mean(mae_values)) if mae_values else 0.0
+
+            results[structure_name] = {
+                "overall_mae_eV": overall_mae,
+                "per_k": per_k,
+            }
+
+        return results
+
+
+__all__ = ["BandUncertaintyCalculator"]
