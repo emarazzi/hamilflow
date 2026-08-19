@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Iterable
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import concurrent.futures
 import os
 
@@ -18,17 +18,17 @@ class BandUncertaintyCalculator:
       output = calc.compute(model_dirs, dft_dir)
     """
 
-    GRID_MESH: tuple[int, int, int] = (2, 2, 2)
-    ANCHOR_K: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    SYMPREC: float = 1e-5
-    WINDOW_EV: float | None = None
-    SPECIES_NUMBER: dict[str, int] = {"Mo": 42, "S": 16}
+    grid_mesh: tuple[int, int, int] = (2, 2, 2)
+    anchor_k: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    symprec: float = 1e-5
+    window_ev: float | None = None
+    species_number: dict[str, int] = field(default_factory=lambda: {"Mo": 42, "S": 16})
 
     def build_irreducible_kpoints(self, h_obj, mesh, symprec):
         try:
-            species = [self.SPECIES_NUMBER[el] for el in h_obj.elements]
+            species = [self.species_number[el] for el in h_obj.elements]
         except KeyError as e:
-            raise ValueError(f"No SPECIES_NUMBER tag for element {e}") from e
+            raise ValueError(f"No species_number tag for element {e}") from e
 
         cell = (h_obj.lattice, h_obj.frac_coords, species)
         mapping, grid = spglib.get_ir_reciprocal_mesh(mesh, cell, is_shift=[0, 0, 0], symprec=symprec)
@@ -37,8 +37,8 @@ class BandUncertaintyCalculator:
         weights = np.array([np.sum(mapping == idx) for idx in ir_indices])
         k_frac = grid[ir_indices] / np.array(mesh)
 
-        anchor_idx = int(np.argmin(np.linalg.norm(k_frac - np.array(self.ANCHOR_K), axis=1)))
-        assert np.allclose(k_frac[anchor_idx], self.ANCHOR_K, atol=1e-8)
+        anchor_idx = int(np.argmin(np.linalg.norm(k_frac - np.array(self.anchor_k), axis=1)))
+        assert np.allclose(k_frac[anchor_idx], self.anchor_k, atol=1e-8)
         return k_frac, weights, anchor_idx
 
     def homo_lumo_indices(self, h_obj):
@@ -72,7 +72,7 @@ class BandUncertaintyCalculator:
         output = {}
         for structure_name in structures:
             h_obj = HamiltonianObj(model_dirs[0] / structure_name)
-            ks, weights, anchor_k_idx = self.build_irreducible_kpoints(h_obj, self.GRID_MESH, self.SYMPREC)
+            ks, weights, anchor_k_idx = self.build_irreducible_kpoints(h_obj, self.grid_mesh, self.symprec)
            
             n_irr = len(ks)
 
@@ -85,7 +85,7 @@ class BandUncertaintyCalculator:
                 aligned_eigvals.append(aligned)
                 shifts.append(shift)
 
-            window_mask = self.band_window_mask(aligned_eigvals[0], self.WINDOW_EV)
+            window_mask = self.band_window_mask(aligned_eigvals[0], self.window_ev)
 
             aligned_stack = np.stack(aligned_eigvals, axis=0)
             sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
@@ -104,7 +104,7 @@ class BandUncertaintyCalculator:
                 }
 
             output[structure_name] = {
-                "grid_mesh": list(self.GRID_MESH),
+                "grid_mesh": list(self.grid_mesh),
                 "n_irreducible_kpoints": n_irr,
                 "per_model_shift_eV": shifts,
                 "kpoints": result_per_k,
@@ -116,7 +116,7 @@ class BandUncertaintyCalculator:
     def _compute_structure(self, structure_name: str, model_dirs: list[Path]):
         """Compute uncertainty for a single structure (helper for parallel runs)."""
         ks_obj = HamiltonianObj(model_dirs[0] / structure_name)
-        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ks_obj, self.GRID_MESH, self.SYMPREC)
+        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ks_obj, self.grid_mesh, self.symprec)
 
         aligned_eigvals = []
         shifts = []
@@ -127,7 +127,7 @@ class BandUncertaintyCalculator:
             aligned_eigvals.append(aligned)
             shifts.append(shift)
 
-        window_mask = self.band_window_mask(aligned_eigvals[0], self.WINDOW_EV)
+        window_mask = self.band_window_mask(aligned_eigvals[0], self.window_ev)
 
         aligned_stack = np.stack(aligned_eigvals, axis=0)
         sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
@@ -146,7 +146,7 @@ class BandUncertaintyCalculator:
             }
 
         return structure_name, {
-            "grid_mesh": list(self.GRID_MESH),
+            "grid_mesh": list(self.grid_mesh),
             "n_irreducible_kpoints": n_irr,
             "per_model_shift_eV": shifts,
             "kpoints": result_per_k,
@@ -196,7 +196,7 @@ class BandUncertaintyCalculator:
             avg_obj = HamiltonianObj(averaged_model_root / structure_name)
             dft_obj = HamiltonianObj(dft_root / structure_name)
 
-            ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, self.GRID_MESH, self.SYMPREC)
+            ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, self.grid_mesh, self.symprec)
 
             avg_raw = avg_obj.diag(ks, bands_only=True)
             dft_raw = dft_obj.diag(ks, bands_only=True)
@@ -204,7 +204,7 @@ class BandUncertaintyCalculator:
             avg_aligned, _ = self.align_to_midgap(avg_raw, avg_obj, anchor_k_idx)
             dft_aligned, _ = self.align_to_midgap(dft_raw, dft_obj, anchor_k_idx)
 
-            window_mask = self.band_window_mask(avg_aligned, self.WINDOW_EV)
+            window_mask = self.band_window_mask(avg_aligned, self.window_ev)
 
             abs_err = np.abs(avg_aligned - dft_aligned)
 
