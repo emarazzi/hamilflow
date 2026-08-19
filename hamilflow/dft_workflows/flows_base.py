@@ -317,6 +317,7 @@ class GenerateProjectedDeephInputs:
                 force_2d=self.projection_config.force_2d,
                 reduction_mode=self.projection_config.reduction_mode,
             )
+            projection_job.name = f"{projection_job.kwargs['structure_name']}_{projection_job.kwargs['reduction_mode']}"
             projection_jobs.append(projection_job)
 
         outputs = {
