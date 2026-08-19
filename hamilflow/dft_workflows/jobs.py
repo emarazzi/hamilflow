@@ -237,6 +237,17 @@ def resolve_structure_removal_plan(
     return default_plan
 
 
+def set_projection_job_name(job_obj: Job, structure_name: str, reduction_mode: ReductionMode) -> Job:
+    """Assign a stable, human-readable name to a projection Job.
+
+    We intentionally avoid reading internal JobFlow state such as ``_kwargs``
+    because those are implementation details and may not include every argument.
+    The values are known at the creation site and are the right source of truth.
+    """
+    job_obj.name = f"{structure_name}_{reduction_mode}"
+    return job_obj
+
+
 @job
 def run_projection_for_structure(
     structure_name: str,

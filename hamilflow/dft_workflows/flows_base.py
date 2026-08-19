@@ -31,6 +31,7 @@ from .jobs import (
     convert_aims_to_deeph_structure,
     resolve_structure_removal_plan,
     run_projection_for_structure,
+    set_projection_job_name,
 )
 from .utils import resolve_structure_path, get_structure_names_from_path
 
@@ -317,7 +318,11 @@ class GenerateProjectedDeephInputs:
                 force_2d=self.projection_config.force_2d,
                 reduction_mode=self.projection_config.reduction_mode,
             )
-            projection_job.name = f"{projection_job._kwargs['structure_name']}_{projection_job._kwargs['reduction_mode']}"
+            projection_job = set_projection_job_name(
+                projection_job,
+                structure_name=structure_name,
+                reduction_mode=self.projection_config.reduction_mode,
+            )
             projection_jobs.append(projection_job)
 
         outputs = {
