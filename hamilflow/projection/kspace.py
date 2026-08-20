@@ -1,6 +1,24 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
+import threadpoolctl
+
+
+def available_cpu_count() -> int:
+    """
+    Cores actually usable by this process, respecting cgroup/cpuset limits
+    (e.g. SLURM's --cpus-per-task). os.cpu_count() reports the node's full
+    physical core count regardless of allocation, which under a SLURM
+    cpuset causes BLAS thread limits to be set far too high.
+    """
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        # sched_getaffinity is POSIX-only (no Windows/macOS support).
+        return os.cpu_count() or 1
 
 
 def build_uniform_kmesh(nk: tuple[int, int, int]) -> np.ndarray:
@@ -34,6 +52,151 @@ def apply_custom_kspace_transform(
     return Hk_new, Sk_new
 
 
+def _schur_transform_chunk(
+    Hk_chunk: np.ndarray,
+    Sk_chunk: np.ndarray,
+    remove_indices: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Elimination transform for one k-chunk (Hamiltonian + overlap), run in a thread."""
+    Tk, _, _ = build_elimination_tk(Sk_chunk, remove_indices)
+    return apply_tk_projection(Hk_chunk, Sk_chunk, Tk)
+
+
+def _schur_transform_chunk_overlap_only(
+    Sk_chunk: np.ndarray,
+    remove_indices: list[int],
+) -> np.ndarray:
+    """Overlap-only counterpart of _schur_transform_chunk."""
+    Tk, _, _ = build_elimination_tk(Sk_chunk, remove_indices)
+    Tc = np.conjugate(np.swapaxes(Tk, 1, 2))
+    return np.matmul(np.matmul(Tc, Sk_chunk), Tk)
+
+
+def _truncation_transform_chunk(
+    Hk_chunk: np.ndarray,
+    Sk_chunk: np.ndarray,
+    remove_indices: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Direct truncation for one k-chunk (Hamiltonian + overlap), run in a thread."""
+    _nk, nb, nb2 = Hk_chunk.shape
+    if nb != nb2:
+        raise ValueError(f"Hk/Sk must be square in last two dims, got {Hk_chunk.shape}")
+
+    rm = sorted(set(int(i) for i in remove_indices))
+    if len(rm) == 0:
+        return Hk_chunk, Sk_chunk
+    if rm[0] < 0 or rm[-1] >= nb:
+        raise ValueError(f"remove_indices out of range for Nb={nb}: {rm}")
+
+    rm_set = set(rm)
+    keep = np.array([i for i in range(nb) if i not in rm_set], dtype=int)
+    if keep.size == 0:
+        raise ValueError("Cannot remove all orbitals")
+
+    Hk_new = Hk_chunk[:, keep, :][:, :, keep]
+    Sk_new = Sk_chunk[:, keep, :][:, :, keep]
+    return Hk_new, Sk_new
+
+
+def _truncation_transform_chunk_overlap_only(
+    Sk_chunk: np.ndarray,
+    remove_indices: list[int],
+) -> np.ndarray:
+    """Overlap-only counterpart of _truncation_transform_chunk."""
+    _nk, nb, nb2 = Sk_chunk.shape
+    if nb != nb2:
+        raise ValueError(f"Sk must be square in last two dims, got {Sk_chunk.shape}")
+
+    rm = sorted(set(int(i) for i in remove_indices))
+    if len(rm) == 0:
+        return Sk_chunk
+    if rm[0] < 0 or rm[-1] >= nb:
+        raise ValueError(f"remove_indices out of range for Nb={nb}: {rm}")
+
+    rm_set = set(rm)
+    keep = np.array([i for i in range(nb) if i not in rm_set], dtype=int)
+    if keep.size == 0:
+        raise ValueError("Cannot remove all orbitals")
+
+    return Sk_chunk[:, keep, :][:, :, keep]
+
+
+def apply_custom_kspace_transform_parallel(
+    Hk: np.ndarray,
+    Sk: np.ndarray,
+    remove_indices: list[int],
+    n_workers: int = 1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Same result as apply_custom_kspace_transform, computed over k-chunks in
+    parallel threads. n_workers<=1 falls through to the serial function.
+
+    Threads (not processes): build_elimination_tk / apply_tk_projection are
+    numpy linalg calls that release the GIL, so this gets real concurrency
+    with no pickling/IPC overhead and no extra peak memory from copying
+    chunks across process boundaries. Does NOT reduce peak memory relative
+    to the serial path either way: Hk/Sk are already fully materialized by
+    the caller before this is invoked.
+    """
+    if Hk.shape != Sk.shape:
+        raise ValueError(f"Hk/Sk shape mismatch: {Hk.shape} vs {Sk.shape}")
+    if Hk.ndim != 3:
+        raise ValueError(f"Hk/Sk must have shape (Nk, Nb, Nb), got {Hk.shape}")
+
+    rm = sorted(set(int(i) for i in remove_indices))
+    if len(rm) == 0 or n_workers <= 1:
+        return apply_custom_kspace_transform(Hk, Sk, remove_indices)
+
+    nk = Hk.shape[0]
+    n_chunks = min(int(n_workers), nk)
+    Hk_chunks = np.array_split(Hk, n_chunks, axis=0)
+    Sk_chunks = np.array_split(Sk, n_chunks, axis=0)
+    threads_per_worker = max(1, available_cpu_count() // n_chunks)
+
+    # threadpoolctl mutates process-global BLAS thread state, not per-thread
+    # state, so it must be set once around the whole pool (single caller,
+    # single mutation) rather than inside each worker thread — calling it
+    # concurrently from multiple threads races on that global state and can
+    # crash the underlying BLAS library (seen as a segfault on some HPC
+    # MKL/OpenBLAS builds, even when it happens to survive elsewhere).
+    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
+        with ThreadPoolExecutor(max_workers=n_chunks) as ex:
+            results = list(
+                ex.map(_schur_transform_chunk, Hk_chunks, Sk_chunks, [rm] * n_chunks)
+            )
+
+    Hk_new = np.concatenate([r[0] for r in results], axis=0)
+    Sk_new = np.concatenate([r[1] for r in results], axis=0)
+    return Hk_new, Sk_new
+
+
+def apply_custom_kspace_transform_overlap_only_parallel(
+    Sk: np.ndarray,
+    remove_indices: list[int],
+    n_workers: int = 1,
+) -> np.ndarray:
+    """Overlap-only counterpart of apply_custom_kspace_transform_parallel."""
+    if Sk.ndim != 3:
+        raise ValueError(f"Sk must have shape (Nk, Nb, Nb), got {Sk.shape}")
+
+    rm = sorted(set(int(i) for i in remove_indices))
+    if len(rm) == 0 or n_workers <= 1:
+        return apply_custom_kspace_transform_overlap_only(Sk, remove_indices)
+
+    nk = Sk.shape[0]
+    n_chunks = min(int(n_workers), nk)
+    Sk_chunks = np.array_split(Sk, n_chunks, axis=0)
+    threads_per_worker = max(1, available_cpu_count() // n_chunks)
+
+    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
+        with ThreadPoolExecutor(max_workers=n_chunks) as ex:
+            results = list(
+                ex.map(_schur_transform_chunk_overlap_only, Sk_chunks, [rm] * n_chunks)
+            )
+
+    return np.concatenate(results, axis=0)
+
+
 def apply_truncation_kspace_transform(
     Hk: np.ndarray,
     Sk: np.ndarray,
@@ -62,6 +225,46 @@ def apply_truncation_kspace_transform(
 
     Hk_new = Hk[:, keep, :][:, :, keep]
     Sk_new = Sk[:, keep, :][:, :, keep]
+    return Hk_new, Sk_new
+
+
+def apply_truncation_kspace_transform_parallel(
+    Hk: np.ndarray,
+    Sk: np.ndarray,
+    remove_indices: list[int],
+    n_workers: int = 1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Same result as apply_truncation_kspace_transform, computed over k-chunks in
+    parallel threads. n_workers<=1 falls through to the serial function.
+
+    Threads (not processes): the chunked truncation is pure numpy indexing, so
+    this mirrors the Schur-path threading API while keeping the same caller
+    contract and avoiding process-pool overhead.
+    """
+    if Hk.shape != Sk.shape:
+        raise ValueError(f"Hk/Sk shape mismatch: {Hk.shape} vs {Sk.shape}")
+    if Hk.ndim != 3:
+        raise ValueError(f"Hk/Sk must have shape (Nk, Nb, Nb), got {Hk.shape}")
+
+    rm = sorted(set(int(i) for i in remove_indices))
+    if len(rm) == 0 or n_workers <= 1:
+        return apply_truncation_kspace_transform(Hk, Sk, remove_indices)
+
+    nk = Hk.shape[0]
+    n_chunks = min(int(n_workers), nk)
+    Hk_chunks = np.array_split(Hk, n_chunks, axis=0)
+    Sk_chunks = np.array_split(Sk, n_chunks, axis=0)
+    threads_per_worker = max(1, available_cpu_count() // n_chunks)
+
+    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
+        with ThreadPoolExecutor(max_workers=n_chunks) as ex:
+            results = list(
+                ex.map(_truncation_transform_chunk, Hk_chunks, Sk_chunks, [rm] * n_chunks)
+            )
+
+    Hk_new = np.concatenate([r[0] for r in results], axis=0)
+    Sk_new = np.concatenate([r[1] for r in results], axis=0)
     return Hk_new, Sk_new
 
 
@@ -108,6 +311,33 @@ def apply_truncation_kspace_transform_overlap_only(
 
     Sk_new = Sk[:, keep, :][:, :, keep]
     return Sk_new
+
+
+def apply_truncation_kspace_transform_overlap_only_parallel(
+    Sk: np.ndarray,
+    remove_indices: list[int],
+    n_workers: int = 1,
+) -> np.ndarray:
+    """Overlap-only counterpart of apply_truncation_kspace_transform_parallel."""
+    if Sk.ndim != 3:
+        raise ValueError(f"Sk must have shape (Nk, Nb, Nb), got {Sk.shape}")
+
+    rm = sorted(set(int(i) for i in remove_indices))
+    if len(rm) == 0 or n_workers <= 1:
+        return apply_truncation_kspace_transform_overlap_only(Sk, remove_indices)
+
+    nk = Sk.shape[0]
+    n_chunks = min(int(n_workers), nk)
+    Sk_chunks = np.array_split(Sk, n_chunks, axis=0)
+    threads_per_worker = max(1, available_cpu_count() // n_chunks)
+
+    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
+        with ThreadPoolExecutor(max_workers=n_chunks) as ex:
+            results = list(
+                ex.map(_truncation_transform_chunk_overlap_only, Sk_chunks, [rm] * n_chunks)
+            )
+
+    return np.concatenate(results, axis=0)
 
 
 def build_elimination_tk(

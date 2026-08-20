@@ -90,6 +90,9 @@ class GenerateAimsToProjectedDeephData:
                 user_kpoints_settings=self.projection_config.user_kpoints_settings,
                 force_2d=self.projection_config.force_2d,
                 reduction_mode=self.projection_config.reduction_mode,
+                overlap_only=self.projection_config.overlap_only,
+                write_dummy_hamiltonian=self.projection_config.write_dummy_hamiltonian,
+                n_workers=self.projection_config.n_workers,
                 deeph_conversion_output=upstream_flow.output["deeph_inputs"],
             )
             projection_job = set_projection_job_name(
@@ -136,6 +139,9 @@ class GenerateAimsToProjectedDeephData:
                     user_kpoints_settings=self.second_projection_config.user_kpoints_settings,
                     force_2d=self.second_projection_config.force_2d,
                     reduction_mode=self.second_projection_config.reduction_mode,
+                    overlap_only=self.second_projection_config.overlap_only,
+                    write_dummy_hamiltonian=self.second_projection_config.write_dummy_hamiltonian,
+                    n_workers=self.second_projection_config.n_workers,
                     upstream_projection_output=first_projection_outputs[structure_name],
                 )
                 second_projection_job = set_projection_job_name(
@@ -282,6 +288,9 @@ class GenerateTwoStepProjectedDeephInputs:
                     user_kpoints_settings=self.first_projection_config.user_kpoints_settings,
                     force_2d=self.first_projection_config.force_2d,
                     reduction_mode=self.first_projection_config.reduction_mode,
+                    overlap_only=self.first_projection_config.overlap_only,
+                    write_dummy_hamiltonian=self.first_projection_config.write_dummy_hamiltonian,
+                    n_workers=self.first_projection_config.n_workers,
                 ),
             )
             first_job = set_projection_job_name(
@@ -306,6 +315,9 @@ class GenerateTwoStepProjectedDeephInputs:
                     user_kpoints_settings=self.second_projection_config.user_kpoints_settings,
                     force_2d=self.second_projection_config.force_2d,
                     reduction_mode=self.second_projection_config.reduction_mode,
+                    overlap_only=self.second_projection_config.overlap_only,
+                    write_dummy_hamiltonian=self.second_projection_config.write_dummy_hamiltonian,
+                    n_workers=self.second_projection_config.n_workers,
                     upstream_projection_output=first_job.output,
                 ),
             )

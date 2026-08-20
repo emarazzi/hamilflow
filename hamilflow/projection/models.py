@@ -41,6 +41,9 @@ class ProjectionConfig:
     reduction_mode: ReductionMode = "schur"
     overlap_only: bool = False
     write_dummy_hamiltonian: bool = False
+    # Thread worker count for the k-point elimination transform.
+    # If None, the job resolves it to the available CPUs at runtime.
+    n_workers: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "input_dir", Path(self.input_dir))

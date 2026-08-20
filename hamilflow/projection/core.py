@@ -15,10 +15,11 @@ from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 
 from .io import dump_reduced_matrix_h5, hermitize_real_space_blocks, write_reduced_info_json
 from .kspace import (
-    apply_custom_kspace_transform,
-    apply_custom_kspace_transform_overlap_only,
-    apply_truncation_kspace_transform,
-    apply_truncation_kspace_transform_overlap_only,
+    apply_custom_kspace_transform_overlap_only_parallel,
+    apply_custom_kspace_transform_parallel,
+    apply_truncation_kspace_transform_overlap_only_parallel,
+    apply_truncation_kspace_transform_parallel,
+    available_cpu_count,
     build_uniform_kmesh,
     hk_and_sk_to_real,
     sk_to_real,
@@ -89,6 +90,7 @@ def run_projection(
     )
 
     rm = sorted(set(rm))
+    n_workers = config.n_workers if config.n_workers is not None else available_cpu_count()
 
     resolved_kgrid = _resolve_projection_kgrid(config)
     ks = build_uniform_kmesh(resolved_kgrid)
@@ -99,9 +101,13 @@ def run_projection(
     if config.overlap_only:
         # Skip Hamiltonian k-space transform, only process overlap
         if config.reduction_mode == "schur":
-            Sk_new = apply_custom_kspace_transform_overlap_only(Sk, remove_indices=rm)
+            Sk_new = apply_custom_kspace_transform_overlap_only_parallel(
+                Sk, remove_indices=rm, n_workers=n_workers
+            )
         elif config.reduction_mode == "truncate":
-            Sk_new = apply_truncation_kspace_transform_overlap_only(Sk, remove_indices=rm)
+            Sk_new = apply_truncation_kspace_transform_overlap_only_parallel(
+                Sk, remove_indices=rm, n_workers=n_workers
+            )
         else:
             raise ValueError(
                 f"Unsupported reduction_mode '{config.reduction_mode}'. Expected 'schur' or 'truncate'."
@@ -118,9 +124,13 @@ def run_projection(
     else:
         # Standard mode: transform both Hamiltonian and Overlap
         if config.reduction_mode == "schur":
-            Hk_new, Sk_new = apply_custom_kspace_transform(Hk, Sk, remove_indices=rm)
+            Hk_new, Sk_new = apply_custom_kspace_transform_parallel(
+                Hk, Sk, remove_indices=rm, n_workers=n_workers
+            )
         elif config.reduction_mode == "truncate":
-            Hk_new, Sk_new = apply_truncation_kspace_transform(Hk, Sk, remove_indices=rm)
+            Hk_new, Sk_new = apply_truncation_kspace_transform_parallel(
+                Hk, Sk, remove_indices=rm, n_workers=n_workers
+            )
         else:
             raise ValueError(
                 f"Unsupported reduction_mode '{config.reduction_mode}'. Expected 'schur' or 'truncate'."

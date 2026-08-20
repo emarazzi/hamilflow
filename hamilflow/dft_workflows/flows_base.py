@@ -78,6 +78,9 @@ class ProjectDeephInputsConfig:
     user_kpoints_settings: dict[str, Any] | Any | None = None
     force_2d: bool = False
     reduction_mode: ReductionMode = "schur"
+    overlap_only: bool = False
+    write_dummy_hamiltonian: bool = False
+    n_workers: int | None = None
 
 
 def resolve_projection_removal_plan(
@@ -317,6 +320,9 @@ class GenerateProjectedDeephInputs:
                 user_kpoints_settings=self.projection_config.user_kpoints_settings,
                 force_2d=self.projection_config.force_2d,
                 reduction_mode=self.projection_config.reduction_mode,
+                overlap_only=self.projection_config.overlap_only,
+                write_dummy_hamiltonian=self.projection_config.write_dummy_hamiltonian,
+                n_workers=self.projection_config.n_workers,
             )
             projection_job = set_projection_job_name(
                 projection_job,

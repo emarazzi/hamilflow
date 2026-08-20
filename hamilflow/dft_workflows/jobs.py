@@ -258,6 +258,9 @@ def run_projection_for_structure(
     user_kpoints_settings: dict[str, Any] | Any | None = None,
     force_2d: bool = False,
     reduction_mode: ReductionMode = "schur",
+    overlap_only: bool = False,
+    write_dummy_hamiltonian: bool = False,
+    n_workers: int | None = None,
     deeph_conversion_output: dict[str, Any] | None = None,
     upstream_projection_output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -306,6 +309,9 @@ def run_projection_for_structure(
             user_kpoints_settings=user_kpoints_settings,
             force_2d=force_2d,
             reduction_mode=reduction_mode,
+            overlap_only=overlap_only,
+            write_dummy_hamiltonian=write_dummy_hamiltonian,
+            n_workers=n_workers,
         ),
         removal_plan=removal_plan,
     )
