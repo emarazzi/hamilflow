@@ -122,7 +122,10 @@ class BandUncertaintyCalculator:
         shifts = []
         for model in model_dirs:
             h_obj = SparseHamiltonianObj(model / structure_name)
-            raw = h_obj.diag(ks, bands_only=True)
+            # compute_parallel already parallelizes over structures at the process
+            # level (one worker per structure, capped at max_workers); diag()'s own
+            # default k-point threading (n_jobs=-1) would oversubscribe on top of that.
+            raw = h_obj.diag(ks, bands_only=True, n_jobs=1, parallel_k=False)
             aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
             aligned_eigvals.append(aligned)
             shifts.append(shift)
