@@ -3,6 +3,7 @@ from typing import Iterable
 import numpy as np
 from dataclasses import dataclass, field
 import concurrent.futures
+import json
 import os
 
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
@@ -94,11 +95,9 @@ class BandUncertaintyCalculator:
             result_per_k = {}
             for i_k in range(n_irr):
                 mask_k = window_mask[:, i_k]
-                band_indices = np.nonzero(mask_k)[0]
                 result_per_k[f"k{i_k}"] = {
                     "k_frac": ks[i_k].tolist(),
                     "weight": int(weights[i_k]),
-                    "band_index": band_indices.tolist(),
                     "sigma_eV": sigma_eigvals[mask_k, i_k].tolist(),
                     "n_bands_in_window": int(mask_k.sum()),
                 }
@@ -139,11 +138,9 @@ class BandUncertaintyCalculator:
         result_per_k = {}
         for i_k in range(n_irr):
             mask_k = window_mask[:, i_k]
-            band_indices = np.nonzero(mask_k)[0]
             result_per_k[f"k{i_k}"] = {
                 "k_frac": ks[i_k].tolist(),
                 "weight": int(weights[i_k]),
-                "band_index": band_indices.tolist(),
                 "sigma_eV": sigma_eigvals[mask_k, i_k].tolist(),
                 "n_bands_in_window": int(mask_k.sum()),
             }
@@ -155,10 +152,19 @@ class BandUncertaintyCalculator:
             "kpoints": result_per_k,
         }
 
-    def compute_parallel(self, model_dirs: Iterable[Path], structure_pattern: str | None = None, max_workers: int | None = None):
+    def compute_parallel(
+        self,
+        model_dirs: Iterable[Path],
+        structure_pattern: str | None = None,
+        max_workers: int | None = None,
+        output_path: Path | str | None = None,
+    ):
         """Parallelized version of `compute` that runs per-structure work in separate processes.
 
         - `max_workers`: number of worker processes (defaults to number of CPU cores).
+        - `output_path`: if given, the accumulated result dict is written to this path
+          (atomically) after every structure completes, so a killed/timed-out job still
+          leaves the results computed so far on disk.
         """
         model_dirs = [Path(p) for p in model_dirs]
         if structure_pattern:
@@ -169,12 +175,20 @@ class BandUncertaintyCalculator:
         if max_workers is None:
             max_workers = min(len(structures), os.cpu_count() or 1)
 
+        if output_path is not None:
+            output_path = Path(output_path)
+
         output = {}
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = {ex.submit(self._compute_structure, s, model_dirs): s for s in structures}
             for fut in concurrent.futures.as_completed(futures):
                 name, res = fut.result()
                 output[name] = res
+                if output_path is not None:
+                    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+                    with open(tmp_path, "w") as f:
+                        json.dump(output, f, indent=4)
+                    os.replace(tmp_path, output_path)
 
         return output
 
@@ -219,7 +233,6 @@ class BandUncertaintyCalculator:
                 per_k[f"k{i_k}"] = {
                     "k_frac": ks[i_k].tolist(),
                     "weight": int(weights[i_k]),
-                    "band_index": np.nonzero(mask_k)[0].tolist(),
                     "abs_err_eV": vals,
                     "n_bands_in_window": int(mask_k.sum()),
                 }
