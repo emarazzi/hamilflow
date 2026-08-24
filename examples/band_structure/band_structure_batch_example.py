@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import logging
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor
@@ -10,6 +9,7 @@ from pathlib import Path
 
 from pymatgen.core import Structure
 
+from hamilflow.band_structures import SparseBandDataGenerator
 from hamilflow.band_structures.band_calculation import (
     get_band_conf_from_file,
     get_band_conf_from_struc,
@@ -41,12 +41,6 @@ class BatchOptions:
     workers: int
 
 
-def load_band_data_generator() -> type:
-    """Import BandDataGenerator lazily to keep the example import-light."""
-    module = importlib.import_module("deepx_dock.compute.eigen.band")
-    return module.BandDataGenerator
-
-
 def build_band_structure(paths: BandStructurePaths, options: BatchOptions):
     """Build the band structure object for one input directory."""
     if not paths.structure_path.exists():
@@ -72,8 +66,7 @@ def build_band_structure(paths: BandStructurePaths, options: BatchOptions):
 
     hamiltonian = get_hamiltonian(paths.workdir)
 
-    band_data_generator = load_band_data_generator()
-    band_data = band_data_generator(hamiltonian, band_conf)
+    band_data = SparseBandDataGenerator(hamiltonian, band_conf)
     band_data.calc_band_data()
     return band_data
 

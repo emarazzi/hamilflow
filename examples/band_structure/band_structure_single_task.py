@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 from dataclasses import dataclass
 from pathlib import Path
 
 from pymatgen.core import Structure
 
+from hamilflow.band_structures import SparseBandDataGenerator
 from hamilflow.band_structures.band_calculation import (
     get_band_conf_from_file,
     get_band_conf_from_struc,
@@ -23,12 +23,6 @@ class TaskPaths:
     k_path_dir: Path | None
     k_path_filename: str
     output_filename: str
-
-
-def load_band_data_generator() -> type:
-    """Import BandDataGenerator lazily."""
-    module = importlib.import_module("deepx_dock.compute.eigen.band")
-    return module.BandDataGenerator
 
 
 def build_band_data(paths: TaskPaths):
@@ -55,8 +49,7 @@ def build_band_data(paths: TaskPaths):
 
     hamiltonian = get_hamiltonian(workdir)
 
-    band_data_generator = load_band_data_generator()
-    band_data = band_data_generator(hamiltonian, band_conf)
+    band_data = SparseBandDataGenerator(hamiltonian, band_conf)
     band_data.calc_band_data()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     band_data.dump_band_data(str(output_path))

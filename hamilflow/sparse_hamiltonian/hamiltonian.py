@@ -95,6 +95,27 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
             return self._s_obj._dense_k(k)
         return np.stack([self._s_obj._dense_k(kk) for kk in k], axis=0)
 
+    def get_all_Sk(self, ks, n_jobs: int = -1, parallel_k: bool = True) -> List[np.ndarray]:
+        """
+        Overlap matrices for every k-point, gathered up front.
+
+        Ported from ``HamiltonianObj.get_all_Sk`` with the same signature --
+        needed by the orbital-removal ill-conditioning method, which requires
+        every ``Sk`` before diagonalizing any k-point. Each ``Sk`` is still
+        built on demand from the sparse blocks (``self._s_obj._dense_k``),
+        one k-point at a time, so this never materializes a dense ``SR``.
+        """
+        if n_jobs < 0:
+            n_jobs = os.cpu_count() or 1
+
+        n_blas_threads = 1 if parallel_k else n_jobs
+        n_workers = n_jobs if parallel_k else 1
+        with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
+            if n_workers <= 1:
+                return [self._s_obj._dense_k(k) for k in ks]
+            with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                return list(ex.map(self._s_obj._dense_k, ks))
+
     def diag(
         self,
         ks,

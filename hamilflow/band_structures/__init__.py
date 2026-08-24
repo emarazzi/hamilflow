@@ -1,4 +1,5 @@
 __all__ = [
+    "SparseBandDataGenerator",
     "band_comparison",
     "correct_k_points",
     "get_band_conf_from_file",
@@ -29,3 +30,4 @@ from .band_calculation import (
     get_hsk_symbol_list,
     plot_band,
 )
+from .band_data_generator import SparseBandDataGenerator
