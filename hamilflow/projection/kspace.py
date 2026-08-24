@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import threadpoolctl
@@ -121,82 +121,6 @@ def _truncation_transform_chunk_overlap_only(
     return Sk_chunk[:, keep, :][:, :, keep]
 
 
-def apply_custom_kspace_transform_parallel(
-    Hk: np.ndarray,
-    Sk: np.ndarray,
-    remove_indices: list[int],
-    n_workers: int = 1,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Same result as apply_custom_kspace_transform, computed over k-chunks in
-    parallel threads. n_workers<=1 falls through to the serial function.
-
-    Threads (not processes): build_elimination_tk / apply_tk_projection are
-    numpy linalg calls that release the GIL, so this gets real concurrency
-    with no pickling/IPC overhead and no extra peak memory from copying
-    chunks across process boundaries. Does NOT reduce peak memory relative
-    to the serial path either way: Hk/Sk are already fully materialized by
-    the caller before this is invoked.
-    """
-    if Hk.shape != Sk.shape:
-        raise ValueError(f"Hk/Sk shape mismatch: {Hk.shape} vs {Sk.shape}")
-    if Hk.ndim != 3:
-        raise ValueError(f"Hk/Sk must have shape (Nk, Nb, Nb), got {Hk.shape}")
-
-    rm = sorted(set(int(i) for i in remove_indices))
-    if len(rm) == 0 or n_workers <= 1:
-        return apply_custom_kspace_transform(Hk, Sk, remove_indices)
-
-    nk = Hk.shape[0]
-    n_chunks = min(int(n_workers), nk)
-    Hk_chunks = np.array_split(Hk, n_chunks, axis=0)
-    Sk_chunks = np.array_split(Sk, n_chunks, axis=0)
-    threads_per_worker = max(1, available_cpu_count() // n_chunks)
-
-    # threadpoolctl mutates process-global BLAS thread state, not per-thread
-    # state, so it must be set once around the whole pool (single caller,
-    # single mutation) rather than inside each worker thread — calling it
-    # concurrently from multiple threads races on that global state and can
-    # crash the underlying BLAS library (seen as a segfault on some HPC
-    # MKL/OpenBLAS builds, even when it happens to survive elsewhere).
-    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
-        with ThreadPoolExecutor(max_workers=n_chunks) as ex:
-            results = list(
-                ex.map(_schur_transform_chunk, Hk_chunks, Sk_chunks, [rm] * n_chunks)
-            )
-
-    Hk_new = np.concatenate([r[0] for r in results], axis=0)
-    Sk_new = np.concatenate([r[1] for r in results], axis=0)
-    return Hk_new, Sk_new
-
-
-def apply_custom_kspace_transform_overlap_only_parallel(
-    Sk: np.ndarray,
-    remove_indices: list[int],
-    n_workers: int = 1,
-) -> np.ndarray:
-    """Overlap-only counterpart of apply_custom_kspace_transform_parallel."""
-    if Sk.ndim != 3:
-        raise ValueError(f"Sk must have shape (Nk, Nb, Nb), got {Sk.shape}")
-
-    rm = sorted(set(int(i) for i in remove_indices))
-    if len(rm) == 0 or n_workers <= 1:
-        return apply_custom_kspace_transform_overlap_only(Sk, remove_indices)
-
-    nk = Sk.shape[0]
-    n_chunks = min(int(n_workers), nk)
-    Sk_chunks = np.array_split(Sk, n_chunks, axis=0)
-    threads_per_worker = max(1, available_cpu_count() // n_chunks)
-
-    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
-        with ThreadPoolExecutor(max_workers=n_chunks) as ex:
-            results = list(
-                ex.map(_schur_transform_chunk_overlap_only, Sk_chunks, [rm] * n_chunks)
-            )
-
-    return np.concatenate(results, axis=0)
-
-
 def apply_truncation_kspace_transform(
     Hk: np.ndarray,
     Sk: np.ndarray,
@@ -225,46 +149,6 @@ def apply_truncation_kspace_transform(
 
     Hk_new = Hk[:, keep, :][:, :, keep]
     Sk_new = Sk[:, keep, :][:, :, keep]
-    return Hk_new, Sk_new
-
-
-def apply_truncation_kspace_transform_parallel(
-    Hk: np.ndarray,
-    Sk: np.ndarray,
-    remove_indices: list[int],
-    n_workers: int = 1,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Same result as apply_truncation_kspace_transform, computed over k-chunks in
-    parallel threads. n_workers<=1 falls through to the serial function.
-
-    Threads (not processes): the chunked truncation is pure numpy indexing, so
-    this mirrors the Schur-path threading API while keeping the same caller
-    contract and avoiding process-pool overhead.
-    """
-    if Hk.shape != Sk.shape:
-        raise ValueError(f"Hk/Sk shape mismatch: {Hk.shape} vs {Sk.shape}")
-    if Hk.ndim != 3:
-        raise ValueError(f"Hk/Sk must have shape (Nk, Nb, Nb), got {Hk.shape}")
-
-    rm = sorted(set(int(i) for i in remove_indices))
-    if len(rm) == 0 or n_workers <= 1:
-        return apply_truncation_kspace_transform(Hk, Sk, remove_indices)
-
-    nk = Hk.shape[0]
-    n_chunks = min(int(n_workers), nk)
-    Hk_chunks = np.array_split(Hk, n_chunks, axis=0)
-    Sk_chunks = np.array_split(Sk, n_chunks, axis=0)
-    threads_per_worker = max(1, available_cpu_count() // n_chunks)
-
-    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
-        with ThreadPoolExecutor(max_workers=n_chunks) as ex:
-            results = list(
-                ex.map(_truncation_transform_chunk, Hk_chunks, Sk_chunks, [rm] * n_chunks)
-            )
-
-    Hk_new = np.concatenate([r[0] for r in results], axis=0)
-    Sk_new = np.concatenate([r[1] for r in results], axis=0)
     return Hk_new, Sk_new
 
 
@@ -311,33 +195,6 @@ def apply_truncation_kspace_transform_overlap_only(
 
     Sk_new = Sk[:, keep, :][:, :, keep]
     return Sk_new
-
-
-def apply_truncation_kspace_transform_overlap_only_parallel(
-    Sk: np.ndarray,
-    remove_indices: list[int],
-    n_workers: int = 1,
-) -> np.ndarray:
-    """Overlap-only counterpart of apply_truncation_kspace_transform_parallel."""
-    if Sk.ndim != 3:
-        raise ValueError(f"Sk must have shape (Nk, Nb, Nb), got {Sk.shape}")
-
-    rm = sorted(set(int(i) for i in remove_indices))
-    if len(rm) == 0 or n_workers <= 1:
-        return apply_truncation_kspace_transform_overlap_only(Sk, remove_indices)
-
-    nk = Sk.shape[0]
-    n_chunks = min(int(n_workers), nk)
-    Sk_chunks = np.array_split(Sk, n_chunks, axis=0)
-    threads_per_worker = max(1, available_cpu_count() // n_chunks)
-
-    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
-        with ThreadPoolExecutor(max_workers=n_chunks) as ex:
-            results = list(
-                ex.map(_truncation_transform_chunk_overlap_only, Sk_chunks, [rm] * n_chunks)
-            )
-
-    return np.concatenate(results, axis=0)
 
 
 def build_elimination_tk(
@@ -517,3 +374,90 @@ def sk_to_real(
 
     SR = AOMatrixK(ks, Sk).k2r(Rs, weights=weights)
     return SR
+
+
+def stream_project_to_real_space(
+    obj,
+    ks: np.ndarray,
+    remove_indices: list[int],
+    reduction_mode: str,
+    Rijk_list: np.ndarray,
+    n_workers: int = 1,
+    overlap_only: bool = False,
+) -> tuple[np.ndarray | None, np.ndarray]:
+    """
+    Project the k-mesh and inverse-Fourier-transform back to real space,
+    streaming over small k-chunks instead of materializing dense Hk/Sk for
+    the whole mesh at once.
+
+    ``obj.Sk_and_Hk(ks_chunk)`` (see ``hamilflow.sparse_hamiltonian``) only
+    ever builds one dense (Nb, Nb) matrix per requested k-point, so calling
+    it with the *entire* mesh at once would recreate an (Nk, Nb, Nb) dense
+    array — the same order-of-magnitude OOM this module exists to avoid.
+    Chunking here, transforming each chunk down to the reduced basis size,
+    and IFT-accumulating immediately keeps peak memory to
+    O(chunk_size * Nb^2 + R_quantity * Nb_kept^2), independent of Nk.
+
+    Correctness: the IFT is a weighted linear sum over k
+    (``AOMatrixK.k2r``, weights default to uniform ``1/Nk``), so summing
+    per-chunk partial IFTs is exactly equivalent to one IFT over the full
+    mesh -- but only if each chunk uses ``weight = 1/total_nk`` (the full
+    mesh size), not ``1/chunk_size``. Chunk results are summed, not
+    averaged or concatenated.
+    """
+    rm = sorted(set(int(i) for i in remove_indices))
+    total_nk = len(ks)
+    n_chunks = max(1, min(int(n_workers), total_nk))
+    k_chunks = [c for c in np.array_split(ks, n_chunks) if len(c) > 0]
+
+    if reduction_mode == "schur":
+        transform = _schur_transform_chunk_overlap_only if overlap_only else _schur_transform_chunk
+    elif reduction_mode == "truncate":
+        transform = _truncation_transform_chunk_overlap_only if overlap_only else _truncation_transform_chunk
+    else:
+        raise ValueError(f"Unsupported reduction_mode '{reduction_mode}'. Expected 'schur' or 'truncate'.")
+
+    threads_per_worker = max(1, available_cpu_count() // max(1, len(k_chunks)))
+
+    def process(ks_chunk: np.ndarray):
+        weights_chunk = np.full(len(ks_chunk), 1.0 / total_nk)
+        if overlap_only:
+            Sk_c, _ = obj.Sk_and_Hk(ks_chunk)
+            Sk_new_c = transform(Sk_c, rm)
+            SR_c = sk_to_real(ks_chunk, Sk_new_c, Rijk_list, weights=weights_chunk)
+            return None, SR_c
+        else:
+            Sk_c, Hk_c = obj.Sk_and_Hk(ks_chunk)
+            Hk_new_c, Sk_new_c = transform(Hk_c, Sk_c, rm)
+            HR_c, SR_c = hk_and_sk_to_real(ks_chunk, Hk_new_c, Sk_new_c, Rijk_list, weights=weights_chunk)
+            return HR_c, SR_c
+
+    # Each chunk's real-space output is (R_quantity, Nb_kept, Nb_kept) --
+    # this does NOT shrink with smaller k-chunks (it's the IFT accumulated
+    # over however many k's went in), so it's exactly as large whether the
+    # chunk covered 1 k-point or the whole mesh. Reduce incrementally via
+    # as_completed (dropping each chunk's result the moment it's folded into
+    # the running total) rather than collecting a full `results` list and
+    # summing afterward -- collecting first means every one of the
+    # n_workers concurrently-computed chunk outputs stays resident *plus*
+    # the separate summation pass building its own accumulator on top,
+    # roughly doubling peak memory for no benefit.
+    #
+    # threadpoolctl mutates process-global BLAS thread state, not per-thread
+    # state, so it must be set once around the whole pool (single caller,
+    # single mutation) rather than inside each worker thread — calling it
+    # concurrently from multiple threads races on that global state and can
+    # crash the underlying BLAS library (seen as a segfault on some HPC
+    # MKL/OpenBLAS builds, even when it happens to survive elsewhere).
+    HR_new = None
+    SR_new = None
+    with threadpoolctl.threadpool_limits(limits=threads_per_worker):
+        with ThreadPoolExecutor(max_workers=len(k_chunks)) as ex:
+            futures = [ex.submit(process, chunk) for chunk in k_chunks]
+            for fut in as_completed(futures):
+                hr_c, sr_c = fut.result()
+                SR_new = sr_c if SR_new is None else SR_new + sr_c
+                if not overlap_only:
+                    HR_new = hr_c if HR_new is None else HR_new + hr_c
+
+    return HR_new, SR_new

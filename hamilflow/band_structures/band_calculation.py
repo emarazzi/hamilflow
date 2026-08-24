@@ -7,7 +7,7 @@ import numpy as np
 from plotly import graph_objects as go
 from pymatgen.symmetry.kpath import KPathSetyawanCurtarolo
 
-from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
+from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 
 
 def get_band_conf_from_file(
@@ -81,9 +81,9 @@ def get_band_conf_from_struc(
     }
 
 
-def get_hamiltonian(workdir: str | Path = ".") -> HamiltonianObj:
+def get_hamiltonian(workdir: str | Path = ".") -> SparseHamiltonianObj:
     data_path = Path(workdir).resolve()
-    return HamiltonianObj(data_path)
+    return SparseHamiltonianObj(data_path)
 
 
 def get_hsk_symbol_list(bd_gen) -> list[str]:

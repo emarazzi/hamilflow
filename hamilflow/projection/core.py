@@ -11,18 +11,13 @@ from deepx_dock.CONSTANT import (
     DEEPX_OVERLAP_FILENAME,
     DEEPX_POSCAR_FILENAME,
 )
-from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
+from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 
 from .io import dump_reduced_matrix_h5, hermitize_real_space_blocks, write_reduced_info_json
 from .kspace import (
-    apply_custom_kspace_transform_overlap_only_parallel,
-    apply_custom_kspace_transform_parallel,
-    apply_truncation_kspace_transform_overlap_only_parallel,
-    apply_truncation_kspace_transform_parallel,
     available_cpu_count,
     build_uniform_kmesh,
-    hk_and_sk_to_real,
-    sk_to_real,
+    stream_project_to_real_space,
 )
 from .models import ProjectionConfig, ProjectionResult, RemovalPlanLike
 from .removal import coerce_removal_plan, resolve_indices_from_rules
@@ -80,7 +75,7 @@ def run_projection(
             f"  deepx_dock write --output hamiltonian.h5 [other args]"
         )
     
-    obj = HamiltonianObj(config.input_dir)
+    obj = SparseHamiltonianObj(config.input_dir)
 
     plan_model = coerce_removal_plan(removal_plan)
     rm, plan_meta = resolve_indices_from_rules(
@@ -94,56 +89,25 @@ def run_projection(
 
     resolved_kgrid = _resolve_projection_kgrid(config)
     ks = build_uniform_kmesh(resolved_kgrid)
-    Sk, Hk = obj.Sk_and_Hk(ks)
-    nb = Sk.shape[-1]
+    nb = int(obj.orbits_quantity) * (2 if obj.spinful else 1)
     keep_global = [i for i in range(nb) if i not in rm]
 
-    if config.overlap_only:
-        # Skip Hamiltonian k-space transform, only process overlap
-        if config.reduction_mode == "schur":
-            Sk_new = apply_custom_kspace_transform_overlap_only_parallel(
-                Sk, remove_indices=rm, n_workers=n_workers
-            )
-        elif config.reduction_mode == "truncate":
-            Sk_new = apply_truncation_kspace_transform_overlap_only_parallel(
-                Sk, remove_indices=rm, n_workers=n_workers
-            )
-        else:
-            raise ValueError(
-                f"Unsupported reduction_mode '{config.reduction_mode}'. Expected 'schur' or 'truncate'."
-            )
+    if obj.Rijk_list is None:
+        raise ValueError("Rijk_list is None")
 
-        if obj.Rijk_list is None:
-            raise ValueError("Rijk_list is None")
-        SR_new = sk_to_real(
-            ks=ks,
-            Sk=Sk_new,
-            Rijk_list=obj.Rijk_list,
-        )
-        HR_new = None
-    else:
-        # Standard mode: transform both Hamiltonian and Overlap
-        if config.reduction_mode == "schur":
-            Hk_new, Sk_new = apply_custom_kspace_transform_parallel(
-                Hk, Sk, remove_indices=rm, n_workers=n_workers
-            )
-        elif config.reduction_mode == "truncate":
-            Hk_new, Sk_new = apply_truncation_kspace_transform_parallel(
-                Hk, Sk, remove_indices=rm, n_workers=n_workers
-            )
-        else:
-            raise ValueError(
-                f"Unsupported reduction_mode '{config.reduction_mode}'. Expected 'schur' or 'truncate'."
-            )
-
-        if obj.Rijk_list is None:
-            raise ValueError("Rijk_list is None")
-        HR_new, SR_new = hk_and_sk_to_real(
-            ks=ks,
-            Hk=Hk_new,
-            Sk=Sk_new,
-            Rijk_list=obj.Rijk_list,
-        )
+    # Streams the k-mesh in small chunks (chunk -> transform -> IFT ->
+    # accumulate) instead of materializing dense Hk/Sk for the whole mesh at
+    # once; see stream_project_to_real_space for why this is required, not
+    # just an optimization.
+    HR_new, SR_new = stream_project_to_real_space(
+        obj,
+        ks,
+        remove_indices=rm,
+        reduction_mode=config.reduction_mode,
+        Rijk_list=obj.Rijk_list,
+        n_workers=n_workers,
+        overlap_only=config.overlap_only,
+    )
 
     # Process and store Hamiltonian only if not overlap_only mode
     if not config.overlap_only:

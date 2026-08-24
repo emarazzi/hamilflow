@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import concurrent.futures
 import os
 
-from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
+from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 
 import spglib
 
@@ -71,7 +71,7 @@ class BandUncertaintyCalculator:
 
         output = {}
         for structure_name in structures:
-            h_obj = HamiltonianObj(model_dirs[0] / structure_name)
+            h_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
             ks, weights, anchor_k_idx = self.build_irreducible_kpoints(h_obj, self.grid_mesh, self.symprec)
            
             n_irr = len(ks)
@@ -79,7 +79,7 @@ class BandUncertaintyCalculator:
             aligned_eigvals = []
             shifts = []
             for model in model_dirs:
-                h_obj = HamiltonianObj(model / structure_name)
+                h_obj = SparseHamiltonianObj(model / structure_name)
                 raw = h_obj.diag(ks, bands_only=True)
                 aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
                 aligned_eigvals.append(aligned)
@@ -115,13 +115,13 @@ class BandUncertaintyCalculator:
 
     def _compute_structure(self, structure_name: str, model_dirs: list[Path]):
         """Compute uncertainty for a single structure (helper for parallel runs)."""
-        ks_obj = HamiltonianObj(model_dirs[0] / structure_name)
+        ks_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ks_obj, self.grid_mesh, self.symprec)
 
         aligned_eigvals = []
         shifts = []
         for model in model_dirs:
-            h_obj = HamiltonianObj(model / structure_name)
+            h_obj = SparseHamiltonianObj(model / structure_name)
             raw = h_obj.diag(ks, bands_only=True)
             aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
             aligned_eigvals.append(aligned)
@@ -179,7 +179,7 @@ class BandUncertaintyCalculator:
         """Compare averaged Hamiltonian (stored per-structure under `averaged_model_root`) to DFT reference.
 
         Expects `averaged_model_root/<structure_name>/hamiltonian.h5` and supporting files
-        (info.json, overlap.h5) to be present so `HamiltonianObj` can read the averaged result.
+        (info.json, overlap.h5) to be present so `SparseHamiltonianObj` can read the averaged result.
 
         Returns a dict keyed by structure with MAE and per-k error lists similar to `compute`.
         """
@@ -193,8 +193,8 @@ class BandUncertaintyCalculator:
 
         results = {}
         for structure_name in structures:
-            avg_obj = HamiltonianObj(averaged_model_root / structure_name)
-            dft_obj = HamiltonianObj(dft_root / structure_name)
+            avg_obj = SparseHamiltonianObj(averaged_model_root / structure_name)
+            dft_obj = SparseHamiltonianObj(dft_root / structure_name)
 
             ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, self.grid_mesh, self.symprec)
 
