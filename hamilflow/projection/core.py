@@ -75,7 +75,7 @@ def run_projection(
             f"  deepx_dock write --output hamiltonian.h5 [other args]"
         )
     
-    obj = SparseHamiltonianObj(config.input_dir)
+    obj = SparseHamiltonianObj(config.input_dir, load_hamiltonian=not config.overlap_only)
 
     plan_model = coerce_removal_plan(removal_plan)
     rm, plan_meta = resolve_indices_from_rules(

@@ -29,8 +29,17 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
     separately as ``self._s_obj``.
     """
 
-    def __init__(self, data_path, H_file_path=None):
-        super().__init__(data_path, H_file_path, matrix_type="hamiltonian")
+    def __init__(self, data_path, H_file_path=None, load_hamiltonian: bool = True):
+        """
+        ``load_hamiltonian=False`` skips reading the Hamiltonian's (large)
+        matrix values -- only its structure (``Rijk_list``/``atom_pairs``,
+        needed to cross-validate against the overlap and required by
+        downstream metadata/output code) is read. Use this for
+        overlap-only workflows, where the Hamiltonian's values are never
+        touched. ``Sk_and_Hk``/``diag`` are unavailable in that case (use
+        ``get_Sk`` instead, which never needs the Hamiltonian at all).
+        """
+        super().__init__(data_path, H_file_path, matrix_type="hamiltonian", load_matrix=load_hamiltonian)
         s_obj = SparseAOMatrixObj(data_path, matrix_type="overlap")
         self.assert_compatible(s_obj)
         self._s_obj = s_obj

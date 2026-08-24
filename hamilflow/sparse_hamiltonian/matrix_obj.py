@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import h5py
 import numpy as np
 from scipy.sparse import coo_matrix
 
@@ -24,19 +27,33 @@ class SparseAOMatrixObj(AOMatrixObj):
     is reused unchanged from ``AOMatrixObj`` since none of it touches ``mats``.
     """
 
-    def __init__(self, info_dir_path, matrix_file_path=None, matrix_type="hamiltonian"):
+    def __init__(self, info_dir_path, matrix_file_path=None, matrix_type="hamiltonian", load_matrix: bool = True):
+        """
+        ``load_matrix=False`` skips reading and scattering ``entries`` (the
+        actual matrix values -- the largest dataset in the file) entirely,
+        keeping only ``atom_pairs``/``Rijk_list``/structural metadata. Use
+        this when only the structure is needed (e.g. cross-validating an
+        overlap-only run against ``hamiltonian.h5`` without ever needing the
+        Hamiltonian's values). ``_dense_k`` is unavailable on such an
+        instance and raises if called.
+        """
         self._get_necessary_data_path(info_dir_path, matrix_file_path, matrix_type)
         self.mats = None
         self.Rijk_list = None
         self._parse_info()
         self._parse_poscar()
         self._parse_orbit_types()
-        self._load_sparse(matrix_type)
+        self._load_sparse(matrix_type, load_matrix)
 
-    def _load_sparse(self, matrix_type: str) -> None:
+    def _load_sparse(self, matrix_type: str, load_matrix: bool = True) -> None:
         is_overlap = matrix_type == "overlap"
         dtype = np.complex128 if (not is_overlap and self.spinful) else np.float64
-        atom_pairs, bounds, shapes, entries = self._read_h5(self.matrix_path, dtype=dtype)
+
+        if load_matrix:
+            atom_pairs, bounds, shapes, entries = self._read_h5(self.matrix_path, dtype=dtype)
+        else:
+            atom_pairs, bounds, shapes = self._read_h5_structure_only(self.matrix_path)
+            entries = None
         self.atom_pairs = atom_pairs
         self.bounds = bounds
         self.shapes = shapes
@@ -51,9 +68,31 @@ class SparseAOMatrixObj(AOMatrixObj):
             tx, ty, tz = rijk_list[:, 0], rijk_list[:, 1], rijk_list[:, 2]
             rijk_list = rijk_list[np.lexsort((tx, ty, tz))]
         self.Rijk_list = rijk_list
-        r_to_idx_sorted = {tuple(int(v) for v in r): i for i, r in enumerate(rijk_list)}
 
+        if not load_matrix:
+            self._entry_row = None
+            self._entry_col = None
+            self._entry_r_index = None
+            self._entries_expanded = None
+            self._mat_dim = int(self.orbits_quantity * (2 if self.spinful else 1))
+            return
+
+        r_to_idx_sorted = {tuple(int(v) for v in r): i for i, r in enumerate(rijk_list)}
         self._build_scatter_arrays(atom_pairs, shapes, entries, matrix_type, r_to_idx_sorted)
+
+    @staticmethod
+    def _read_h5_structure_only(h5_path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Like ``AOMatrixObj._read_h5`` but never reads the (large) ``entries`` dataset."""
+        h5_path_obj = Path(h5_path)
+        if not h5_path_obj.exists():
+            raise FileNotFoundError(f"File not found: {h5_path}")
+
+        with h5py.File(h5_path, "r") as f:
+            atom_pairs = np.array(f["atom_pairs"][:], dtype=np.int64)
+            boundaries = np.array(f["chunk_boundaries"][:], dtype=np.int64)
+            shapes = np.array(f["chunk_shapes"][:], dtype=np.int64)
+
+        return atom_pairs, boundaries, shapes
 
     def _build_scatter_arrays(
         self,
@@ -136,6 +175,11 @@ class SparseAOMatrixObj(AOMatrixObj):
 
     def _dense_k(self, k: np.ndarray) -> np.ndarray:
         """Build the dense (mat_dim, mat_dim) matrix at one fractional k-point."""
+        if self._entries_expanded is None:
+            raise AttributeError(
+                "This SparseAOMatrixObj was constructed with load_matrix=False (structure/metadata "
+                "only, e.g. for overlap-only cross-validation) -- its matrix values were never read."
+            )
         phase_per_r = np.exp(2j * np.pi * (self.Rijk_list.astype(np.float64) @ np.asarray(k, dtype=np.float64)))
         weighted = phase_per_r[self._entry_r_index] * self._entries_expanded
         return coo_matrix(
