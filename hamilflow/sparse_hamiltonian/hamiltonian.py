@@ -74,6 +74,18 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
             return Sk[0], Hk[0]
         return Sk, Hk
 
+    def get_Sk(self, k):
+        """
+        Overlap matrix only, at given k-point(s) -- same shape contract as
+        ``Sk_and_Hk`` but never touches the Hamiltonian's sparse blocks.
+        For overlap-only workflows, calling ``Sk_and_Hk`` would build and
+        immediately discard a dense Hk for every k-point for nothing.
+        """
+        k = np.asarray(k, dtype=np.float64)
+        if k.ndim == 1:
+            return self._s_obj._dense_k(k)
+        return np.stack([self._s_obj._dense_k(kk) for kk in k], axis=0)
+
     def diag(
         self,
         ks,

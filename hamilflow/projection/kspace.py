@@ -394,9 +394,20 @@ def stream_project_to_real_space(
     ever builds one dense (Nb, Nb) matrix per requested k-point, so calling
     it with the *entire* mesh at once would recreate an (Nk, Nb, Nb) dense
     array — the same order-of-magnitude OOM this module exists to avoid.
-    Chunking here, transforming each chunk down to the reduced basis size,
-    and IFT-accumulating immediately keeps peak memory to
-    O(chunk_size * Nb^2 + R_quantity * Nb_kept^2), independent of Nk.
+
+    The k-space transform (schur/truncate) is parallelized across chunks --
+    its output is O(chunk_size * Nb_kept^2), so more workers cost little.
+    The real-space IFT is deliberately run *serially*, one chunk at a time,
+    in this (the calling) thread instead of inside the worker pool: its
+    output is O(R_quantity * Nb_kept^2) *regardless of chunk size* (it's the
+    contribution to the full R-grid, not proportional to how many k's went
+    in), so running N of them concurrently costs N times that -- for
+    structures where R_quantity is not small relative to Nb_kept (real
+    materials with modest orbital-removal fractions routinely have this),
+    that multiplies to more memory than the dense path ever used, which is
+    the opposite of the point. Serializing the IFT bounds peak real-space
+    memory to ~2x one chunk's contribution (the running accumulator plus
+    the one currently being folded in), independent of n_workers.
 
     Correctness: the IFT is a weighted linear sum over k
     (``AOMatrixK.k2r``, weights default to uniform ``1/Nk``), so summing
@@ -420,29 +431,13 @@ def stream_project_to_real_space(
     threads_per_worker = max(1, available_cpu_count() // max(1, len(k_chunks)))
 
     def process(ks_chunk: np.ndarray):
-        weights_chunk = np.full(len(ks_chunk), 1.0 / total_nk)
+        """K-space only: build Hk/Sk for this chunk and reduce them. No IFT here."""
         if overlap_only:
-            Sk_c, _ = obj.Sk_and_Hk(ks_chunk)
-            Sk_new_c = transform(Sk_c, rm)
-            SR_c = sk_to_real(ks_chunk, Sk_new_c, Rijk_list, weights=weights_chunk)
-            return None, SR_c
-        else:
-            Sk_c, Hk_c = obj.Sk_and_Hk(ks_chunk)
-            Hk_new_c, Sk_new_c = transform(Hk_c, Sk_c, rm)
-            HR_c, SR_c = hk_and_sk_to_real(ks_chunk, Hk_new_c, Sk_new_c, Rijk_list, weights=weights_chunk)
-            return HR_c, SR_c
+            Sk_c = obj.get_Sk(ks_chunk)  # skips building Hk entirely -- unused in overlap_only mode
+            return transform(Sk_c, rm)
+        Sk_c, Hk_c = obj.Sk_and_Hk(ks_chunk)
+        return transform(Hk_c, Sk_c, rm)
 
-    # Each chunk's real-space output is (R_quantity, Nb_kept, Nb_kept) --
-    # this does NOT shrink with smaller k-chunks (it's the IFT accumulated
-    # over however many k's went in), so it's exactly as large whether the
-    # chunk covered 1 k-point or the whole mesh. Reduce incrementally via
-    # as_completed (dropping each chunk's result the moment it's folded into
-    # the running total) rather than collecting a full `results` list and
-    # summing afterward -- collecting first means every one of the
-    # n_workers concurrently-computed chunk outputs stays resident *plus*
-    # the separate summation pass building its own accumulator on top,
-    # roughly doubling peak memory for no benefit.
-    #
     # threadpoolctl mutates process-global BLAS thread state, not per-thread
     # state, so it must be set once around the whole pool (single caller,
     # single mutation) rather than inside each worker thread — calling it
@@ -453,11 +448,17 @@ def stream_project_to_real_space(
     SR_new = None
     with threadpoolctl.threadpool_limits(limits=threads_per_worker):
         with ThreadPoolExecutor(max_workers=len(k_chunks)) as ex:
-            futures = [ex.submit(process, chunk) for chunk in k_chunks]
-            for fut in as_completed(futures):
-                hr_c, sr_c = fut.result()
-                SR_new = sr_c if SR_new is None else SR_new + sr_c
-                if not overlap_only:
+            future_to_chunk = {ex.submit(process, chunk): chunk for chunk in k_chunks}
+            for fut in as_completed(future_to_chunk):
+                ks_chunk = future_to_chunk[fut]
+                weights_chunk = np.full(len(ks_chunk), 1.0 / total_nk)
+                if overlap_only:
+                    Sk_new_c = fut.result()
+                    sr_c = sk_to_real(ks_chunk, Sk_new_c, Rijk_list, weights=weights_chunk)
+                else:
+                    Hk_new_c, Sk_new_c = fut.result()
+                    hr_c, sr_c = hk_and_sk_to_real(ks_chunk, Hk_new_c, Sk_new_c, Rijk_list, weights=weights_chunk)
                     HR_new = hr_c if HR_new is None else HR_new + hr_c
+                SR_new = sr_c if SR_new is None else SR_new + sr_c
 
     return HR_new, SR_new
