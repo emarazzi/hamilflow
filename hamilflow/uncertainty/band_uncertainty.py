@@ -62,13 +62,21 @@ class BandUncertaintyCalculator:
             return np.ones_like(eigvals, dtype=bool)
         return np.abs(eigvals) <= window_ev
 
-    def compute(self, model_dirs: Iterable[Path], structure_pattern: str | None = None):
+    def compute(
+        self,
+        model_dirs: Iterable[Path],
+        structure_pattern: str | None = None,
+        exclude_structures: Iterable[str] | None = None,
+    ):
         model_dirs = [Path(p) for p in model_dirs]
         if structure_pattern:
             structures = [p.name for p in (model_dirs[0] / structure_pattern).parent.glob(structure_pattern)]
         else:
             structures = [p.name for p in (model_dirs[0] / "*").parent.glob("*") if (model_dirs[0] / p).is_dir()]
-        
+        if exclude_structures:
+            excluded = set(exclude_structures)
+            structures = [s for s in structures if s not in excluded]
+
 
         output = {}
         for structure_name in structures:
@@ -158,6 +166,7 @@ class BandUncertaintyCalculator:
         structure_pattern: str | None = None,
         max_workers: int | None = None,
         output_path: Path | str | None = None,
+        exclude_structures: Iterable[str] | None = None,
     ):
         """Parallelized version of `compute` that runs per-structure work in separate processes.
 
@@ -165,12 +174,16 @@ class BandUncertaintyCalculator:
         - `output_path`: if given, the accumulated result dict is written to this path
           (atomically) after every structure completes, so a killed/timed-out job still
           leaves the results computed so far on disk.
+        - `exclude_structures`: structure names to skip.
         """
         model_dirs = [Path(p) for p in model_dirs]
         if structure_pattern:
             structures = [p.name for p in (model_dirs[0] / structure_pattern).parent.glob(structure_pattern)]
         else:
             structures = [p.name for p in (model_dirs[0] / "*").parent.glob("*") if (model_dirs[0] / p).is_dir()]
+        if exclude_structures:
+            excluded = set(exclude_structures)
+            structures = [s for s in structures if s not in excluded]
 
         if max_workers is None:
             max_workers = min(len(structures), os.cpu_count() or 1)
