@@ -120,7 +120,7 @@ class BandUncertaintyCalculator:
 
         return output
 
-    def _compute_structure(self, structure_name: str, model_dirs: list[Path]):
+    def _compute_structure(self, structure_name: str, model_dirs: list[Path], blas_threads_per_worker: int = 1):
         """Compute uncertainty for a single structure (helper for parallel runs)."""
         ks_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ks_obj, self.grid_mesh, self.symprec)
@@ -130,9 +130,14 @@ class BandUncertaintyCalculator:
         for model in model_dirs:
             h_obj = SparseHamiltonianObj(model / structure_name)
             # compute_parallel already parallelizes over structures at the process
-            # level (one worker per structure, capped at max_workers); diag()'s own
-            # default k-point threading (n_jobs=-1) would oversubscribe on top of that.
-            raw = h_obj.diag(ks, bands_only=True, n_jobs=1, parallel_k=False)
+            # level (one worker per structure, capped at max_workers), so k-point
+            # threading is disabled here to avoid oversubscribing on top of that.
+            # Each worker still gets a fair share of the machine's cores for its
+            # own BLAS calls (see max_workers sizing in compute_parallel) instead
+            # of being pinned to 1 thread -- otherwise a structure whose diagonalization
+            # dominates the runtime (a large Hamiltonian, or one outlier after its
+            # siblings finish) leaves the rest of the machine idle.
+            raw = h_obj.diag(ks, bands_only=True, n_jobs=blas_threads_per_worker, parallel_k=False)
             aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
             aligned_eigvals.append(aligned)
             shifts.append(shift)
@@ -188,12 +193,20 @@ class BandUncertaintyCalculator:
         if max_workers is None:
             max_workers = min(len(structures), os.cpu_count() or 1)
 
+        # Split the machine's cores evenly across worker processes so each
+        # process's (sequential, parallel_k=False) diagonalizations still use
+        # more than one BLAS thread when there are fewer workers than cores
+        # (e.g. few structures, or large structures relative to core count).
+        blas_threads_per_worker = max(1, (os.cpu_count() or 1) // max_workers)
+
         if output_path is not None:
             output_path = Path(output_path)
 
         output = {}
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(self._compute_structure, s, model_dirs): s for s in structures}
+            futures = {
+                ex.submit(self._compute_structure, s, model_dirs, blas_threads_per_worker): s for s in structures
+            }
             for fut in concurrent.futures.as_completed(futures):
                 name, res = fut.result()
                 output[name] = res

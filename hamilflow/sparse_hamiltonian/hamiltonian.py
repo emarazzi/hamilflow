@@ -169,8 +169,17 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
                 else:
                     return eigh(Hk, Sk)
 
-        n_blas_threads = 1 if parallel_k else n_jobs
-        n_workers = n_jobs if parallel_k else 1
+        if parallel_k:
+            # Don't assume n_jobs k-points will actually run concurrently --
+            # with fewer k-points than n_jobs (e.g. a single k-point), pinning
+            # BLAS to 1 thread would leave the rest of the machine idle. Split
+            # the budget instead: enough workers for the k-points we have,
+            # and whatever's left over goes to each worker's BLAS calls.
+            n_workers = max(1, min(n_jobs, len(ks)))
+            n_blas_threads = max(1, n_jobs // n_workers)
+        else:
+            n_workers = 1
+            n_blas_threads = n_jobs
         with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
             if n_workers <= 1:
                 results = [process_k(k) for k in ks]
