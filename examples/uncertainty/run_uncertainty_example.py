@@ -4,6 +4,7 @@ from hamilflow.uncertainty import (
     link_ensemble_files,
     average_predicted_hamiltonians,
     BandUncertaintyCalculator,
+    MatrixUncertaintyCalculator,
 )
 
 # Adjust these paths for your environment
@@ -30,3 +31,14 @@ link_ensemble_files(structures, ENSEMBLE_DIR, DST_PARENT)
 calc = BandUncertaintyCalculator()
 output = calc.compute(MODEL_DIRS, DFT_DIR)
 print(output)
+
+# Compute Hamiltonian matrix-element uncertainty (std of |model - average|,
+# streamed chunk-by-chunk per model, never loading a full entries array).
+# Leave average_hamiltonian_dir unset to compute the average on the fly via
+# average_predicted_hamiltonians; pass a directory to reuse/persist it.
+matrix_calc = MatrixUncertaintyCalculator()
+matrix_output = matrix_calc.compute(MODEL_DIRS, average_hamiltonian_dir=ENSEMBLE_DIR)
+print(matrix_output)
+
+# Parallel version -- one worker process per structure.
+# matrix_output = matrix_calc.compute_parallel(MODEL_DIRS, average_hamiltonian_dir=ENSEMBLE_DIR)
