@@ -348,4 +348,3 @@ class GenerateProjectedDeephInputs:
             "projection_results": [job.output for job in projection_jobs],
         }
         return Flow(jobs=projection_jobs, name=self.name, output=outputs)
-

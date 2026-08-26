@@ -31,17 +31,17 @@ def build_aims_dft_jobs(
     symprec: float = 0.01,
 ) -> list[Flow | Job]:
     jobs: list[Flow | Job] = []
-    
+
     # Handle both single trajectory file and multiple individual structure files
     structure_data: list[tuple[Structure, str]] = []
-    
+
     if isinstance(structures_filenames, (str, Path)):
         # Single trajectory file (xyz, extxyz, etc.)
         trajectory_file = Path(structures_filenames)
         ase_structures = ase_read(str(trajectory_file), index=":")
         if not isinstance(ase_structures, list):
             ase_structures = [ase_structures]
-        
+
         for idx, ase_structure in enumerate(ase_structures):
             structure = AseAtomsAdaptor.get_structure(ase_structure)
             trajectory_name = ase_structure.info.get("index", f"structure_{idx:04d}")
@@ -52,7 +52,7 @@ def build_aims_dft_jobs(
             structure = Structure.from_file(structure_file)
             structure_name = structure_file.parent.name
             structure_data.append((structure, structure_name))
-    
+
     for structure, structure_name in structure_data:
         structure_aims_kwargs = dict(aims_kwargs or {})
         if kgrid is not None and (kpoints_updates or user_kpoints_settings not in (None, {})):
@@ -244,7 +244,7 @@ def set_projection_job_name(job_obj: Job, structure_name: str, reduction_mode: R
     because those are implementation details and may not include every argument.
     The values are known at the creation site and are the right source of truth.
     """
-    job_obj.name = f"{structure_name}_{reduction_mode}"
+    job_obj.name = f"projection_{structure_name}_{reduction_mode}"
     return job_obj
 
 
