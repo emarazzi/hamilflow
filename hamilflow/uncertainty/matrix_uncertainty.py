@@ -169,6 +169,72 @@ class MatrixUncertaintyCalculator:
                 output[name] = res
         return output
 
+    def compare_averaged_to_dft(
+        self,
+        model_dirs: Iterable[Path],
+        dft_root: Path,
+        structure_pattern: str | None = None,
+        exclude_structures: Iterable[str] | None = None,
+        average_hamiltonian_dir: Path | None = None,
+    ) -> dict:
+        """Compare each structure's averaged Hamiltonian (from ``model_dirs``, resolved the
+        same way as `compute`) to the DFT reference Hamiltonian under `dft_root`.
+
+        Like `_compute_structure`, entries are streamed in `chunk_size` chunks rather than
+        loaded in full, so peak memory stays O(chunk_size) regardless of structure size.
+
+        Returns a dict keyed by structure with summary statistics (mean/max absolute
+        difference across matrix elements) similar in spirit to `compute`.
+        """
+        model_dirs = [Path(p) for p in model_dirs]
+        dft_root = Path(dft_root)
+        structures = self._discover_structures(model_dirs, structure_pattern, exclude_structures)
+
+        results = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            for structure_name in structures:
+                model_paths = [Path(d) / structure_name / self.hamiltonian_name for d in model_dirs]
+                avg_path = self._resolve_average_path(structure_name, model_paths, average_hamiltonian_dir, tmp)
+                dft_path = dft_root / structure_name / self.hamiltonian_name
+
+                avg_atom_pairs, avg_chunk_shapes, n_entries = self._read_structure_meta(avg_path)
+                dft_atom_pairs, dft_chunk_shapes, n_dft_entries = self._read_structure_meta(dft_path)
+                if (
+                    n_dft_entries != n_entries
+                    or not np.array_equal(dft_atom_pairs, avg_atom_pairs)
+                    or not np.array_equal(dft_chunk_shapes, avg_chunk_shapes)
+                ):
+                    raise ValueError(
+                        f"{structure_name}: sparse layout of {dft_path} does not match the "
+                        f"averaged Hamiltonian ({avg_path}) -- atom_pairs/chunk_shapes/entries "
+                        "length must be identical"
+                    )
+
+                sum_abs_diff = 0.0
+                max_abs_diff = 0.0
+                n_total = 0
+
+                with h5py.File(avg_path, "r") as avg_file, h5py.File(dft_path, "r") as dft_file:
+                    avg_dset = avg_file["entries"]
+                    dft_dset = dft_file["entries"]
+                    for start, end in self._iter_chunk_ranges(n_entries):
+                        avg_chunk = np.asarray(avg_dset[start:end])
+                        dft_chunk = np.asarray(dft_dset[start:end])
+                        abs_diff = np.abs(avg_chunk - dft_chunk)
+                        sum_abs_diff += float(abs_diff.sum())
+                        max_abs_diff = max(max_abs_diff, float(abs_diff.max()) if abs_diff.size else 0.0)
+                        n_total += abs_diff.size
+
+                mean_abs_diff = sum_abs_diff / n_total if n_total else 0.0
+
+                results[structure_name] = {
+                    "mean_abs_diff": mean_abs_diff,
+                    "max_abs_diff": max_abs_diff,
+                    "n_matrix_elements": n_total,
+                }
+
+        return results
+
     def compute_parallel(
         self,
         model_dirs: Iterable[Path],
