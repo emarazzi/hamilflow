@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import concurrent.futures
 import json
 import os
+import time
 
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 
@@ -122,12 +123,16 @@ class BandUncertaintyCalculator:
 
     def _compute_structure(self, structure_name: str, model_dirs: list[Path], blas_threads_per_worker: int = 1):
         """Compute uncertainty for a single structure (helper for parallel runs)."""
+        t_start = time.monotonic()
+        print(f"[{structure_name}] starting ({len(model_dirs)} models, pid={os.getpid()})", flush=True)
+
         ks_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ks_obj, self.grid_mesh, self.symprec)
 
         aligned_eigvals = []
         shifts = []
-        for model in model_dirs:
+        for i_model, model in enumerate(model_dirs):
+            t_model = time.monotonic()
             h_obj = SparseHamiltonianObj(model / structure_name)
             # compute_parallel already parallelizes over structures at the process
             # level (one worker per structure, capped at max_workers), so k-point
@@ -141,6 +146,11 @@ class BandUncertaintyCalculator:
             aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
             aligned_eigvals.append(aligned)
             shifts.append(shift)
+            print(
+                f"[{structure_name}] model {i_model + 1}/{len(model_dirs)} done "
+                f"in {time.monotonic() - t_model:.1f}s",
+                flush=True,
+            )
 
         window_mask = self.band_window_mask(aligned_eigvals[0], self.window_ev)
 
@@ -158,6 +168,7 @@ class BandUncertaintyCalculator:
                 "n_bands_in_window": int(mask_k.sum()),
             }
 
+        print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
         return structure_name, {
             "grid_mesh": list(self.grid_mesh),
             "n_irreducible_kpoints": n_irr,
@@ -214,7 +225,10 @@ class BandUncertaintyCalculator:
                     tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
                     with open(tmp_path, "w") as f:
                         json.dump(output, f, indent=4)
+                        f.flush()
+                        os.fsync(f.fileno())
                     os.replace(tmp_path, output_path)
+                    print(f"[{name}] wrote {len(output)}/{len(structures)} structures to {output_path}", flush=True)
 
         return output
 
