@@ -27,9 +27,14 @@ link_ensemble_files(structures, ENSEMBLE_DIR, DST_PARENT)
 # pred_files = [d / structures[0].name / "hamiltonian.h5" for d in MODEL_DIRS]
 # average_predicted_hamiltonians(pred_files, ENSEMBLE_DIR / structures[0].name / "hamiltonian.h5")
 
-# Compute band uncertainty
+# Compute band uncertainty. Each k-point/band's result carries both
+# "sigma_eV" (std of per-model eigenvalues around their mean) and
+# "sigma_eV_avg_ham" (RMS deviation from the eigenvalues of the models'
+# averaged Hamiltonian, diagonalized once per structure). average_hamiltonian_dir
+# is required -- the averaged hamiltonian.h5 is read from there if already
+# present, otherwise computed and written there (shared with MatrixUncertaintyCalculator).
 calc = BandUncertaintyCalculator()
-output = calc.compute(MODEL_DIRS, DFT_DIR)
+output = calc.compute(MODEL_DIRS, ENSEMBLE_DIR)
 print(output)
 
 # Compute Hamiltonian matrix-element uncertainty (std of |model - average|,
