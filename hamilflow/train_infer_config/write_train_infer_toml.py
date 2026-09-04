@@ -24,16 +24,18 @@ class TrainSystemConfig(InferSystemConfig):
 @dataclass
 class DftConfig:
     data_dir_depth: int = 0
-    validation_check: Optional[bool] = None  # infer-only quirk key, not in guide's table at all — flag if you actually use it
 
 @dataclass
 class GraphConfig:
     dataset_name: str = "DATASET-DEMO"
     graph_type: Literal["H", "HS", "Rho", "Sap", "S"] = "H"  # infer restricts further, see InferGraphConfig
     storage_type: Literal["memory", "disk"] = "memory"
-    common_orbital_types: str = ""
     parallel_num: int = -1
     only_save_graph: bool = False
+
+@dataclass
+class TrainGraphConfig(GraphConfig):
+    common_orbital_types: str = ""  # training-only key, not part of infer.toml's [data.graph]
 
 @dataclass
 class InferGraphConfig(GraphConfig):
@@ -58,7 +60,7 @@ class InferDataConfig:
 class TrainDataConfig(InferDataConfig):
     inputs_dir: str = "<Invalid-Input>"   # required, no real default
     outputs_dir: str = "<Invalid-Input>"
-    graph: GraphConfig = field(default_factory=GraphConfig)
+    graph: TrainGraphConfig = field(default_factory=TrainGraphConfig)
     model_save: ModelSaveConfig = field(default_factory=ModelSaveConfig)
 
 # ================================ MODEL ===============================
@@ -150,6 +152,14 @@ class ProcessTrainConfig:
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     continued: ContinuedConfig = field(default_factory=ContinuedConfig)
 
+@dataclass
+class TrainProcessConfig:
+    train: ProcessTrainConfig = field(default_factory=ProcessTrainConfig)
+
+@dataclass
+class InferProcessConfig:
+    infer: ProcessInferConfig = field(default_factory=ProcessInferConfig)
+
 # ============================ TOP LEVEL ================================
 
 @dataclass
@@ -157,14 +167,14 @@ class InferConfig:
     system: InferSystemConfig = field(default_factory=InferSystemConfig)
     data: InferDataConfig = field(default_factory=InferDataConfig)
     model: InferModelConfig = field(default_factory=InferModelConfig)
-    process: ProcessInferConfig = field(default_factory=ProcessInferConfig)
+    process: InferProcessConfig = field(default_factory=InferProcessConfig)
 
 @dataclass
 class TrainConfig:
     system: TrainSystemConfig = field(default_factory=TrainSystemConfig)
     data: TrainDataConfig = field(default_factory=TrainDataConfig)
     model: TrainModelConfig = field(default_factory=TrainModelConfig)
-    process: ProcessTrainConfig = field(default_factory=ProcessTrainConfig)
+    process: TrainProcessConfig = field(default_factory=TrainProcessConfig)
 
 
 # ============================ VALIDATION ================================
