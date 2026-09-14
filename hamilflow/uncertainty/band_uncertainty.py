@@ -146,7 +146,7 @@ class BandUncertaintyCalculator:
             window_mask = self.band_window_mask(aligned_eigvals[0], self.window_ev)
 
             aligned_stack = np.stack(aligned_eigvals, axis=0)
-            sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
+            #sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
             # Deviation from the averaged Hamiltonian's own eigenvalues (a fixed
             # reference, not estimated from this sample) -- no ddof correction needed.
             sigma_eigvals_avg_ham = np.sqrt(np.mean((aligned_stack - avg_ham_aligned[None, :, :]) ** 2, axis=0))
@@ -157,7 +157,7 @@ class BandUncertaintyCalculator:
                 result_per_k[f"k{i_k}"] = {
                     "k_frac": ks[i_k].tolist(),
                     "weight": int(weights[i_k]),
-                    "sigma_eV": sigma_eigvals[mask_k, i_k].tolist(),
+                    #"sigma_eV": sigma_eigvals[mask_k, i_k].tolist(),
                     "sigma_eV_avg_ham": sigma_eigvals_avg_ham[mask_k, i_k].tolist(),
                     "n_bands_in_window": int(mask_k.sum()),
                 }
