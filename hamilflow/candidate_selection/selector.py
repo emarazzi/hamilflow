@@ -80,7 +80,7 @@ class CandidateSelector:
         import amd
         from scipy.spatial.distance import squareform
 
-        dist_condensed = amd.AMD_pdist(amds)
+        dist_condensed = amd.AMD_pdist(amds, metric="euclidean")
         return squareform(dist_condensed)
 
     # -- candidate-pool filtering ----------------------------------------
