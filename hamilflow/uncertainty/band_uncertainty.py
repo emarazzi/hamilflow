@@ -102,6 +102,7 @@ class BandUncertaintyCalculator:
 
     @staticmethod
     def _write_output_atomic(output: dict, output_path: Path) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
         with open(tmp_path, "w") as f:
             json.dump(output, f, indent=4)
@@ -117,6 +118,16 @@ class BandUncertaintyCalculator:
             existing = json.load(f)
         print(f"Loaded {len(existing)} finished structures from {output_path}", flush=True)
         return existing
+
+    @classmethod
+    def _init_output(cls, output_path: Path | None, skip_existing: bool) -> dict:
+        """Return the starting result dict. When not resuming, an existing output file is
+        atomically reset to `{}` so an interrupted run cannot leave stale results behind."""
+        if skip_existing:
+            return cls._load_existing_output(output_path)
+        if output_path is not None:
+            cls._write_output_atomic({}, output_path)
+        return {}
 
     @staticmethod
     def _drop_done(structures: list[str], output: dict) -> list[str]:
@@ -165,7 +176,7 @@ class BandUncertaintyCalculator:
 
         if output_path is not None:
             output_path = Path(output_path)
-        output = self._load_existing_output(output_path) if skip_existing else {}
+        output = self._init_output(output_path, skip_existing)
         structures = self._drop_done(structures, output)
 
         for structure_name in structures:
@@ -327,7 +338,7 @@ class BandUncertaintyCalculator:
 
         if output_path is not None:
             output_path = Path(output_path)
-        output = self._load_existing_output(output_path) if skip_existing else {}
+        output = self._init_output(output_path, skip_existing)
         structures = self._drop_done(structures, output)
         if not structures:
             return output
