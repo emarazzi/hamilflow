@@ -84,6 +84,8 @@ class BandUncertaintyCalculator:
         ks: np.ndarray,
         anchor_k_idx: int,
         average_hamiltonian_dir: Path,
+        n_jobs: int = -1,
+        parallel_k: bool = True,
     ):
         """Diagonalize the models' averaged Hamiltonian and align it to midgap.
 
@@ -95,8 +97,33 @@ class BandUncertaintyCalculator:
         model_paths = [Path(d) / structure_name / self.hamiltonian_name for d in model_dirs]
         avg_path = self._resolve_average_hamiltonian_path(structure_name, model_paths, average_hamiltonian_dir)
         avg_h_obj = SparseHamiltonianObj(Path(model_dirs[0]) / structure_name, H_file_path=avg_path)
-        avg_raw = avg_h_obj.diag(ks, bands_only=True)
+        avg_raw = avg_h_obj.diag(ks, bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k)
         return self.align_to_midgap(avg_raw, avg_h_obj, anchor_k_idx)
+
+    @staticmethod
+    def _write_output_atomic(output: dict, output_path: Path) -> None:
+        tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+        with open(tmp_path, "w") as f:
+            json.dump(output, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, output_path)
+
+    @staticmethod
+    def _load_existing_output(output_path: Path | None) -> dict:
+        if output_path is None or not output_path.exists():
+            return {}
+        with open(output_path) as f:
+            existing = json.load(f)
+        print(f"Loaded {len(existing)} finished structures from {output_path}", flush=True)
+        return existing
+
+    @staticmethod
+    def _drop_done(structures: list[str], output: dict) -> list[str]:
+        todo = [s for s in structures if s not in output]
+        if len(todo) < len(structures):
+            print(f"Skipping {len(structures) - len(todo)} already-computed structures", flush=True)
+        return todo
 
     def compute(
         self,
@@ -104,12 +131,27 @@ class BandUncertaintyCalculator:
         average_hamiltonian_dir: Path,
         structure_pattern: str | None = None,
         exclude_structures: Iterable[str] | None = None,
+        n_jobs: int = -1,
+        parallel_k: bool = True,
+        output_path: Path | str | None = None,
+        skip_existing: bool = True,
     ):
         """
+        - `output_path`: if given, the accumulated result dict is written to this path
+          (atomically) after every structure completes, so a killed/timed-out job still
+          leaves the results computed so far on disk.
+        - `skip_existing`: if True and `output_path` already exists, structures already in it
+          are not recomputed and their stored results are kept in the returned dict. Set to
+          False to recompute everything (the file is then overwritten). Note that stored
+          results are reused as-is, even if `grid_mesh`, `window_ev` or the models changed.
         - `average_hamiltonian_dir`: root containing (or to receive) each structure's averaged
           `hamiltonian.h5` (see `hamiltonian_io.average_predicted_hamiltonians`), diagonalized to
           get the `sigma_eV_avg_ham` reference below. If a structure's average is already there
           it is read as-is; otherwise it is computed and written there.
+        - `n_jobs`: CPU budget for every diagonalization (-1 = all cores). Passed to
+          `SparseHamiltonianObj.diag`.
+        - `parallel_k`: if True, k-points are spread over threads (leftover budget goes to each
+          thread's BLAS calls); if False, k-points run serially with `n_jobs` BLAS threads each.
         """
         model_dirs = [Path(p) for p in model_dirs]
         average_hamiltonian_dir = Path(average_hamiltonian_dir)
@@ -121,8 +163,11 @@ class BandUncertaintyCalculator:
             excluded = set(exclude_structures)
             structures = [s for s in structures if s not in excluded]
 
+        if output_path is not None:
+            output_path = Path(output_path)
+        output = self._load_existing_output(output_path) if skip_existing else {}
+        structures = self._drop_done(structures, output)
 
-        output = {}
         for structure_name in structures:
             h_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
             ks, weights, anchor_k_idx = self.build_irreducible_kpoints(h_obj, self.grid_mesh, self.symprec)
@@ -134,13 +179,14 @@ class BandUncertaintyCalculator:
             shifts = []
             for model in model_dirs:
                 h_obj = SparseHamiltonianObj(model / structure_name)
-                raw = h_obj.diag(ks, bands_only=True)
+                raw = h_obj.diag(ks, bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k)
                 aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
                 aligned_eigvals.append(aligned)
                 shifts.append(shift)
 
             avg_ham_aligned, avg_ham_shift = self._average_hamiltonian_aligned_eigvals(
-                structure_name, model_dirs, ks, anchor_k_idx, average_hamiltonian_dir
+                structure_name, model_dirs, ks, anchor_k_idx, average_hamiltonian_dir,
+                n_jobs=n_jobs, parallel_k=parallel_k,
             )
 
             window_mask = self.band_window_mask(aligned_eigvals[0], self.window_ev)
@@ -171,6 +217,9 @@ class BandUncertaintyCalculator:
                 "kpoints": result_per_k,
             }
 
+            if output_path is not None:
+                self._write_output_atomic(output, output_path)
+                print(f"[{structure_name}] wrote {len(output)} structures to {output_path}", flush=True)
 
         return output
 
@@ -254,6 +303,7 @@ class BandUncertaintyCalculator:
         max_workers: int | None = None,
         output_path: Path | str | None = None,
         exclude_structures: Iterable[str] | None = None,
+        skip_existing: bool = True,
     ):
         """Parallelized version of `compute` that runs per-structure work in separate processes.
 
@@ -262,6 +312,7 @@ class BandUncertaintyCalculator:
           (atomically) after every structure completes, so a killed/timed-out job still
           leaves the results computed so far on disk.
         - `exclude_structures`: structure names to skip.
+        - `skip_existing`: see `compute`.
         - `average_hamiltonian_dir`: see `compute`.
         """
         model_dirs = [Path(p) for p in model_dirs]
@@ -274,6 +325,13 @@ class BandUncertaintyCalculator:
             excluded = set(exclude_structures)
             structures = [s for s in structures if s not in excluded]
 
+        if output_path is not None:
+            output_path = Path(output_path)
+        output = self._load_existing_output(output_path) if skip_existing else {}
+        structures = self._drop_done(structures, output)
+        if not structures:
+            return output
+
         if max_workers is None:
             max_workers = min(len(structures), os.cpu_count() or 1)
 
@@ -283,10 +341,6 @@ class BandUncertaintyCalculator:
         # (e.g. few structures, or large structures relative to core count).
         blas_threads_per_worker = max(1, (os.cpu_count() or 1) // max_workers)
 
-        if output_path is not None:
-            output_path = Path(output_path)
-
-        output = {}
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = {
                 ex.submit(
@@ -298,13 +352,8 @@ class BandUncertaintyCalculator:
                 name, res = fut.result()
                 output[name] = res
                 if output_path is not None:
-                    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-                    with open(tmp_path, "w") as f:
-                        json.dump(output, f, indent=4)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp_path, output_path)
-                    print(f"[{name}] wrote {len(output)}/{len(structures)} structures to {output_path}", flush=True)
+                    self._write_output_atomic(output, output_path)
+                    print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
 
         return output
 
