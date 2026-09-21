@@ -84,6 +84,7 @@ def plot_mds(
         fig = customize(fig) or fig
 
     if save_path is not None:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         fig.write_html(str(save_path))
     if show_fig:
         fig.show()
