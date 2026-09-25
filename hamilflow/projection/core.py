@@ -32,6 +32,7 @@ def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
             structure=structure,
             user_kpoints_settings=config.user_kpoints_settings,
             force_2d=config.force_2d,
+            force_1d=config.force_1d,
         )
         if not ksampling or "k_grid" not in ksampling:
             raise ValueError(
@@ -44,6 +45,8 @@ def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
 
     if config.force_2d:
         return (int(config.kgrid[0]), int(config.kgrid[1]), 1)
+    if config.force_1d:
+        return (1, 1, int(config.kgrid[2]))
     return (int(config.kgrid[0]), int(config.kgrid[1]), int(config.kgrid[2]))
 
 

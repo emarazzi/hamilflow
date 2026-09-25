@@ -28,6 +28,7 @@ def build_aims_dft_jobs(
     user_kpoints_settings: dict[str, Any] | Any | None = None,
     force_gamma: bool = True,
     force_2d: bool = False,
+    force_1d: bool = False,
     symprec: float = 0.01,
 ) -> list[Flow | Job]:
     jobs: list[Flow | Job] = []
@@ -63,6 +64,7 @@ def build_aims_dft_jobs(
             user_kpoints_settings=user_kpoints_settings,
             force_gamma=force_gamma,
             force_2d=force_2d,
+            force_1d=force_1d,
             symprec=symprec,
         )
         # Merge k-point settings into aims_kwargs for StaticSetGenerator if applicable
@@ -257,6 +259,7 @@ def run_projection_for_structure(
     kgrid: tuple[int, int, int] = (4, 4, 4),
     user_kpoints_settings: dict[str, Any] | Any | None = None,
     force_2d: bool = False,
+    force_1d: bool = False,
     reduction_mode: ReductionMode = "schur",
     overlap_only: bool = False,
     write_dummy_hamiltonian: bool = False,
@@ -308,6 +311,7 @@ def run_projection_for_structure(
             kgrid=kgrid_3,
             user_kpoints_settings=user_kpoints_settings,
             force_2d=force_2d,
+            force_1d=force_1d,
             reduction_mode=reduction_mode,
             overlap_only=overlap_only,
             write_dummy_hamiltonian=write_dummy_hamiltonian,

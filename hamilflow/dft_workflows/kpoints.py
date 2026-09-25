@@ -16,9 +16,13 @@ def get_ksampling(
     user_kpoints_settings: dict[str, Any] | None = None,
     force_gamma: bool = True,
     force_2d: bool = False,
+    force_1d: bool = False,
     symprec: float = 0.01,
 ) -> dict[str, Any] | None:
     """Resolve k-point settings into a single payload for AIMS input generation."""
+
+    if force_2d and force_1d:
+        raise ValueError("force_2d and force_1d are mutually exclusive.")
 
     def normalize_k_grid(k_grid: tuple[int, int, int] | list[int] | tuple[Any, ...]) -> list[int]:
         k_grid_values = [int(value) for value in k_grid]
@@ -26,6 +30,9 @@ def get_ksampling(
             raise ValueError(f"k_grid must contain exactly three integers, got: {k_grid_values}")
         if force_2d:
             k_grid_values[2] = 1
+        elif force_1d:
+            k_grid_values[0] = 1
+            k_grid_values[1] = 1
         return k_grid_values
 
     if user_kpoints_settings not in (None, {}):

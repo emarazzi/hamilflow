@@ -38,6 +38,7 @@ class ProjectionConfig:
     kgrid: tuple[int, int, int] = (4, 4, 4)
     user_kpoints_settings: dict[str, Any] | Any | None = None
     force_2d: bool = False
+    force_1d: bool = False
     reduction_mode: ReductionMode = "schur"
     overlap_only: bool = False
     write_dummy_hamiltonian: bool = False
@@ -46,6 +47,8 @@ class ProjectionConfig:
     n_workers: int | None = None
 
     def __post_init__(self) -> None:
+        if self.force_2d and self.force_1d:
+            raise ValueError("force_2d and force_1d are mutually exclusive.")
         object.__setattr__(self, "input_dir", Path(self.input_dir))
         object.__setattr__(self, "output_dir", Path(self.output_dir))
 

@@ -87,6 +87,7 @@ class ProjectDeephInputsConfig:
     kgrid: tuple[int, int, int] = (4, 4, 4)
     user_kpoints_settings: dict[str, Any] | Any | None = None
     force_2d: bool = False
+    force_1d: bool = False
     reduction_mode: ReductionMode = "schur"
     overlap_only: bool = False
     write_dummy_hamiltonian: bool = False
@@ -150,6 +151,7 @@ class GenerateAimsDFTData:
     user_kpoints_settings: dict[str, Any] | Any | None = None
     force_gamma: bool = True
     force_2d: bool = False
+    force_1d: bool = False
     symprec: float = 1e-5
     aims_maker: Maker | None = field(
         default_factory=lambda: StaticMaker(input_set_generator=StaticSetGenerator())
@@ -160,6 +162,9 @@ class GenerateAimsDFTData:
 
     def __post_init__(self):
         merged_aims_kwargs = {**DEFAULT_AIMS_KWARGS, **self.aims_kwargs}
+
+        if self.force_2d and self.force_1d:
+            raise ValueError("force_2d and force_1d are mutually exclusive.")
 
         if self.structure_file_format and self.structure_file_format not in get_args(FileFormats):
             raise ValueError(
@@ -214,6 +219,7 @@ class GenerateAimsDFTData:
                 user_kpoints_settings=self.user_kpoints_settings,
                 force_gamma=self.force_gamma,
                 force_2d=self.force_2d,
+                force_1d=self.force_1d,
                 symprec=self.symprec,
             )
             jobs.extend(aims_jobs)
@@ -329,6 +335,7 @@ class GenerateProjectedDeephInputs:
                 kgrid=self.projection_config.kgrid,
                 user_kpoints_settings=self.projection_config.user_kpoints_settings,
                 force_2d=self.projection_config.force_2d,
+                force_1d=self.projection_config.force_1d,
                 reduction_mode=self.projection_config.reduction_mode,
                 overlap_only=self.projection_config.overlap_only,
                 write_dummy_hamiltonian=self.projection_config.write_dummy_hamiltonian,
