@@ -368,62 +368,164 @@ class BandUncertaintyCalculator:
 
         return output
 
-    def compare_averaged_to_dft(self, averaged_model_root: Path, dft_root: Path, structure_pattern: str | None = None):
-        """Compare averaged Hamiltonian (stored per-structure under `averaged_model_root`) to DFT reference.
+    @staticmethod
+    def _list_structures(
+        root: Path,
+        structure_pattern: str | None = None,
+        exclude_structures: Iterable[str] | None = None,
+    ) -> list[str]:
+        if structure_pattern:
+            structures = [p.name for p in (root / structure_pattern).parent.glob(structure_pattern)]
+        else:
+            structures = [p.name for p in root.glob("*") if p.is_dir()]
+        if exclude_structures:
+            excluded = set(exclude_structures)
+            structures = [s for s in structures if s not in excluded]
+        return structures
 
-        Expects `averaged_model_root/<structure_name>/hamiltonian.h5` and supporting files
-        (info.json, overlap.h5) to be present so `SparseHamiltonianObj` can read the averaged result.
+    def _compare_structure(
+        self,
+        structure_name: str,
+        model_dirs: list[Path],
+        average_hamiltonian_dir: Path,
+        dft_root: Path,
+        n_jobs: int = -1,
+        parallel_k: bool = True,
+    ):
+        """Compare the models' averaged Hamiltonian to DFT for a single structure."""
+        t_start = time.monotonic()
+        print(f"[{structure_name}] starting comparison to DFT (pid={os.getpid()})", flush=True)
+
+        dft_obj = SparseHamiltonianObj(dft_root / structure_name)
+
+        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, self.grid_mesh, self.symprec)
+
+        avg_aligned, _ = self._average_hamiltonian_aligned_eigvals(
+            structure_name, model_dirs, ks, anchor_k_idx, average_hamiltonian_dir,
+            n_jobs=n_jobs, parallel_k=parallel_k,
+        )
+        dft_raw = dft_obj.diag(ks, bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k)
+        dft_aligned, _ = self.align_to_midgap(dft_raw, dft_obj, anchor_k_idx)
+
+        window_mask = self.band_window_mask(avg_aligned, self.window_ev)
+
+        abs_err = np.abs(avg_aligned - dft_aligned)
+
+        per_k = {}
+        mae_values = []
+        for i_k in range(len(ks)):
+            mask_k = window_mask[:, i_k]
+            vals = abs_err[mask_k, i_k].tolist()
+            per_k[f"k{i_k}"] = {
+                "k_frac": ks[i_k].tolist(),
+                "weight": int(weights[i_k]),
+                "abs_err_eV": vals,
+                "n_bands_in_window": int(mask_k.sum()),
+            }
+            if vals:
+                mae_values.append(float(np.mean(vals)))
+
+        overall_mae = float(np.mean(mae_values)) if mae_values else 0.0
+
+        print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
+        return structure_name, {
+            "overall_mae_eV": overall_mae,
+            "occupation": dft_obj.occupation,
+            "per_k": per_k,
+        }
+
+    def compare_averaged_to_dft(
+        self,
+        model_dirs: Iterable[Path],
+        average_hamiltonian_dir: Path,
+        dft_root: Path,
+        structure_pattern: str | None = None,
+        exclude_structures: Iterable[str] | None = None,
+        n_jobs: int = -1,
+        parallel_k: bool = True,
+        output_path: Path | str | None = None,
+        skip_existing: bool = True,
+    ):
+        """Compare the models' averaged Hamiltonian to the DFT reference under `dft_root`.
 
         Returns a dict keyed by structure with MAE and per-k error lists similar to `compute`.
+
+        - `average_hamiltonian_dir`: see `compute`. Each structure's averaged `hamiltonian.h5`
+          is read from there if present, otherwise averaged from `model_dirs` and written there.
+          `info.json`/`overlap.h5` are taken from `model_dirs[0]`.
+        - `output_path`, `skip_existing`, `n_jobs`, `parallel_k`: see `compute`.
+        - `exclude_structures`: structure names to skip.
         """
-        averaged_model_root = Path(averaged_model_root)
+        model_dirs = [Path(p) for p in model_dirs]
+        average_hamiltonian_dir = Path(average_hamiltonian_dir)
         dft_root = Path(dft_root)
+        structures = self._list_structures(model_dirs[0], structure_pattern, exclude_structures)
 
-        if structure_pattern:
-            structures = [p.name for p in (averaged_model_root / structure_pattern).parent.glob(structure_pattern)]
-        else:
-            structures = [p.name for p in averaged_model_root.glob("*") if (averaged_model_root / p.name).is_dir()]
+        if output_path is not None:
+            output_path = Path(output_path)
+        output = self._init_output(output_path, skip_existing)
+        structures = self._drop_done(structures, output)
 
-        results = {}
         for structure_name in structures:
-            avg_obj = SparseHamiltonianObj(averaged_model_root / structure_name)
-            dft_obj = SparseHamiltonianObj(dft_root / structure_name)
+            name, res = self._compare_structure(
+                structure_name, model_dirs, average_hamiltonian_dir, dft_root,
+                n_jobs=n_jobs, parallel_k=parallel_k,
+            )
+            output[name] = res
+            if output_path is not None:
+                self._write_output_atomic(output, output_path)
+                print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
 
-            ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, self.grid_mesh, self.symprec)
+        return output
 
-            avg_raw = avg_obj.diag(ks, bands_only=True)
-            dft_raw = dft_obj.diag(ks, bands_only=True)
+    def compare_averaged_to_dft_parallel(
+        self,
+        model_dirs: Iterable[Path],
+        average_hamiltonian_dir: Path,
+        dft_root: Path,
+        structure_pattern: str | None = None,
+        max_workers: int | None = None,
+        output_path: Path | str | None = None,
+        exclude_structures: Iterable[str] | None = None,
+        skip_existing: bool = True,
+    ):
+        """Parallelized version of `compare_averaged_to_dft` that runs per-structure work in
+        separate processes. Arguments as in `compare_averaged_to_dft` / `compute_parallel`.
+        """
+        model_dirs = [Path(p) for p in model_dirs]
+        average_hamiltonian_dir = Path(average_hamiltonian_dir)
+        dft_root = Path(dft_root)
+        structures = self._list_structures(model_dirs[0], structure_pattern, exclude_structures)
 
-            avg_aligned, _ = self.align_to_midgap(avg_raw, avg_obj, anchor_k_idx)
-            dft_aligned, _ = self.align_to_midgap(dft_raw, dft_obj, anchor_k_idx)
+        if output_path is not None:
+            output_path = Path(output_path)
+        output = self._init_output(output_path, skip_existing)
+        structures = self._drop_done(structures, output)
+        if not structures:
+            return output
 
-            window_mask = self.band_window_mask(avg_aligned, self.window_ev)
+        if max_workers is None:
+            max_workers = min(len(structures), os.cpu_count() or 1)
 
-            abs_err = np.abs(avg_aligned - dft_aligned)
+        # See compute_parallel: k-point threading off inside workers, cores split evenly
+        # across processes for BLAS.
+        blas_threads_per_worker = max(1, (os.cpu_count() or 1) // max_workers)
 
-            per_k = {}
-            mae_values = []
-            for i_k in range(len(ks)):
-                mask_k = window_mask[:, i_k]
-                vals = abs_err[mask_k, i_k].tolist()
-                per_k[f"k{i_k}"] = {
-                    "k_frac": ks[i_k].tolist(),
-                    "weight": int(weights[i_k]),
-                    "abs_err_eV": vals,
-                    "n_bands_in_window": int(mask_k.sum()),
-                }
-                if vals:
-                    mae_values.append(float(np.mean(vals)))
-
-            overall_mae = float(np.mean(mae_values)) if mae_values else 0.0
-
-            results[structure_name] = {
-                "overall_mae_eV": overall_mae,
-                "occupation": dft_obj.occupation,
-                "per_k": per_k,
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futures = {
+                ex.submit(
+                    self._compare_structure, s, model_dirs, average_hamiltonian_dir, dft_root,
+                    blas_threads_per_worker, False,
+                ): s
+                for s in structures
             }
+            for fut in concurrent.futures.as_completed(futures):
+                name, res = fut.result()
+                output[name] = res
+                if output_path is not None:
+                    self._write_output_atomic(output, output_path)
+                    print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
 
-        return results
-
+        return output
 
 __all__ = ["BandUncertaintyCalculator"]
