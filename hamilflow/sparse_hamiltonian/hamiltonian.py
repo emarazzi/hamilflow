@@ -139,13 +139,23 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         to avoid depending on deepx_dock internals beyond ``AOMatrixObj``.
         ``process_k`` runs one k-point at a time, so this is safe regardless
         of how many k-points are requested.
+
+        With ``sparse_calc=True`` (and no ``ill_handler``/``kept_orbitals``,
+        which need dense matrices), Hk/Sk are built as scipy sparse matrices
+        (``_sparse_k``) and handed to ``eigsh`` directly, so no dense
+        (Nb, Nb) array is ever allocated -- with ``sigma`` in ``kwargs`` the
+        shift-invert factorization is a sparse LU of ``Hk - sigma*Sk``.
         """
         if n_jobs < 0:
             n_jobs = os.cpu_count() or 1
 
         def process_k(k):
-            Sk = self._s_obj._dense_k(k)
-            Hk = self._dense_k(k)
+            if sparse_calc and ill_handler is None and kept_orbitals is None:
+                Sk = self._s_obj._sparse_k(k).tocsc()
+                Hk = self._sparse_k(k).tocsc()
+            else:
+                Sk = self._s_obj._dense_k(k)
+                Hk = self._dense_k(k)
 
             if ill_handler is not None:
                 return ill_handler.process_k(Hk, Sk, return_vecs=not bands_only)

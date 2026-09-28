@@ -4,7 +4,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, csr_matrix
 
 from deepx_dock.compute.eigen.matrix_obj import AOMatrixObj
 
@@ -173,8 +173,8 @@ class SparseAOMatrixObj(AOMatrixObj):
         self._entry_r_index = entry_r_index
         self._entries_expanded = entries_expanded
 
-    def _dense_k(self, k: np.ndarray) -> np.ndarray:
-        """Build the dense (mat_dim, mat_dim) matrix at one fractional k-point."""
+    def _coo_k(self, k: np.ndarray) -> coo_matrix:
+        """Phase-weighted (mat_dim, mat_dim) COO matrix at one fractional k-point (duplicates not yet summed)."""
         if self._entries_expanded is None:
             raise AttributeError(
                 "This SparseAOMatrixObj was constructed with load_matrix=False (structure/metadata "
@@ -182,6 +182,17 @@ class SparseAOMatrixObj(AOMatrixObj):
             )
         phase_per_r = np.exp(2j * np.pi * (self.Rijk_list.astype(np.float64) @ np.asarray(k, dtype=np.float64)))
         weighted = phase_per_r[self._entry_r_index] * self._entries_expanded
-        return coo_matrix(
-            (weighted, (self._entry_row, self._entry_col)), shape=(self._mat_dim, self._mat_dim)
-        ).toarray()
+        return coo_matrix((weighted, (self._entry_row, self._entry_col)), shape=(self._mat_dim, self._mat_dim))
+
+    def _dense_k(self, k: np.ndarray) -> np.ndarray:
+        """Build the dense (mat_dim, mat_dim) matrix at one fractional k-point."""
+        return self._coo_k(k).toarray()
+
+    def _sparse_k(self, k: np.ndarray) -> csr_matrix:
+        """
+        Build the (mat_dim, mat_dim) matrix at one fractional k-point as a
+        scipy CSR matrix, never allocating the dense array. Contributions
+        from different R vectors landing on the same (row, col) are summed,
+        exactly as in ``_dense_k``.
+        """
+        return self._coo_k(k).tocsr()
