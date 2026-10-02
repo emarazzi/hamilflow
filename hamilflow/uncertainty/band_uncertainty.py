@@ -25,7 +25,6 @@ class BandUncertaintyCalculator:
     grid_mesh: tuple[int, int, int] = (2, 2, 2)
     anchor_k: tuple[float, float, float] = (0.0, 0.0, 0.0)
     symprec: float = 1e-5
-    window_ev: float | None = None
     species_number: dict[str, int] = field(default_factory=lambda: {"Mo": 42, "S": 16})
     hamiltonian_name: str = "hamiltonian.h5"
 
@@ -60,11 +59,6 @@ class BandUncertaintyCalculator:
         mid_gap = (eigvals[homo_idx, anchor_k_idx] + eigvals[lumo_idx, anchor_k_idx]) / 2
         shift = -mid_gap
         return eigvals + shift, shift
-
-    def band_window_mask(self, eigvals, window_ev):
-        if window_ev is None:
-            return np.ones_like(eigvals, dtype=bool)
-        return np.abs(eigvals) <= window_ev
 
     def _resolve_average_hamiltonian_path(
         self,
@@ -154,11 +148,13 @@ class BandUncertaintyCalculator:
         - `skip_existing`: if True and `output_path` already exists, structures already in it
           are not recomputed and their stored results are kept in the returned dict. Set to
           False to recompute everything (the file is then overwritten). Note that stored
-          results are reused as-is, even if `grid_mesh`, `window_ev` or the models changed.
+          results are reused as-is, even if `grid_mesh` or the models changed.
         - `average_hamiltonian_dir`: root containing (or to receive) each structure's averaged
           `hamiltonian.h5` (see `hamiltonian_io.average_predicted_hamiltonians`), diagonalized to
           get the `sigma_eV_avg_ham` reference below. If a structure's average is already there
-          it is read as-is; otherwise it is computed and written there.
+          it is read as-is; otherwise it is computed and written there. Its midgap-aligned
+          eigenvalues are also stored per k-point as `eigvals_avg_ham_eV` (same band order as
+          `sigma_eV_avg_ham`), for energy-dependent weighting in post-processing.
         - `n_jobs`: CPU budget for every diagonalization (-1 = all cores). Passed to
           `SparseHamiltonianObj.diag`.
         - `parallel_k`: if True, k-points are spread over threads (leftover budget goes to each
@@ -183,6 +179,7 @@ class BandUncertaintyCalculator:
             h_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
             ks, weights, anchor_k_idx = self.build_irreducible_kpoints(h_obj, self.grid_mesh, self.symprec)
             occupation = h_obj.occupation
+            vbm_index, _ = self.homo_lumo_indices(h_obj)
 
             n_irr = len(ks)
 
@@ -200,8 +197,6 @@ class BandUncertaintyCalculator:
                 n_jobs=n_jobs, parallel_k=parallel_k,
             )
 
-            window_mask = self.band_window_mask(aligned_eigvals[0], self.window_ev)
-
             aligned_stack = np.stack(aligned_eigvals, axis=0)
             #sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
             # Deviation from the averaged Hamiltonian's own eigenvalues (a fixed
@@ -210,19 +205,19 @@ class BandUncertaintyCalculator:
 
             result_per_k = {}
             for i_k in range(n_irr):
-                mask_k = window_mask[:, i_k]
                 result_per_k[f"k{i_k}"] = {
                     "k_frac": ks[i_k].tolist(),
                     "weight": int(weights[i_k]),
-                    #"sigma_eV": sigma_eigvals[mask_k, i_k].tolist(),
-                    "sigma_eV_avg_ham": sigma_eigvals_avg_ham[mask_k, i_k].tolist(),
-                    "n_bands_in_window": int(mask_k.sum()),
+                    #"sigma_eV": sigma_eigvals[:, i_k].tolist(),
+                    "sigma_eV_avg_ham": sigma_eigvals_avg_ham[:, i_k].tolist(),
+                    "eigvals_avg_ham_eV": avg_ham_aligned[:, i_k].tolist(),
                 }
 
             output[structure_name] = {
                 "grid_mesh": list(self.grid_mesh),
                 "n_irreducible_kpoints": n_irr,
                 "occupation": occupation,
+                "vbm_index": vbm_index,
                 "per_model_shift_eV": shifts,
                 "avg_hamiltonian_shift_eV": avg_ham_shift,
                 "kpoints": result_per_k,
@@ -248,6 +243,7 @@ class BandUncertaintyCalculator:
         ks_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ks_obj, self.grid_mesh, self.symprec)
         occupation = ks_obj.occupation
+        vbm_index, _ = self.homo_lumo_indices(ks_obj)
 
         aligned_eigvals = []
         shifts = []
@@ -276,8 +272,6 @@ class BandUncertaintyCalculator:
             structure_name, model_dirs, ks, anchor_k_idx, average_hamiltonian_dir
         )
 
-        window_mask = self.band_window_mask(aligned_eigvals[0], self.window_ev)
-
         aligned_stack = np.stack(aligned_eigvals, axis=0)
         sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
         # Deviation from the averaged Hamiltonian's own eigenvalues (a fixed
@@ -287,13 +281,12 @@ class BandUncertaintyCalculator:
         n_irr = len(ks)
         result_per_k = {}
         for i_k in range(n_irr):
-            mask_k = window_mask[:, i_k]
             result_per_k[f"k{i_k}"] = {
                 "k_frac": ks[i_k].tolist(),
                 "weight": int(weights[i_k]),
-                "sigma_eV": sigma_eigvals[mask_k, i_k].tolist(),
-                "sigma_eV_avg_ham": sigma_eigvals_avg_ham[mask_k, i_k].tolist(),
-                "n_bands_in_window": int(mask_k.sum()),
+                "sigma_eV": sigma_eigvals[:, i_k].tolist(),
+                "sigma_eV_avg_ham": sigma_eigvals_avg_ham[:, i_k].tolist(),
+                "eigvals_avg_ham_eV": avg_ham_aligned[:, i_k].tolist(),
             }
 
         print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
@@ -301,6 +294,7 @@ class BandUncertaintyCalculator:
             "grid_mesh": list(self.grid_mesh),
             "n_irreducible_kpoints": n_irr,
             "occupation": occupation,
+            "vbm_index": vbm_index,
             "per_model_shift_eV": shifts,
             "avg_hamiltonian_shift_eV": avg_ham_shift,
             "kpoints": result_per_k,
@@ -407,31 +401,28 @@ class BandUncertaintyCalculator:
         dft_raw = dft_obj.diag(ks, bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k)
         dft_aligned, _ = self.align_to_midgap(dft_raw, dft_obj, anchor_k_idx)
 
-        window_mask = self.band_window_mask(avg_aligned, self.window_ev)
-
         abs_err = np.abs(avg_aligned - dft_aligned)
 
         per_k = {}
         mae_values = []
         for i_k in range(len(ks)):
-            mask_k = window_mask[:, i_k]
-            vals = abs_err[mask_k, i_k].tolist()
+            vals = abs_err[:, i_k].tolist()
             per_k[f"k{i_k}"] = {
                 "k_frac": ks[i_k].tolist(),
                 "weight": int(weights[i_k]),
                 "abs_err_eV": vals,
-                "n_bands_in_window": int(mask_k.sum()),
+                "eigvals_avg_ham_eV": avg_aligned[:, i_k].tolist(),
             }
-            if vals:
-                mae_values.append(float(np.mean(vals)))
+            mae_values.append(float(np.mean(vals)))
 
-        overall_mae = float(np.mean(mae_values)) if mae_values else 0.0
+        overall_mae = float(np.mean(mae_values))
 
         print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
         return structure_name, {
             "overall_mae_eV": overall_mae,
             "occupation": dft_obj.occupation,
-            "per_k": per_k,
+            "vbm_index": self.homo_lumo_indices(dft_obj)[0],
+            "kpoints": per_k,
         }
 
     def compare_averaged_to_dft(
