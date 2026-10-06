@@ -20,6 +20,21 @@ class BandUncertaintyCalculator:
     Example usage:
       calc = BandUncertaintyCalculator()
       output = calc.compute(model_dirs, dft_dir)
+
+    - `align_mode`: reference energy every spectrum is shifted to zero before comparison.
+      "grid" (default): midgap between the VBM (max over the k-grid of the highest occupied
+      band) and the CBM (min over the k-grid of the lowest unoccupied band), i.e. the true
+      gap as resolved by `grid_mesh`. "gamma": midgap between HOMO and LUMO at `anchor_k`
+      (the behavior before `align_mode` existed).
+    - `ill_method`: None or "orbital_removal" -- handling of an ill-conditioned overlap,
+      applied to every diagonalization (members, averaged Hamiltonian, DFT). Orbitals are removed
+      (`deepx_dock`'s global orbital truncation) until the smallest eigenvalue of S(k) on the
+      k-grid exceeds `ill_threshold`. The choice depends on S only, so it is made once per
+      structure and all spectra of a structure are computed in the same reduced basis; the
+      removed eigenvalue slots are dropped. "window_regularization" (also offered by
+      `IllConditionedHandler`) is not supported: its energy window would have to be placed
+      relative to the Fermi energy in info.json, which is copied from the DFT calculation and
+      is not the Fermi level of a predicted Hamiltonian.
     """
 
     grid_mesh: tuple[int, int, int] = (2, 2, 2)
@@ -27,6 +42,60 @@ class BandUncertaintyCalculator:
     symprec: float = 1e-5
     species_number: dict[str, int] = field(default_factory=lambda: {"Mo": 42, "S": 16})
     hamiltonian_name: str = "hamiltonian.h5"
+    align_mode: str = "grid"
+    ill_method: str | None = None
+    ill_threshold: float = 1e-3
+
+    _ILL_FILL_VALUE = 1e4
+
+    def __post_init__(self):
+        if self.align_mode not in ("grid", "gamma"):
+            raise ValueError(f"align_mode must be 'grid' or 'gamma', got {self.align_mode!r}")
+        if self.ill_method == "none":
+            self.ill_method = None
+        if self.ill_method not in (None, "orbital_removal"):
+            raise ValueError(f"ill_method must be None or 'orbital_removal', got {self.ill_method!r}")
+
+    def settings(self) -> dict:
+        """Settings that change the results, stored with every structure's output."""
+        return {
+            "align_mode": self.align_mode,
+            "ill_method": self.ill_method,
+            "ill_threshold": self.ill_threshold if self.ill_method else None,
+        }
+
+    def make_ill_handler(self, h_obj, ks, n_jobs: int = -1, parallel_k: bool = True):
+        """`IllConditionedHandler` for one structure, or None if `ill_method` is None.
+
+        Only S(k) of `h_obj` is used (shared by all spectra of the structure); no energy
+        information from info.json enters.
+        """
+        if self.ill_method is None:
+            return None
+        from deepx_dock.compute.eigen.ill_conditioned import IllConditionedHandler
+
+        handler = IllConditionedHandler(
+            method=self.ill_method,
+            ill_threshold=self.ill_threshold,
+            fill_value=self._ILL_FILL_VALUE,
+            verbose=False,
+        )
+        handler.prepare_orbital_truncation(h_obj.get_all_Sk(ks, n_jobs=n_jobs, parallel_k=parallel_k))
+        return handler
+
+    @staticmethod
+    def n_kept_orbitals(ill_handler) -> int | None:
+        if ill_handler is None or ill_handler.kept_orbitals is None:
+            return None
+        return len(ill_handler.kept_orbitals)
+
+    def common_bands(self, *eigvals: np.ndarray) -> list[np.ndarray]:
+        """Cut every `(n_bands, n_k)` array to the bands that are real (not an ill-conditioning
+        fill value) at every k-point in all of them."""
+        n_real = min(
+            int(np.min(np.sum(e < 0.5 * self._ILL_FILL_VALUE, axis=0))) for e in eigvals
+        )
+        return [e[:n_real] for e in eigvals]
 
     def build_irreducible_kpoints(self, h_obj, mesh, symprec):
         try:
@@ -54,11 +123,23 @@ class BandUncertaintyCalculator:
         n_occ = n_elec // 2 if not h_obj.spinful else n_elec
         return n_occ - 1, n_occ
 
-    def align_to_midgap(self, eigvals, h_obj, anchor_k_idx):
+    def band_edges(self, eigvals, h_obj, anchor_k_idx=None):
+        """`(VBM, CBM)` of `eigvals[band, k]`: over all k-points for `align_mode="grid"`, at
+        `anchor_k_idx` for `align_mode="gamma"`."""
         homo_idx, lumo_idx = self.homo_lumo_indices(h_obj)
-        mid_gap = (eigvals[homo_idx, anchor_k_idx] + eigvals[lumo_idx, anchor_k_idx]) / 2
-        shift = -mid_gap
+        if self.align_mode == "gamma":
+            return float(eigvals[homo_idx, anchor_k_idx]), float(eigvals[lumo_idx, anchor_k_idx])
+        return float(eigvals[homo_idx].max()), float(eigvals[lumo_idx].min())
+
+    def align_to_midgap(self, eigvals, h_obj, anchor_k_idx=None):
+        vbm, cbm = self.band_edges(eigvals, h_obj, anchor_k_idx)
+        shift = -(vbm + cbm) / 2
         return eigvals + shift, shift
+
+    def gap(self, eigvals, h_obj) -> float:
+        """Gap on the k-grid, `min_k CBM - max_k VBM` (whatever `align_mode` is)."""
+        homo_idx, lumo_idx = self.homo_lumo_indices(h_obj)
+        return float(eigvals[lumo_idx].min() - eigvals[homo_idx].max())
 
     def _resolve_average_hamiltonian_path(
         self,
@@ -71,17 +152,13 @@ class BandUncertaintyCalculator:
             average_predicted_hamiltonians(model_paths, avg_path)
         return avg_path
 
-    def _average_hamiltonian_aligned_eigvals(
+    def _avg_hamiltonian_obj(
         self,
         structure_name: str,
         model_dirs: list[Path],
-        ks: np.ndarray,
-        anchor_k_idx: int,
         average_hamiltonian_dir: Path,
-        n_jobs: int = -1,
-        parallel_k: bool = True,
-    ):
-        """Diagonalize the models' averaged Hamiltonian and align it to midgap.
+    ) -> SparseHamiltonianObj:
+        """The models' averaged Hamiltonian as a `SparseHamiltonianObj`.
 
         The averaged real-space Hamiltonian (see `hamiltonian_io.average_predicted_hamiltonians`)
         is read from `average_hamiltonian_dir` if already there, otherwise computed and written
@@ -90,9 +167,72 @@ class BandUncertaintyCalculator:
         """
         model_paths = [Path(d) / structure_name / self.hamiltonian_name for d in model_dirs]
         avg_path = self._resolve_average_hamiltonian_path(structure_name, model_paths, average_hamiltonian_dir)
-        avg_h_obj = SparseHamiltonianObj(Path(model_dirs[0]) / structure_name, H_file_path=avg_path)
-        avg_raw = avg_h_obj.diag(ks, bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k)
-        return self.align_to_midgap(avg_raw, avg_h_obj, anchor_k_idx)
+        return SparseHamiltonianObj(Path(model_dirs[0]) / structure_name, H_file_path=avg_path)
+
+    def _structure_uncertainty(
+        self,
+        structure_name: str,
+        model_dirs: list[Path],
+        average_hamiltonian_dir: Path,
+        n_jobs: int = -1,
+        parallel_k: bool = True,
+        log_models: bool = False,
+    ) -> dict:
+        """Band uncertainty of one structure (shared by `compute` and `compute_parallel`)."""
+        ref_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
+        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ref_obj, self.grid_mesh, self.symprec)
+        ill_handler = self.make_ill_handler(ref_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
+        diag_kwargs = dict(bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k, ill_handler=ill_handler)
+
+        raws = []
+        for i_model, model in enumerate(model_dirs):
+            t_model = time.monotonic()
+            raws.append(SparseHamiltonianObj(model / structure_name).diag(ks, **diag_kwargs))
+            if log_models:
+                print(
+                    f"[{structure_name}] model {i_model + 1}/{len(model_dirs)} done "
+                    f"in {time.monotonic() - t_model:.1f}s",
+                    flush=True,
+                )
+        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir)
+        avg_raw = avg_obj.diag(ks, **diag_kwargs)
+        *raws, avg_raw = self.common_bands(*raws, avg_raw)
+
+        # occupation/spinful come from info.json, identical for all members and the average
+        aligned_eigvals, shifts = zip(*(self.align_to_midgap(raw, ref_obj, anchor_k_idx) for raw in raws))
+        avg_ham_aligned, avg_ham_shift = self.align_to_midgap(avg_raw, ref_obj, anchor_k_idx)
+
+        aligned_stack = np.stack(aligned_eigvals, axis=0)
+        sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
+        # Deviation from the averaged Hamiltonian's own eigenvalues (a fixed
+        # reference, not estimated from this sample) -- no ddof correction needed.
+        sigma_eigvals_avg_ham = np.sqrt(np.mean((aligned_stack - avg_ham_aligned[None, :, :]) ** 2, axis=0))
+
+        n_irr = len(ks)
+        result_per_k = {}
+        for i_k in range(n_irr):
+            result_per_k[f"k{i_k}"] = {
+                "k_frac": ks[i_k].tolist(),
+                "weight": int(weights[i_k]),
+                "sigma_eV": sigma_eigvals[:, i_k].tolist(),
+                "sigma_eV_avg_ham": sigma_eigvals_avg_ham[:, i_k].tolist(),
+                "eigvals_avg_ham_eV": avg_ham_aligned[:, i_k].tolist(),
+            }
+
+        return {
+            **self.settings(),
+            "grid_mesh": list(self.grid_mesh),
+            "n_irreducible_kpoints": n_irr,
+            "n_bands": int(avg_raw.shape[0]),
+            "n_kept_orbitals": self.n_kept_orbitals(ill_handler),
+            "occupation": ref_obj.occupation,
+            "vbm_index": self.homo_lumo_indices(ref_obj)[0],
+            "per_model_shift_eV": [float(s) for s in shifts],
+            "avg_hamiltonian_shift_eV": float(avg_ham_shift),
+            "per_model_gap_eV": [self.gap(raw, ref_obj) for raw in raws],
+            "avg_hamiltonian_gap_eV": self.gap(avg_raw, ref_obj),
+            "kpoints": result_per_k,
+        }
 
     @staticmethod
     def _write_output_atomic(output: dict, output_path: Path) -> None:
@@ -123,11 +263,19 @@ class BandUncertaintyCalculator:
             cls._write_output_atomic({}, output_path)
         return {}
 
-    @staticmethod
-    def _drop_done(structures: list[str], output: dict) -> list[str]:
+    def _drop_done(self, structures: list[str], output: dict) -> list[str]:
         todo = [s for s in structures if s not in output]
         if len(todo) < len(structures):
             print(f"Skipping {len(structures) - len(todo)} already-computed structures", flush=True)
+        settings = self.settings()
+        other = [s for s, res in output.items() if any(res.get(k) != v for k, v in settings.items())]
+        if other:
+            print(
+                f"WARNING: {len(other)} stored structures were computed with settings other than "
+                f"{settings} (or before settings were stored) and are kept as-is; "
+                "pass skip_existing=False to recompute them",
+                flush=True,
+            )
         return todo
 
     def compute(
@@ -148,7 +296,8 @@ class BandUncertaintyCalculator:
         - `skip_existing`: if True and `output_path` already exists, structures already in it
           are not recomputed and their stored results are kept in the returned dict. Set to
           False to recompute everything (the file is then overwritten). Note that stored
-          results are reused as-is, even if `grid_mesh` or the models changed.
+          results are reused as-is, even if `grid_mesh` or the models changed (a warning is
+          printed when they were computed with different `settings()`).
         - `average_hamiltonian_dir`: root containing (or to receive) each structure's averaged
           `hamiltonian.h5` (see `hamiltonian_io.average_predicted_hamiltonians`), diagonalized to
           get the `sigma_eV_avg_ham` reference below. If a structure's average is already there
@@ -162,13 +311,7 @@ class BandUncertaintyCalculator:
         """
         model_dirs = [Path(p) for p in model_dirs]
         average_hamiltonian_dir = Path(average_hamiltonian_dir)
-        if structure_pattern:
-            structures = [p.name for p in (model_dirs[0] / structure_pattern).parent.glob(structure_pattern)]
-        else:
-            structures = [p.name for p in (model_dirs[0] / "*").parent.glob("*") if (model_dirs[0] / p).is_dir()]
-        if exclude_structures:
-            excluded = set(exclude_structures)
-            structures = [s for s in structures if s not in excluded]
+        structures = self._list_structures(model_dirs[0], structure_pattern, exclude_structures)
 
         if output_path is not None:
             output_path = Path(output_path)
@@ -176,52 +319,9 @@ class BandUncertaintyCalculator:
         structures = self._drop_done(structures, output)
 
         for structure_name in structures:
-            h_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
-            ks, weights, anchor_k_idx = self.build_irreducible_kpoints(h_obj, self.grid_mesh, self.symprec)
-            occupation = h_obj.occupation
-            vbm_index, _ = self.homo_lumo_indices(h_obj)
-
-            n_irr = len(ks)
-
-            aligned_eigvals = []
-            shifts = []
-            for model in model_dirs:
-                h_obj = SparseHamiltonianObj(model / structure_name)
-                raw = h_obj.diag(ks, bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k)
-                aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
-                aligned_eigvals.append(aligned)
-                shifts.append(shift)
-
-            avg_ham_aligned, avg_ham_shift = self._average_hamiltonian_aligned_eigvals(
-                structure_name, model_dirs, ks, anchor_k_idx, average_hamiltonian_dir,
-                n_jobs=n_jobs, parallel_k=parallel_k,
+            output[structure_name] = self._structure_uncertainty(
+                structure_name, model_dirs, average_hamiltonian_dir, n_jobs=n_jobs, parallel_k=parallel_k
             )
-
-            aligned_stack = np.stack(aligned_eigvals, axis=0)
-            #sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
-            # Deviation from the averaged Hamiltonian's own eigenvalues (a fixed
-            # reference, not estimated from this sample) -- no ddof correction needed.
-            sigma_eigvals_avg_ham = np.sqrt(np.mean((aligned_stack - avg_ham_aligned[None, :, :]) ** 2, axis=0))
-
-            result_per_k = {}
-            for i_k in range(n_irr):
-                result_per_k[f"k{i_k}"] = {
-                    "k_frac": ks[i_k].tolist(),
-                    "weight": int(weights[i_k]),
-                    #"sigma_eV": sigma_eigvals[:, i_k].tolist(),
-                    "sigma_eV_avg_ham": sigma_eigvals_avg_ham[:, i_k].tolist(),
-                    "eigvals_avg_ham_eV": avg_ham_aligned[:, i_k].tolist(),
-                }
-
-            output[structure_name] = {
-                "grid_mesh": list(self.grid_mesh),
-                "n_irreducible_kpoints": n_irr,
-                "occupation": occupation,
-                "vbm_index": vbm_index,
-                "per_model_shift_eV": shifts,
-                "avg_hamiltonian_shift_eV": avg_ham_shift,
-                "kpoints": result_per_k,
-            }
 
             if output_path is not None:
                 self._write_output_atomic(output, output_path)
@@ -240,65 +340,20 @@ class BandUncertaintyCalculator:
         t_start = time.monotonic()
         print(f"[{structure_name}] starting ({len(model_dirs)} models, pid={os.getpid()})", flush=True)
 
-        ks_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
-        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ks_obj, self.grid_mesh, self.symprec)
-        occupation = ks_obj.occupation
-        vbm_index, _ = self.homo_lumo_indices(ks_obj)
-
-        aligned_eigvals = []
-        shifts = []
-        for i_model, model in enumerate(model_dirs):
-            t_model = time.monotonic()
-            h_obj = SparseHamiltonianObj(model / structure_name)
-            # compute_parallel already parallelizes over structures at the process
-            # level (one worker per structure, capped at max_workers), so k-point
-            # threading is disabled here to avoid oversubscribing on top of that.
-            # Each worker still gets a fair share of the machine's cores for its
-            # own BLAS calls (see max_workers sizing in compute_parallel) instead
-            # of being pinned to 1 thread -- otherwise a structure whose diagonalization
-            # dominates the runtime (a large Hamiltonian, or one outlier after its
-            # siblings finish) leaves the rest of the machine idle.
-            raw = h_obj.diag(ks, bands_only=True, n_jobs=blas_threads_per_worker, parallel_k=False)
-            aligned, shift = self.align_to_midgap(raw, h_obj, anchor_k_idx)
-            aligned_eigvals.append(aligned)
-            shifts.append(shift)
-            print(
-                f"[{structure_name}] model {i_model + 1}/{len(model_dirs)} done "
-                f"in {time.monotonic() - t_model:.1f}s",
-                flush=True,
-            )
-
-        avg_ham_aligned, avg_ham_shift = self._average_hamiltonian_aligned_eigvals(
-            structure_name, model_dirs, ks, anchor_k_idx, average_hamiltonian_dir
+        # compute_parallel already parallelizes over structures at the process
+        # level (one worker per structure, capped at max_workers), so k-point
+        # threading is disabled here to avoid oversubscribing on top of that.
+        # Each worker still gets a fair share of the machine's cores for its
+        # own BLAS calls (see max_workers sizing in compute_parallel) instead
+        # of being pinned to 1 thread -- otherwise a structure whose diagonalization
+        # dominates the runtime (a large Hamiltonian, or one outlier after its
+        # siblings finish) leaves the rest of the machine idle.
+        result = self._structure_uncertainty(
+            structure_name, model_dirs, average_hamiltonian_dir,
+            n_jobs=blas_threads_per_worker, parallel_k=False, log_models=True,
         )
-
-        aligned_stack = np.stack(aligned_eigvals, axis=0)
-        sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
-        # Deviation from the averaged Hamiltonian's own eigenvalues (a fixed
-        # reference, not estimated from this sample) -- no ddof correction needed.
-        sigma_eigvals_avg_ham = np.sqrt(np.mean((aligned_stack - avg_ham_aligned[None, :, :]) ** 2, axis=0))
-
-        n_irr = len(ks)
-        result_per_k = {}
-        for i_k in range(n_irr):
-            result_per_k[f"k{i_k}"] = {
-                "k_frac": ks[i_k].tolist(),
-                "weight": int(weights[i_k]),
-                "sigma_eV": sigma_eigvals[:, i_k].tolist(),
-                "sigma_eV_avg_ham": sigma_eigvals_avg_ham[:, i_k].tolist(),
-                "eigvals_avg_ham_eV": avg_ham_aligned[:, i_k].tolist(),
-            }
-
         print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
-        return structure_name, {
-            "grid_mesh": list(self.grid_mesh),
-            "n_irreducible_kpoints": n_irr,
-            "occupation": occupation,
-            "vbm_index": vbm_index,
-            "per_model_shift_eV": shifts,
-            "avg_hamiltonian_shift_eV": avg_ham_shift,
-            "kpoints": result_per_k,
-        }
+        return structure_name, result
 
     def compute_parallel(
         self,
@@ -322,13 +377,7 @@ class BandUncertaintyCalculator:
         """
         model_dirs = [Path(p) for p in model_dirs]
         average_hamiltonian_dir = Path(average_hamiltonian_dir)
-        if structure_pattern:
-            structures = [p.name for p in (model_dirs[0] / structure_pattern).parent.glob(structure_pattern)]
-        else:
-            structures = [p.name for p in (model_dirs[0] / "*").parent.glob("*") if (model_dirs[0] / p).is_dir()]
-        if exclude_structures:
-            excluded = set(exclude_structures)
-            structures = [s for s in structures if s not in excluded]
+        structures = self._list_structures(model_dirs[0], structure_pattern, exclude_structures)
 
         if output_path is not None:
             output_path = Path(output_path)
@@ -393,12 +442,12 @@ class BandUncertaintyCalculator:
         dft_obj = SparseHamiltonianObj(dft_root / structure_name)
 
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, self.grid_mesh, self.symprec)
+        ill_handler = self.make_ill_handler(dft_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
+        diag_kwargs = dict(bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k, ill_handler=ill_handler)
 
-        avg_aligned, _ = self._average_hamiltonian_aligned_eigvals(
-            structure_name, model_dirs, ks, anchor_k_idx, average_hamiltonian_dir,
-            n_jobs=n_jobs, parallel_k=parallel_k,
-        )
-        dft_raw = dft_obj.diag(ks, bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k)
+        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir)
+        avg_raw, dft_raw = self.common_bands(avg_obj.diag(ks, **diag_kwargs), dft_obj.diag(ks, **diag_kwargs))
+        avg_aligned, _ = self.align_to_midgap(avg_raw, dft_obj, anchor_k_idx)
         dft_aligned, _ = self.align_to_midgap(dft_raw, dft_obj, anchor_k_idx)
 
         abs_err = np.abs(avg_aligned - dft_aligned)
@@ -419,7 +468,12 @@ class BandUncertaintyCalculator:
 
         print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
         return structure_name, {
+            **self.settings(),
             "overall_mae_eV": overall_mae,
+            "n_bands": int(avg_raw.shape[0]),
+            "n_kept_orbitals": self.n_kept_orbitals(ill_handler),
+            "gap_avg_ham_eV": self.gap(avg_raw, dft_obj),
+            "gap_dft_eV": self.gap(dft_raw, dft_obj),
             "occupation": dft_obj.occupation,
             "vbm_index": self.homo_lumo_indices(dft_obj)[0],
             "kpoints": per_k,
