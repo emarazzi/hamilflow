@@ -28,15 +28,24 @@ Run from the directory that contains train_*/ avg_ham/ uncertainty_train.json:
   python diagnose_band_uncertainty.py --structures structure_356 structure_4554
   python diagnose_band_uncertainty.py --dft-root /path/to/dft --structures structure_4234_300
   python diagnose_band_uncertainty.py --structures structure_4234_300 --ill-method orbital_removal
+  python diagnose_band_uncertainty.py --all --n-procs 16    # every structure, one CPU each
+
+With --n-procs N > 1, up to N structures are diagnosed at the same time in separate
+processes, each limited to one CPU (BLAS threads included, --n-jobs is ignored); each
+structure's report is printed in one piece when it finishes.
 
 Alignment and ill-conditioning handling default to the settings stored in the JSON
 (Gamma alignment and no handling for files written before those settings existed).
 """
 
 import argparse
+import concurrent.futures
+import contextlib
 import hashlib
+import io
 import json
 import tempfile
+import traceback
 from glob import glob
 from pathlib import Path
 
@@ -60,6 +69,7 @@ def parse_args():
     p.add_argument("--uncertainty-json", default="uncertainty_train.json")
     p.add_argument("--dft-root", default=None, help="optional DFT reference root, one dir per structure")
     p.add_argument("--structures", nargs="*", default=None)
+    p.add_argument("--all", action="store_true", help="diagnose every structure in the uncertainty JSON")
     p.add_argument("--n-top", type=int, default=3, help="highest-sigma structures picked if --structures is not given")
     p.add_argument("--n-bottom", type=int, default=2, help="lowest-sigma structures added as controls")
     p.add_argument("--e-cut", type=float, default=2.0)
@@ -70,7 +80,8 @@ def parse_args():
     p.add_argument("--ill-method", choices=["none", "orbital_removal"], default=None,
                    help="default: as stored in the JSON (none for older files)")
     p.add_argument("--ill-threshold", type=float, default=None, help="default: as stored in the JSON, else 1e-3")
-    p.add_argument("--n-jobs", type=int, default=-1)
+    p.add_argument("--n-jobs", type=int, default=-1, help="CPU budget per structure when --n-procs is 1")
+    p.add_argument("--n-procs", type=int, default=1, help="structures diagnosed in parallel, one CPU each")
     p.add_argument("--no-hash", action="store_true", help="skip hashing hamiltonian.h5 files")
     p.add_argument("--out", default="diagnose_band_uncertainty.json")
     return p.parse_args()
@@ -116,6 +127,8 @@ def offset_rms(member, ref, window_bands, offsets=range(-2, 3)):
 def pick_structures(args, results):
     if args.structures:
         return args.structures
+    if args.all:
+        return list(results)
     pp = BandUncertaintyPostProcessor(results)
     ranked = sorted(results, key=lambda s: pp.weighted_stats(s, args.e_cut, args.tau)["weighted_max_eV"])
     picked = ranked[::-1][: args.n_top] + ranked[: args.n_bottom]
@@ -274,6 +287,31 @@ def diagnose(structure, model_dirs, args, calc, results):
     return rep
 
 
+_BLAS_LIMIT = None
+
+
+def _init_worker():
+    # One CPU per worker process: also caps BLAS threads outside SparseHamiltonianObj.diag
+    # (averaging, overlap eigenvalues, orbital truncation).
+    global _BLAS_LIMIT
+    import threadpoolctl
+
+    _BLAS_LIMIT = threadpoolctl.threadpool_limits(limits=1)
+
+
+def _diagnose_captured(structure, model_dirs, args, calc, results):
+    """Run `diagnose` in a worker, returning its printed report as one string so that the
+    reports of structures running in parallel are not interleaved."""
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rep = diagnose(structure, model_dirs, args, calc, results)
+    except Exception:
+        rep = {"structure": structure, "error": traceback.format_exc()}
+        buf.write(f"\n{'=' * 100}\n{structure}: FAILED\n{rep['error']}")
+    return buf.getvalue(), rep
+
+
 def main():
     args = parse_args()
     model_dirs = []
@@ -298,7 +336,26 @@ def main():
     structures = pick_structures(args, results)
     print("structures:", structures)
 
-    report = [diagnose(s, model_dirs, args, calc, results) for s in structures]
+    if args.n_procs <= 1:
+        report = [diagnose(s, model_dirs, args, calc, results) for s in structures]
+    else:
+        args.n_jobs = 1
+        n_procs = min(args.n_procs, len(structures))
+        print(f"diagnosing {len(structures)} structures with {n_procs} processes, one CPU each", flush=True)
+        reports = {}
+        with concurrent.futures.ProcessPoolExecutor(max_workers=n_procs, initializer=_init_worker) as ex:
+            futures = [
+                ex.submit(_diagnose_captured, s, model_dirs, args, calc, {s: results.get(s)})
+                for s in structures
+            ]
+            for fut in concurrent.futures.as_completed(futures):
+                text, rep = fut.result()
+                print(text, flush=True)
+                reports[rep["structure"]] = rep
+        report = [reports[s] for s in structures]
+        failed = [r["structure"] for r in report if "error" in r]
+        if failed:
+            print(f"\nFAILED: {failed}")
     with open(args.out, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nwrote {args.out}")
