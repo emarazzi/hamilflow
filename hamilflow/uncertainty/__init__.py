@@ -4,7 +4,7 @@ Provides:
 - ``read_deeph_hamiltonian``, ``write_deeph_hamiltonian``, ``average_predicted_hamiltonians``
 - ``discover_structures``, ``link_ensemble_files``
 - ``BandUncertaintyCalculator``
-- ``BandUncertaintyPostProcessor``
+- ``BandUncertaintyPostProcessor``, ``UncertaintyCalibrator``
 - ``MatrixUncertaintyCalculator``
 """
 
@@ -15,7 +15,7 @@ from .hamiltonian_io import (
 )
 from .ensemble_io import discover_structures, link_ensemble_files
 from .band_uncertainty import BandUncertaintyCalculator
-from .band_postprocess import BandUncertaintyPostProcessor
+from .band_postprocess import BandUncertaintyPostProcessor, UncertaintyCalibrator
 from .matrix_uncertainty import MatrixUncertaintyCalculator
 
 __all__ = [
@@ -26,5 +26,6 @@ __all__ = [
     "link_ensemble_files",
     "BandUncertaintyCalculator",
     "BandUncertaintyPostProcessor",
+    "UncertaintyCalibrator",
     "MatrixUncertaintyCalculator",
 ]
