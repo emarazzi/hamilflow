@@ -110,6 +110,7 @@ class MatrixUncertaintyCalculator:
 
         sum_std = 0.0
         n_total = 0
+        stds = []
 
         avg_file = h5py.File(avg_path, "r")
         model_files = [h5py.File(p, "r") for p in model_paths]
@@ -130,6 +131,7 @@ class MatrixUncertaintyCalculator:
 
                 diffs = np.abs(np.stack(model_chunks, axis=0) - avg_chunk[None, :])
                 std_chunk = np.std(diffs, axis=0, ddof=self.ddof)
+                stds.extend(std_chunk)
                 sum_std += float(std_chunk.sum())
                 n_total += std_chunk.size
         finally:
@@ -137,9 +139,11 @@ class MatrixUncertaintyCalculator:
             for f in model_files:
                 f.close()
 
-        uncertainty = sum_std / n_total if n_total else 0.0
+        uncertainty_mean = sum_std / n_total if n_total else 0.0
+        uncertainty_max = max(stds)
         return structure_name, {
-            "uncertainty": uncertainty,
+            "uncertainty_mean": uncertainty_mean,
+            "uncertainty_max" : uncertainty_max,
             "n_matrix_elements": n_total,
             "n_models": len(model_paths),
         }
