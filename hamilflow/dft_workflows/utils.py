@@ -41,7 +41,9 @@ def _matches_structure_file(path: Path, structure_file_format: FileFormats) -> b
     return name in _KNOWN_STRUCTURE_FILENAMES or suffix in _KNOWN_STRUCTURE_SUFFIXES
 
 
-def _resolve_structure_file(directory: Path, structure_file_format: FileFormats) -> Path:
+def _resolve_structure_file(
+    directory: Path, structure_file_format: FileFormats
+) -> Path:
     candidates = [
         child
         for child in sorted(directory.iterdir())
@@ -61,21 +63,28 @@ def _resolve_structure_file(directory: Path, structure_file_format: FileFormats)
 
 def resolve_structure_path(
     structures_path: str | Path,
-    structure_pattern: str = "*",
+    structure_pattern: str | list[str] = "*",
     structure_file_format: FileFormats = "poscar",
 ) -> Path | list[Path]:
     path = Path(structures_path)
-    
+
     # Handle single trajectory file (e.g., xyz, extxyz)
     if path.is_file():
         return path
-    
-    if not path.is_dir():
-        raise ValueError(f"The provided structures_path is not a directory or file: {structures_path}")
 
-    structure_dirs = sorted(candidate for candidate in path.glob(structure_pattern) if candidate.is_dir())
+    if not path.is_dir():
+        raise ValueError(
+            f"The provided structures_path is not a directory or file: {structures_path}"
+        )
+
+    patterns = (
+        [structure_pattern] if isinstance(structure_pattern, str) else structure_pattern
+    )
+    structure_dirs = sorted({c for p in patterns for c in path.glob(p) if c.is_dir()})
     if not structure_dirs:
-        raise ValueError(f"No structure directories found matching pattern: {structure_pattern}")
+        raise ValueError(
+            f"No structure directories found matching pattern: {structure_pattern}"
+        )
 
     structures_filenames = [
         _resolve_structure_file(directory, structure_file_format)
@@ -91,10 +100,10 @@ def get_structure_names_from_path(
 ) -> list[str]:
     """
     Extract structure names from either trajectory file or directory structure.
-    
+
     If structures_path is a file (trajectory file), returns indexed names like
     structure_0000, structure_0001, etc. for each structure in the file.
-    
+
     If structures_path is a directory, returns parent directory names for each file.
     """
     path = Path(structures_path)
@@ -116,6 +125,3 @@ def get_structure_names_from_path(
         return [structures_filenames.parent.name]
 
     return [file_path.parent.name for file_path in structures_filenames]
-
-
-

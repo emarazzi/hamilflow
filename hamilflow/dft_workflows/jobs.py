@@ -1,22 +1,53 @@
 import copy
-from pathlib import Path
+import gzip
+import shutil
 from fnmatch import fnmatch
+from pathlib import Path
 from shutil import move, rmtree
 from typing import Any, Sequence
 
+import numpy as np
 from ase.io import read as ase_read
+from atomate2.aims.jobs.core import StaticMaker
+from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
 from jobflow.core.flow import Flow
 from jobflow.core.job import Job, job
 from jobflow.core.maker import Maker
 from pymatgen.core import Structure
-from pymatgen.io.ase import AseAtomsAdaptor as AseAtomsAdaptor
-from atomate2.aims.jobs.core import StaticMaker
 from pymatgen.io.aims.sets.core import StaticSetGenerator
-from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
+from pymatgen.io.ase import AseAtomsAdaptor
+
 from hamilflow.dft_workflows.aims_makers import OvlOnlyAimsMaker
 
-from ..projection import ProjectionConfig, RemovalPlanLike, ReductionMode, run_projection
+from ..projection import (
+    ProjectionConfig,
+    ReductionMode,
+    RemovalPlanLike,
+    run_projection,
+)
 from .kpoints import get_ksampling
+
+
+def _gunzip_in_place(root: Path) -> None:
+    """atomate2 gzips run outputs (control.in.gz, ...); deepx_dock expects plain files."""
+    for name in ("control.in", "geometry.in", "aims.out"):
+        gz = root / f"{name}.gz"
+        out = root / name
+        if gz.exists() and not out.exists():
+            with gzip.open(gz, "rb") as fi, open(out, "wb") as fo:
+                shutil.copyfileobj(fi, fo)
+
+
+def _compress_raw(d: Path) -> None:
+    """Free space after conversion: gzip raw rs_* matrices, drop the unzipped copies."""
+    for f in d.glob("rs_*"):
+        if f.is_file() and f.suffix != ".gz":
+            with open(f, "rb") as fi, gzip.open(f"{f}.gz", "wb") as fo:
+                shutil.copyfileobj(fi, fo)
+            f.unlink()
+    for n in ("control.in", "geometry.in", "aims.out"):
+        if (d / f"{n}.gz").exists():
+            (d / n).unlink(missing_ok=True)
 
 
 def build_aims_dft_jobs(
@@ -56,8 +87,21 @@ def build_aims_dft_jobs(
 
     for structure, structure_name in structure_data:
         structure_aims_kwargs = dict(aims_kwargs or {})
-        if kgrid is not None and (kpoints_updates or user_kpoints_settings not in (None, {})):
-            raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
+        if kgrid is not None and (
+            kpoints_updates or user_kpoints_settings not in (None, {})
+        ):
+            raise ValueError(
+                "Provide either kgrid or k-point sampling settings, not both."
+            )
+        # Handle special case: if any fractional coordinate is near 0.5, translate slightly to avoid symmetry issues
+        if np.any(np.abs((structure.frac_coords % 1.0) - 0.5) < 1e-3):
+            structure = structure.copy()
+            structure.translate_sites(
+                list(range(len(structure))),
+                [0.0137] * 3,
+                frac_coords=True,
+                to_unit_cell=True,
+            )
         kpoints_settings = get_ksampling(
             structure=structure,
             kpoints_updates={"k_grid": kgrid} if kgrid is not None else kpoints_updates,
@@ -78,7 +122,9 @@ def build_aims_dft_jobs(
                     user_params=structure_aims_kwargs
                 )
             else:
-                maker.input_set_generator = StaticSetGenerator(user_params=structure_aims_kwargs)
+                maker.input_set_generator = StaticSetGenerator(
+                    user_params=structure_aims_kwargs
+                )
             aims_job = maker.make(structure)
         else:
             if structure_aims_kwargs or kpoints_settings is not None:
@@ -148,6 +194,10 @@ def convert_aims_to_deeph(
     if not input_root.is_dir():
         raise ValueError(f"Input directory does not exist: {input_root}")
 
+    for d in input_root.iterdir():
+        if d.is_dir():
+            _gunzip_in_place(d)
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -193,6 +243,7 @@ def convert_aims_to_deeph_structure(
     input_root = Path(input_root)
     if not input_root.is_dir():
         raise ValueError(f"Input directory does not exist: {input_root}")
+    _gunzip_in_place(input_root / structure_name)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -205,6 +256,11 @@ def convert_aims_to_deeph_structure(
         export_r=export_r,
         minus_H0=minus_H0,
     )
+
+    if (output_dir / structure_name / "overlap.h5").exists() and (
+        output_dir / structure_name / "hamiltonian.h5"
+    ).exists():
+        _compress_raw(input_root / structure_name)
 
     return {
         "structure_name": structure_name,
@@ -239,7 +295,9 @@ def resolve_structure_removal_plan(
     return default_plan
 
 
-def set_projection_job_name(job_obj: Job, structure_name: str, reduction_mode: ReductionMode) -> Job:
+def set_projection_job_name(
+    job_obj: Job, structure_name: str, reduction_mode: ReductionMode
+) -> Job:
     """Assign a stable, human-readable name to a projection Job.
 
     We intentionally avoid reading internal JobFlow state such as ``_kwargs``
@@ -284,7 +342,9 @@ def run_projection_for_structure(
             raise ValueError("deeph_conversion_output is missing 'deeph_inputs_root'.")
         deeph_root = deeph_conversion_output["deeph_inputs_root"]
         if not isinstance(deeph_root, str):
-            raise ValueError("deeph_conversion_output['deeph_inputs_root'] must be a string.")
+            raise ValueError(
+                "deeph_conversion_output['deeph_inputs_root'] must be a string."
+            )
         deeph_inputs_root = deeph_root
 
     if reduction_mode not in ("schur", "truncate"):
