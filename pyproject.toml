@@ -10,10 +10,43 @@ authors = [
   {name = "Enrico Marazzi", email = "enrico.marazzi@uclouvain.be"}
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
+dependencies = [
+  "deepx-dock @ git+https://github.com/kYangLi/DeepH-dock.git",
+  "numpy",
+  "scipy",
+  "h5py",
+  "threadpoolctl",
+  "pymatgen",
+  "spglib",
+  "plotly",
+]
 
 [project.optional-dependencies]
+workflows = [
+  "jobflow",
+  "atomate2[aims]",
+  "emmet-core",
+  "monty",
+  "pydantic",
+  "typing-extensions",
+  "ase",
+]
+selection = [
+  "average-minimum-distance",
+  "scikit-learn",
+  "ase",
+]
+train = ["tomli-w"]
+# Kept for backwards compatibility; only needed for hamilflow.projection.jobflow.
 jobflow = ["jobflow"]
+all = ["hamilflow[workflows,selection,train]"]
+
+[project.urls]
+Repository = "https://github.com/emarazzi/hamilflow"
+
+[tool.setuptools]
+py-modules = ["hamilflow_projection"]
 
 [tool.setuptools.packages.find]
 where = ["."]
