@@ -20,27 +20,17 @@ dependencies = [
   "pymatgen",
   "spglib",
   "plotly",
-]
-
-[project.optional-dependencies]
-workflows = [
+  "ase",
   "jobflow",
   "atomate2[aims]",
   "emmet-core",
   "monty",
   "pydantic",
   "typing-extensions",
-  "ase",
-]
-selection = [
   "average-minimum-distance",
   "scikit-learn",
-  "ase",
+  "tomli-w",
 ]
-train = ["tomli-w"]
-# Kept for backwards compatibility; only needed for hamilflow.projection.jobflow.
-jobflow = ["jobflow"]
-all = ["hamilflow[workflows,selection,train]"]
 
 [project.urls]
 Repository = "https://github.com/emarazzi/hamilflow"

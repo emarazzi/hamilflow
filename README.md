@@ -5,11 +5,10 @@ Community-maintained utilities around [DeepH](https://github.com/kYangLi/DeepH-d
 ## Installation
 
 ```bash
-pip install -e .            # core: projection, sparse Hamiltonians, band structures
-pip install -e ".[all]"     # everything below
+pip install -e .
 ```
 
-Optional extras: `workflows` (FHI-aims / jobflow / atomate2), `selection` (candidate selection), `train` (DeepH train/infer TOML writer). Requires Python ≥ 3.12. `deepx-dock` is installed from its GitHub repository, since the PyPI release is not enough.
+Requires Python ≥ 3.12. `deepx-dock` is installed from its GitHub repository, since the PyPI release is not enough.
 
 ## Components
 
