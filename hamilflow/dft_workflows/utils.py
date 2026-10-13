@@ -1,10 +1,13 @@
 from pathlib import Path
 from typing import Sequence
 
+from ase import Atoms
 from ase.io import read as ase_read
+from pymatgen.core import Structure
 from pymatgen.core.structure import FileFormats
+from pymatgen.io.ase import AseAtomsAdaptor
 
-__all__ = ["resolve_structure_path", "get_structure_names_from_path"]
+__all__ = ["resolve_structure_path", "get_structure_names_from_path", "load_structures"]
 
 _KNOWN_STRUCTURE_SUFFIXES = {
     ".cif",
@@ -94,6 +97,28 @@ def resolve_structure_path(
     return structures_filenames
 
 
+def _read_trajectory(path: Path) -> list[Atoms]:
+    ase_structures = ase_read(str(path), index=":")
+    if not isinstance(ase_structures, list):
+        ase_structures = [ase_structures]
+    return ase_structures
+
+
+def _trajectory_names(ase_structures: Sequence[Atoms]) -> list[str]:
+    """
+    Name the frames of a trajectory file.
+
+    Frames are named after their ``index`` info entry when every frame carries
+    one, whatever the file format; otherwise frames are named structure_0000,
+    structure_0001, ...
+    """
+    structure_indices = [atoms.info.get("index") for atoms in ase_structures]
+    if all(index is not None for index in structure_indices):
+        return [str(index) for index in structure_indices]
+
+    return [f"structure_{i:04d}" for i in range(len(ase_structures))]
+
+
 def get_structure_names_from_path(
     structures_path: str | Path,
     structures_filenames: Path | Sequence[Path],
@@ -101,27 +126,58 @@ def get_structure_names_from_path(
     """
     Extract structure names from either trajectory file or directory structure.
 
-    If structures_path is a file (trajectory file), returns indexed names like
-    structure_0000, structure_0001, etc. for each structure in the file.
+    If structures_path is a file (trajectory file), frames are named as described
+    in ``_trajectory_names``.
 
     If structures_path is a directory, returns parent directory names for each file.
     """
     path = Path(structures_path)
 
     if path.is_file():
-        ase_structures = ase_read(str(path), index=":")
-        if not isinstance(ase_structures, list):
-            ase_structures = [ase_structures]
-
-        if path.suffix.lower() == ".extxyz":
-            structure_indices = [atoms.info.get("index") for atoms in ase_structures]
-            if all(index is not None for index in structure_indices):
-                return [str(index) for index in structure_indices]
-
-        return [f"structure_{i:04d}" for i in range(len(ase_structures))]
+        return _trajectory_names(_read_trajectory(path))
 
     # Directory structure: return parent directory names
     if isinstance(structures_filenames, Path):
         return [structures_filenames.parent.name]
 
     return [file_path.parent.name for file_path in structures_filenames]
+
+
+def load_structures(
+    structures_path: str | Path,
+    structure_pattern: str | list[str] = "*",
+    structure_file_format: FileFormats = "poscar",
+) -> list[tuple[str, Structure]]:
+    """
+    Resolve, read and name every structure under ``structures_path``.
+
+    This is the single source of truth for structure names: the same name is used
+    for the AIMS job, the collected run directory, the DeepH directory and the
+    projected directory of each structure.
+    """
+    path = Path(structures_path)
+
+    if path.is_file():
+        ase_structures = _read_trajectory(path)
+        names = _trajectory_names(ase_structures)
+        entries = [
+            (name, AseAtomsAdaptor.get_structure(atoms))
+            for name, atoms in zip(names, ase_structures, strict=True)
+        ]
+    else:
+        structures_filenames = resolve_structure_path(
+            path, structure_pattern, structure_file_format
+        )
+        if isinstance(structures_filenames, Path):
+            structures_filenames = [structures_filenames]
+        entries = [
+            (file_path.parent.name, Structure.from_file(file_path))
+            for file_path in structures_filenames
+        ]
+
+    names = [name for name, _ in entries]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate structure names under {structures_path}: {duplicates}")
+
+    return entries

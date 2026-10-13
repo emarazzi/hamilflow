@@ -25,9 +25,9 @@ from .flows_base import (
     GenerateProjectedDeephInputs,
     ProjectDeephInputsConfig,
     ProjectionRemovalPlanConfig,
-    get_ksampling,
     resolve_projection_removal_plan,
 )
+from .kpoints import get_ksampling
 from .flows_core import GenerateAimsToProjectedDeephData
 from .flows_core import GenerateOvlOnlyAimsToProjectedDeephData
 from .flows_core import GenerateTwoStepProjectedDeephInputs

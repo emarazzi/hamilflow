@@ -121,6 +121,7 @@ def dump_reduced_matrix_h5(
     atom_pairs: np.ndarray,
     atom_num_orbits_cumsum: np.ndarray,
     keep_global: list[int],
+    zero_entries: bool = False,
 ) -> Path:
     """
     Dump reduced-basis real-space matrices to DeepH-like h5.
@@ -128,6 +129,11 @@ def dump_reduced_matrix_h5(
     Unlike the default serializer, this writer recomputes chunk shapes using
     the kept orbital indices per atom, so reduced basis dimensions are encoded
     correctly for each atom pair block.
+
+    With ``zero_entries=True`` the values of ``mats_R`` are ignored (only its
+    block layout is used) and ``entries`` is written as an all-zero dataset that
+    takes no disk space (see :func:`create_zero_dataset`). Used for dummy
+    Hamiltonians.
     """
     if Rijk_list is None:
         raise ValueError("Rijk_list is None")
@@ -154,27 +160,68 @@ def dump_reduced_matrix_h5(
         ia = int(ap[3])
         ja = int(ap[4])
 
-        mat_R = mats_R[r_to_idx[Rijk]]
         ii = per_atom_reduced_indices[ia]
         jj = per_atom_reduced_indices[ja]
-        block = mat_R[np.ix_(ii, jj)]
-
-        chunk_shapes[i_ap] = np.array(block.shape, dtype=np.int64)
-        chunk_boundaries[i_ap + 1] = chunk_boundaries[i_ap] + block.size
-        entries_chunks.append(block.reshape(-1))
-
-    if entries_chunks:
-        entries = np.concatenate(entries_chunks)
-    else:
-        entries = np.array([], dtype=mats_R.dtype)
+        chunk_shapes[i_ap] = (len(ii), len(jj))
+        chunk_boundaries[i_ap + 1] = chunk_boundaries[i_ap] + len(ii) * len(jj)
+        if not zero_entries:
+            mat_R = mats_R[r_to_idx[Rijk]]
+            entries_chunks.append(mat_R[np.ix_(ii, jj)].reshape(-1))
 
     with h5py.File(out_path, "w") as f:
         f.create_dataset("atom_pairs", data=atom_pairs)
         f.create_dataset("chunk_shapes", data=chunk_shapes)
         f.create_dataset("chunk_boundaries", data=chunk_boundaries)
-        f.create_dataset("entries", data=np.real(entries).astype(np.float64))
+        if zero_entries:
+            create_zero_dataset(f, "entries", (int(chunk_boundaries[-1]),), np.float64)
+        else:
+            if entries_chunks:
+                entries = np.concatenate(entries_chunks)
+            else:
+                entries = np.array([], dtype=mats_R.dtype)
+            f.create_dataset("entries", data=np.real(entries).astype(np.float64))
 
     return out_path
+
+
+def create_zero_dataset(
+    group: h5py.Group, name: str, shape: tuple[int, ...], dtype: np.dtype | type | str
+) -> h5py.Dataset:
+    """
+    Create an all-zero dataset that occupies (almost) no disk space.
+
+    The dataset is chunked with a zero fill value and no data is written, so
+    HDF5 never allocates its chunks: readers get zeros with the right shape and
+    dtype, but the file only stores the metadata.
+    """
+    return group.create_dataset(
+        name, shape=shape, dtype=dtype, fillvalue=np.zeros((), dtype=dtype), chunks=True
+    )
+
+
+def zero_h5_entries(path: Path, dataset: str = "entries") -> Path:
+    """
+    Rewrite ``path`` with ``dataset`` replaced by a zero dataset of the same
+    shape and dtype (see :func:`create_zero_dataset`).
+
+    The file is rebuilt (written next to the original, then moved over it)
+    rather than edited in place, because deleting a dataset in HDF5 does not
+    shrink the file. All other datasets, groups and attributes are copied.
+    """
+    path = Path(path)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    with h5py.File(path, "r") as src, h5py.File(tmp_path, "w") as dst:
+        for key, value in src.attrs.items():
+            dst.attrs[key] = value
+        for name in src:
+            if name == dataset:
+                zero = create_zero_dataset(dst, name, src[name].shape, src[name].dtype)
+                for key, value in src[name].attrs.items():
+                    zero.attrs[key] = value
+            else:
+                src.copy(src[name], dst, name=name)
+    tmp_path.replace(path)
+    return path
 
 
 def hermitize_real_space_blocks(mats_R: np.ndarray, Rijk_list: np.ndarray) -> np.ndarray:

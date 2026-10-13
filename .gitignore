@@ -138,3 +138,6 @@ Thumbs.db
 *.json
 *.tmp
 deepx_dock/
+
+# Local change notes, never pushed
+hamilflow/dft_workflows/CHANGES_per_structure_flows.md

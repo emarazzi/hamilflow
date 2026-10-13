@@ -7,15 +7,12 @@ from shutil import move, rmtree
 from typing import Any, Sequence
 
 import numpy as np
-from ase.io import read as ase_read
 from atomate2.aims.jobs.core import StaticMaker
 from deepx_dock.convert.fhi_aims.aims_to_deeph import PeriodicAimsDataTranslator
-from jobflow.core.flow import Flow
 from jobflow.core.job import Job, job
 from jobflow.core.maker import Maker
 from pymatgen.core import Structure
 from pymatgen.io.aims.sets.core import StaticSetGenerator
-from pymatgen.io.ase import AseAtomsAdaptor
 
 from hamilflow.dft_workflows.aims_makers import OvlOnlyAimsMaker
 
@@ -25,6 +22,7 @@ from ..projection import (
     RemovalPlanLike,
     run_projection,
 )
+from ..projection.io import zero_h5_entries
 from .kpoints import get_ksampling
 
 
@@ -50,8 +48,9 @@ def _compress_raw(d: Path) -> None:
             (d / n).unlink(missing_ok=True)
 
 
-def build_aims_dft_jobs(
-    structures_filenames: Path | Sequence[Path],
+def build_aims_dft_job(
+    structure: Structure,
+    structure_name: str,
     aims_maker: Maker,
     aims_kwargs: dict[str, Any] | None = None,
     kgrid: tuple[int, int, int] | None = None,
@@ -61,160 +60,95 @@ def build_aims_dft_jobs(
     force_2d: bool = False,
     force_1d: bool = False,
     symprec: float = 0.01,
-) -> list[Flow | Job]:
-    jobs: list[Flow | Job] = []
+) -> Job:
+    """Build the AIMS static job for a single structure."""
+    if kgrid is not None and (kpoints_updates or user_kpoints_settings not in (None, {})):
+        raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
 
-    # Handle both single trajectory file and multiple individual structure files
-    structure_data: list[tuple[Structure, str]] = []
-
-    if isinstance(structures_filenames, (str, Path)):
-        # Single trajectory file (xyz, extxyz, etc.)
-        trajectory_file = Path(structures_filenames)
-        ase_structures = ase_read(str(trajectory_file), index=":")
-        if not isinstance(ase_structures, list):
-            ase_structures = [ase_structures]
-
-        for idx, ase_structure in enumerate(ase_structures):
-            structure = AseAtomsAdaptor.get_structure(ase_structure)
-            trajectory_name = ase_structure.info.get("index", f"structure_{idx:04d}")
-            structure_data.append((structure, trajectory_name))
-    else:
-        # Multiple individual structure files
-        for structure_file in structures_filenames:
-            structure = Structure.from_file(structure_file)
-            structure_name = structure_file.parent.name
-            structure_data.append((structure, structure_name))
-
-    for structure, structure_name in structure_data:
-        structure_aims_kwargs = dict(aims_kwargs or {})
-        if kgrid is not None and (
-            kpoints_updates or user_kpoints_settings not in (None, {})
-        ):
-            raise ValueError(
-                "Provide either kgrid or k-point sampling settings, not both."
-            )
-        # Handle special case: if any fractional coordinate is near 0.5, translate slightly to avoid symmetry issues
-        if np.any(np.abs((structure.frac_coords % 1.0) - 0.5) < 1e-3):
-            structure = structure.copy()
-            structure.translate_sites(
-                list(range(len(structure))),
-                [0.0137] * 3,
-                frac_coords=True,
-                to_unit_cell=True,
-            )
-        kpoints_settings = get_ksampling(
-            structure=structure,
-            kpoints_updates={"k_grid": kgrid} if kgrid is not None else kpoints_updates,
-            user_kpoints_settings=user_kpoints_settings,
-            force_gamma=force_gamma,
-            force_2d=force_2d,
-            force_1d=force_1d,
-            symprec=symprec,
+    structure_aims_kwargs = dict(aims_kwargs or {})
+    # Handle special case: if any fractional coordinate is near 0.5, translate slightly to avoid symmetry issues
+    if np.any(np.abs((structure.frac_coords % 1.0) - 0.5) < 1e-3):
+        structure = structure.copy()
+        structure.translate_sites(
+            list(range(len(structure))),
+            [0.0137] * 3,
+            frac_coords=True,
+            to_unit_cell=True,
         )
-        # Merge k-point settings into aims_kwargs for StaticSetGenerator if applicable
-        if kpoints_settings is not None:
-            structure_aims_kwargs.update(kpoints_settings)
+    kpoints_settings = get_ksampling(
+        structure=structure,
+        kpoints_updates={"k_grid": kgrid} if kgrid is not None else kpoints_updates,
+        user_kpoints_settings=user_kpoints_settings,
+        force_gamma=force_gamma,
+        force_2d=force_2d,
+        force_1d=force_1d,
+        symprec=symprec,
+    )
+    # Merge k-point settings into aims_kwargs for StaticSetGenerator if applicable
+    if kpoints_settings is not None:
+        structure_aims_kwargs.update(kpoints_settings)
 
-        if isinstance(aims_maker, (StaticMaker, OvlOnlyAimsMaker)):
-            maker = copy.deepcopy(aims_maker)
-            if kpoints_settings is not None:
-                maker.input_set_generator = StaticSetGenerator(
-                    user_params=structure_aims_kwargs
-                )
-            else:
-                maker.input_set_generator = StaticSetGenerator(
-                    user_params=structure_aims_kwargs
-                )
-            aims_job = maker.make(structure)
-        else:
-            if structure_aims_kwargs or kpoints_settings is not None:
-                raise ValueError(
-                    "aims_kwargs and k-point sampling options are only supported with StaticMaker. "
-                    "Provide a configured custom maker or use the default StaticMaker path."
-                )
-            aims_job = aims_maker.make(structure)
-        aims_job.name = f"aims_static_{structure_name}"
-        jobs.append(aims_job)
-    return jobs
+    if isinstance(aims_maker, (StaticMaker, OvlOnlyAimsMaker)):
+        maker = copy.deepcopy(aims_maker)
+        maker.input_set_generator = StaticSetGenerator(user_params=structure_aims_kwargs)
+        aims_job = maker.make(structure)
+    else:
+        if structure_aims_kwargs or kpoints_settings is not None:
+            raise ValueError(
+                "aims_kwargs and k-point sampling options are only supported with StaticMaker. "
+                "Provide a configured custom maker or use the default StaticMaker path."
+            )
+        aims_job = aims_maker.make(structure)
+    aims_job.name = f"aims_static_{structure_name}"
+    return aims_job
+
+
+def build_aims_dft_jobs(
+    structures: Sequence[tuple[str, Structure]],
+    aims_maker: Maker,
+    **kwargs: Any,
+) -> list[Job]:
+    """
+    Build one AIMS static job per ``(structure_name, structure)`` entry.
+
+    ``kwargs`` are forwarded to :func:`build_aims_dft_job`. Use
+    :func:`hamilflow.dft_workflows.utils.load_structures` to produce ``structures``.
+    """
+    return [
+        build_aims_dft_job(structure, structure_name, aims_maker, **kwargs)
+        for structure_name, structure in structures
+    ]
 
 
 @job
-def collect_aims_outputs(
-    source_run_dirs: list[str | Path],
-    structure_names: list[str],
+def collect_aims_output(
+    source_run_dir: str | Path,
+    structure_name: str,
     collected_runs_root: str | Path,
-) -> dict[str, str | list[str]]:
-    if not source_run_dirs:
-        raise ValueError("No source_run_dirs were provided for output collection.")
+) -> dict[str, str]:
+    """Move one AIMS run directory to ``collected_runs_root / structure_name``."""
+    source_path = str(source_run_dir)
+    # Strip cluster name if path is remote (e.g., "cluster.host.com:/path/to/dir")
+    if ":" in source_path and not source_path.startswith("/"):
+        source_path = source_path.split(":", 1)[1]
 
-    if len(source_run_dirs) != len(structure_names):
-        raise ValueError(
-            "source_run_dirs and structure_names must have the same length for "
-            "deterministic output naming."
-        )
+    source_dir = Path(source_path)
+    if not source_dir.is_dir():
+        raise ValueError(f"AIMS output directory does not exist: {source_dir}")
 
     output_root = Path(collected_runs_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    collected_dirs: list[str] = []
-    for source, structure_name in zip(source_run_dirs, structure_names, strict=True):
-        source_path = str(source)
-        # Strip cluster name if path is remote (e.g., "cluster.host.com:/path/to/dir")
-        if ":" in source_path and not source_path.startswith("/"):
-            source_path = source_path.split(":", 1)[1]
+    target_dir = output_root / structure_name
+    if target_dir.exists():
+        rmtree(target_dir)
 
-        source_dir = Path(source_path)
-        if not source_dir.is_dir():
-            raise ValueError(f"AIMS output directory does not exist: {source_dir}")
-
-        target_dir = output_root / structure_name
-        if target_dir.exists():
-            rmtree(target_dir)
-
-        moved_dir = Path(move(str(source_dir), str(target_dir)))
-        collected_dirs.append(str(moved_dir.resolve()))
+    moved_dir = Path(move(str(source_dir), str(target_dir)))
 
     return {
+        "structure_name": structure_name,
+        "collected_dir": str(moved_dir.resolve()),
         "collected_runs_root": str(output_root.resolve()),
-        "collected_dirs": collected_dirs,
-    }
-
-
-@job
-def convert_aims_to_deeph(
-    input_root: str | Path,
-    output_dir: str | Path,
-    export_rho: bool = False,
-    export_r: bool = False,
-    minus_H0: bool = False,
-    jobs_num: int = 1,
-    tier_num: int = 0,
-) -> dict[str, str]:
-    input_root = Path(input_root)
-    if not input_root.is_dir():
-        raise ValueError(f"Input directory does not exist: {input_root}")
-
-    for d in input_root.iterdir():
-        if d.is_dir():
-            _gunzip_in_place(d)
-
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    translator = PeriodicAimsDataTranslator(
-        input_root,
-        output_dir,
-        export_rho=export_rho,
-        export_r=export_r,
-        minus_H0=minus_H0,
-        n_jobs=jobs_num,
-        n_tier=tier_num,
-    )
-
-    translator.transfer_all_aims_to_deeph()
-
-    return {
-        "deeph_inputs_root": str(output_dir.resolve()),
     }
 
 
@@ -226,13 +160,19 @@ def convert_aims_to_deeph_structure(
     export_rho: bool = False,
     export_r: bool = False,
     minus_H0: bool = False,
-    collection_output: dict[str, str | list[str]] | None = None,
+    dummy_hamiltonian: bool = False,
+    collection_output: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Convert one collected AIMS run directory into DeepH format.
 
-    ``collection_output`` is an optional dependency token to ensure this job
-    waits for a preceding ``collect_aims_outputs`` job.
+    With ``dummy_hamiltonian=True`` (overlap-only runs) the ``entries`` of the
+    converted ``hamiltonian.h5`` are replaced by zeros that take no disk space,
+    keeping its shape, dtype and block layout.
+
+    ``collection_output`` is the output of this structure's ``collect_aims_output``
+    job. It makes this job wait for that collection only (not for other
+    structures) and overrides ``input_root``.
     """
     if collection_output is not None:
         collected_root = collection_output.get("collected_runs_root")
@@ -257,14 +197,17 @@ def convert_aims_to_deeph_structure(
         minus_H0=minus_H0,
     )
 
-    if (output_dir / structure_name / "overlap.h5").exists() and (
-        output_dir / structure_name / "hamiltonian.h5"
-    ).exists():
+    hamiltonian_file = output_dir / structure_name / "hamiltonian.h5"
+    if dummy_hamiltonian and hamiltonian_file.exists():
+        zero_h5_entries(hamiltonian_file)
+
+    if (output_dir / structure_name / "overlap.h5").exists() and hamiltonian_file.exists():
         _compress_raw(input_root / structure_name)
 
     return {
         "structure_name": structure_name,
         "input_dir": str((input_root / structure_name).resolve()),
+        "deeph_inputs_root": str(output_dir.resolve()),
         "deeph_dir": str((output_dir / structure_name).resolve()),
         "ierr": ierr,
     }
@@ -328,8 +271,9 @@ def run_projection_for_structure(
     """
     Run projection for one converted DeepH subdirectory.
 
-    ``deeph_conversion_output`` is optional and mainly used to create an explicit
-    dependency on an upstream conversion job in chained flows.
+    ``deeph_conversion_output`` is optional: pass the output of this structure's
+    ``convert_aims_to_deeph_structure`` job to depend on that conversion only. Its
+    ``deeph_inputs_root`` overrides ``deeph_inputs_root``.
 
     ``upstream_projection_output`` is an optional dependency-only payload used
     to force ordering between projection stages in multi-step workflows.

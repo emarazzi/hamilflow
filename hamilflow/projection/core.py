@@ -125,15 +125,16 @@ def run_projection(
             keep_global,
         )
     elif config.overlap_only and config.write_dummy_hamiltonian:
-        # Write dummy zeros hamiltonian for chaining overlaps in sequence
-        HR_dummy = np.zeros_like(SR_new, dtype=np.float64)
+        # Write dummy zeros hamiltonian for chaining overlaps in sequence.
+        # Only the block layout of SR_new is used; entries take no disk space.
         hamiltonian_path = dump_reduced_matrix_h5(
             config.output_dir / DEEPX_HAMILTONIAN_FILENAME,
-            HR_dummy,
+            SR_new,
             obj.Rijk_list,
             obj.atom_pairs,
             obj.atom_num_orbits_cumsum,
             keep_global,
+            zero_entries=True,
         )
     else:
         hamiltonian_path = None

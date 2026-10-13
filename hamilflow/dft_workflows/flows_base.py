@@ -18,6 +18,7 @@ from atomate2.aims.jobs.core import StaticMaker
 from jobflow.core.flow import Flow
 from jobflow.core.job import Job
 from jobflow.core.maker import Maker
+from pymatgen.core import Structure
 from pymatgen.core.structure import FileFormats
 from pymatgen.io.aims.sets.core import StaticSetGenerator
 
@@ -25,15 +26,14 @@ from .aims_makers import OvlOnlyAimsMaker
 from ..projection.models import ReductionMode, RemovalPlanLike
 
 from .jobs import (
-    build_aims_dft_jobs,
-    collect_aims_outputs,
-    convert_aims_to_deeph,
+    build_aims_dft_job,
+    collect_aims_output,
     convert_aims_to_deeph_structure,
     resolve_structure_removal_plan,
     run_projection_for_structure,
     set_projection_job_name,
 )
-from .utils import resolve_structure_path, get_structure_names_from_path
+from .utils import load_structures
 
 DEFAULT_AIMS_KWARGS: dict[str, Any] = {
     "species_dir": "tight",
@@ -50,15 +50,20 @@ DEFAULT_AIMS_KWARGS: dict[str, Any] = {
 
 @dataclass(frozen=True, slots=True)
 class ConvertAimsToDeephConfig:
-    """Configuration for the optional AIMS-to-DeepH conversion step."""
+    """
+    Configuration for the optional AIMS-to-DeepH conversion step.
+
+    ``dummy_hamiltonian=True`` zeroes the converted ``hamiltonian.h5`` entries
+    without storing them on disk (shape and layout kept). Meant for overlap-only
+    runs, where the Hamiltonian is a placeholder; set automatically by
+    ``GenerateOvlOnlyAimsToProjectedDeephData``.
+    """
 
     output_dir: str | Path
     export_rho: bool = False
     export_r: bool = False
     minus_H0: bool = False
-    per_structure_jobs: bool = True
-    jobs_num: int = 1
-    tier_num: int = 0
+    dummy_hamiltonian: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,19 +119,26 @@ class GenerateAimsDFTData:
     Create a flow for FHI-aims calculations, output collection, and optional
     DeepH input conversion.
 
+    Every structure is handled independently: the flow contains one sub-flow per
+    structure, named after the structure, chaining
+
+        aims_static_<name> -> collect_<name> -> convert_<name> (optional)
+
+    Each job depends only on the previous job of the same structure, so a
+    structure is collected and converted as soon as its own AIMS run finishes,
+    and a failed structure does not block the others.
+
     Two modes are supported:
 
-    - Run-and-collect: provide ``aims_maker`` and ``structures_path``. The flow
-      resolves structures under ``structures_path``, launches AIMS jobs, and then
-      moves the produced run directories into ``collected_runs_root``.
+    - Run-and-collect: provide ``aims_maker`` and ``structures_path``. Structures
+      are read and named with :func:`load_structures`, AIMS jobs are launched, and
+      each produced run directory is moved into ``collected_runs_root / <name>``.
     - Collect-only: provide ``source_run_dirs`` and set ``aims_maker`` to ``None``.
-      In this mode the flow skips structure discovery and only moves the existing
-      run directories into ``collected_runs_root``.
+      Each existing run directory is moved into ``collected_runs_root`` under its
+      own directory name.
 
-    If ``aims_to_deeph_config`` is provided, the collected runs are passed to the
-    DeepH conversion stage and the resulting output root is included in the flow
-    outputs. By default this stage runs one job per structure by calling
-    ``PeriodicAimsDataTranslator.transfer_one_aims_to_deeph``.
+    If ``aims_to_deeph_config`` is provided, each collected run is converted to
+    DeepH format with ``PeriodicAimsDataTranslator.transfer_one_aims_to_deeph``.
 
     ``aims_kwargs`` are applied only when a ``StaticMaker`` is used. K-point
     sampling can be provided either as a direct ``kgrid`` or as richer sampling
@@ -134,11 +146,8 @@ class GenerateAimsDFTData:
     resolved into an AIMS k-point payload before job construction. Provide either
     ``kgrid`` or a k-point sampling payload, not both.
 
-    If an explicit ``StaticMaker`` is provided and no overrides are supplied, the
-    maker is preserved as-is.
-
-    The collected directory names are derived from the original structure names so
-    downstream outputs remain easy to map back to their source structures.
+    Wrapper flows can extend each structure's chain by calling
+    :meth:`structure_entries` and :meth:`make_structure_jobs` directly.
     """
 
     structures_path: str | Path | None = None
@@ -195,23 +204,53 @@ class GenerateAimsDFTData:
 
         self.aims_kwargs = merged_aims_kwargs
 
-    def make(self) -> Flow:
-        jobs: list[Flow | Job] = []
-        convert_job: Job | None = None
-        convert_jobs: list[Job] = []
-        source_run_dirs: list[str | Path]
-        structure_names: list[str]
+    def structure_entries(self) -> list[tuple[str, Structure | Path]]:
+        """
+        Return ``(structure_name, source)`` for every structure of the flow.
+
+        ``source`` is a ``Structure`` in run-and-collect mode and an existing run
+        directory in collect-only mode.
+        """
         if self.aims_maker is not None:
             if self.structures_path is None:
                 raise ValueError(
                     "structures_path is required when aims_maker is provided to run new "
                     "AIMS jobs."
                 )
-            structures_filenames = resolve_structure_path(
-                self.structures_path, self.structure_pattern, self.structure_file_format
+            return list(
+                load_structures(
+                    self.structures_path, self.structure_pattern, self.structure_file_format
+                )
             )
-            aims_jobs = build_aims_dft_jobs(
-                structures_filenames,
+
+        entries: list[tuple[str, Structure | Path]] = [
+            (Path(path).name, Path(path)) for path in self.source_run_dirs or []
+        ]
+        names = [name for name, _ in entries]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"Duplicate run directory names in source_run_dirs: {duplicates}")
+        return entries
+
+    def make_structure_jobs(
+        self, structure_name: str, source: Structure | Path
+    ) -> tuple[list[Job], dict[str, Any]]:
+        """
+        Build the AIMS -> collect -> convert chain of a single structure.
+
+        Returns the jobs and a dict of their outputs with keys ``aims`` (``None`` in
+        collect-only mode), ``collection`` and ``deeph`` (``None`` without
+        ``aims_to_deeph_config``).
+        """
+        jobs: list[Job] = []
+        aims_output = None
+
+        if isinstance(source, Structure):
+            if self.aims_maker is None:
+                raise ValueError("aims_maker is required to run AIMS on a Structure.")
+            aims_job = build_aims_dft_job(
+                source,
+                structure_name,
                 self.aims_maker,
                 aims_kwargs=self.aims_kwargs,
                 kgrid=self.kgrid,
@@ -222,75 +261,74 @@ class GenerateAimsDFTData:
                 force_1d=self.force_1d,
                 symprec=self.symprec,
             )
-            jobs.extend(aims_jobs)
-            source_run_dirs = [cast(str, job.output.dir_name) for job in aims_jobs]
-            structure_names = get_structure_names_from_path(self.structures_path, structures_filenames)
+            jobs.append(aims_job)
+            aims_output = aims_job.output
+            source_run_dir = cast(str, aims_job.output.dir_name)
         else:
-            source_run_dirs = [str(Path(path)) for path in self.source_run_dirs or []]
-            structure_names = [Path(path).name for path in source_run_dirs]
+            source_run_dir = str(source)
 
         collect_job = cast(
             Job,
-            collect_aims_outputs(
-                source_run_dirs=source_run_dirs,
-                structure_names=structure_names,
+            collect_aims_output(
+                source_run_dir=source_run_dir,
+                structure_name=structure_name,
                 collected_runs_root=self.collected_runs_root,
             ),
         )
+        collect_job.name = f"collect_{structure_name}"
         jobs.append(collect_job)
 
+        convert_output = None
         if self.aims_to_deeph_config is not None:
-            if self.aims_to_deeph_config.per_structure_jobs:
-                convert_jobs = [
-                    cast(
-                        Job,
-                        convert_aims_to_deeph_structure(
-                            structure_name=structure_name,
-                            input_root=self.collected_runs_root,
-                            output_dir=self.aims_to_deeph_config.output_dir,
-                            export_rho=self.aims_to_deeph_config.export_rho,
-                            export_r=self.aims_to_deeph_config.export_r,
-                            minus_H0=self.aims_to_deeph_config.minus_H0,
-                            collection_output=collect_job.output,
-                        ),
-                    )
-                    for structure_name in structure_names
-                ]
-                jobs.extend(convert_jobs)
-            else:
-                convert_job = cast(
-                    Job,
-                    convert_aims_to_deeph(
-                        input_root=collect_job.output["collected_runs_root"],
-                        output_dir=self.aims_to_deeph_config.output_dir,
-                        export_rho=self.aims_to_deeph_config.export_rho,
-                        export_r=self.aims_to_deeph_config.export_r,
-                        minus_H0=self.aims_to_deeph_config.minus_H0,
-                        jobs_num=self.aims_to_deeph_config.jobs_num,
-                        tier_num=self.aims_to_deeph_config.tier_num,
-                    ),
-                )
-                jobs.append(convert_job)
-
-        deeph_outputs = None
-        if self.aims_to_deeph_config is not None:
-            deeph_outputs = {
-                "deeph_inputs_root": str(Path(self.aims_to_deeph_config.output_dir).resolve()),
-                "conversion_mode": (
-                    "per_structure"
-                    if self.aims_to_deeph_config.per_structure_jobs
-                    else "bulk"
+            convert_job = cast(
+                Job,
+                convert_aims_to_deeph_structure(
+                    structure_name=structure_name,
+                    input_root=self.collected_runs_root,
+                    output_dir=self.aims_to_deeph_config.output_dir,
+                    export_rho=self.aims_to_deeph_config.export_rho,
+                    export_r=self.aims_to_deeph_config.export_r,
+                    minus_H0=self.aims_to_deeph_config.minus_H0,
+                    dummy_hamiltonian=self.aims_to_deeph_config.dummy_hamiltonian,
+                    collection_output=collect_job.output,
                 ),
-                "structure_results": [job.output for job in convert_jobs],
-                "bulk_result": convert_job.output if convert_job is not None else None,
-            }
+            )
+            convert_job.name = f"convert_{structure_name}"
+            jobs.append(convert_job)
+            convert_output = convert_job.output
 
         outputs = {
-            "aims_kwargs": self.aims_kwargs,
+            "aims": aims_output,
             "collection": collect_job.output,
-            "deeph_inputs": deeph_outputs,
+            "deeph": convert_output,
         }
-        return Flow(jobs=jobs, name=self.name, output=outputs)
+        return jobs, outputs
+
+    def flow_output(self, by_structure: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        """Assemble the flow-level output from the per-structure outputs."""
+        return {
+            "aims_kwargs": self.aims_kwargs,
+            "collected_runs_root": str(Path(self.collected_runs_root).resolve()),
+            "deeph_inputs_root": (
+                str(Path(self.aims_to_deeph_config.output_dir).resolve())
+                if self.aims_to_deeph_config is not None
+                else None
+            ),
+            "structure_names": list(by_structure),
+            "by_structure": by_structure,
+        }
+
+    def make(self) -> Flow:
+        structure_flows: list[Flow] = []
+        by_structure: dict[str, dict[str, Any]] = {}
+        for structure_name, source in self.structure_entries():
+            jobs, outputs = self.make_structure_jobs(structure_name, source)
+            structure_flows.append(Flow(jobs=jobs, name=structure_name, output=outputs))
+            by_structure[structure_name] = outputs
+
+        return Flow(
+            jobs=structure_flows, name=self.name, output=self.flow_output(by_structure)
+        )
 
 
 @dataclass
