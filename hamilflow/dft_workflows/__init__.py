@@ -16,7 +16,6 @@ __all__ = [
 	"resolve_structure_path",
 	"load_structures",
 	"run_projection_for_structure",
-	"generate_perturbed_population",
 ]
 
 from .flows_base import (
@@ -37,4 +36,3 @@ from .jobs import (
 )
 from .kpoints import get_ksampling
 from .utils import load_structures, resolve_structure_path
-from .structure_generation import generate_perturbed_population
