@@ -8,7 +8,7 @@ Community-maintained utilities around [DeepH](https://github.com/kYangLi/DeepH-d
 pip install -e .
 ```
 
-Requires Python ≥ 3.12. `deepx-dock` is installed from its GitHub repository, since the PyPI release is not enough.
+Requires Python ≥ 3.12. `deepx-dock` is installed from its GitHub repository.
 
 ## Components
 
@@ -22,7 +22,7 @@ jobflow/atomate2 flows that produce DeepH-ready data from FHI-aims, one job per 
 
 - `GenerateAimsDFTData`: runs AIMS calculations (or collects existing ones), with optional AIMS → DeepH conversion.
 - `GenerateProjectedDeephInputs`, `GenerateAimsToProjectedDeephData`: chain DFT, conversion and projection end to end. `GenerateOvlOnlyAimsToProjectedDeephData` does the same for overlap only.
-- Helpers: `get_ksampling` for k-point settings and `generate_perturbed_population` for perturbed structure ensembles.
+- Helpers: `get_ksampling` for k-point settings.
 
 ### Projection — `hamilflow.projection`
 
