@@ -247,7 +247,7 @@ def set_projection_job_name(
     because those are implementation details and may not include every argument.
     The values are known at the creation site and are the right source of truth.
     """
-    job_obj.name = f"projection_{structure_name}_{reduction_mode}"
+    job_obj.name = f"projection_{reduction_mode}_{structure_name}"
     return job_obj
 
 
