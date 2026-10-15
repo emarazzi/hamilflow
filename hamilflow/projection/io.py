@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import h5py
@@ -181,6 +182,150 @@ def dump_reduced_matrix_h5(
                 entries = np.array([], dtype=mats_R.dtype)
             f.create_dataset("entries", data=np.real(entries).astype(np.float64))
 
+    return out_path
+
+
+@dataclass(frozen=True)
+class ReducedOutputLayout:
+    """
+    Sparse layout of the reduced-basis entries written to a DeepH-like h5.
+
+    Instead of a dense (N_R, Nb_kept, Nb_kept) real-space array, the
+    projection only accumulates the scalars that end up in ``entries``
+    (plus their Hermitian partners). Each such scalar is identified by a key
+    ``r * nkp**2 + a * nkp + b`` (``r`` indexes ``Rijk_list``, ``a``/``b``
+    are reduced-basis orbital indices).
+
+    ``target_keys`` is the sorted union of written entries and their
+    partners, so it is grouped by R: entries for R index ``r`` are
+    ``target_keys[r_bounds[r]:r_bounds[r + 1]]``. ``out_pos``/``partner_pos``
+    map every written entry (in file order) and its Hermitian partner into
+    ``target_keys``.
+    """
+
+    atom_pairs: np.ndarray
+    chunk_shapes: np.ndarray
+    chunk_boundaries: np.ndarray
+    nkp: int
+    target_keys: np.ndarray
+    r_bounds: np.ndarray
+    out_pos: np.ndarray
+    partner_pos: np.ndarray
+
+    @property
+    def target_flat(self) -> np.ndarray:
+        """Flat (a * nkp + b) index of each target inside its reduced R-block."""
+        return self.target_keys % (self.nkp * self.nkp)
+
+    def hermitize_real(self, acc: np.ndarray) -> np.ndarray:
+        """Written entries of Re[0.5 * (M(R) + M(-R)^dagger)] from real accumulated targets."""
+        return 0.5 * (acc[self.out_pos] + acc[self.partner_pos])
+
+    def hermitize_imag(self, acc: np.ndarray) -> np.ndarray:
+        """Written entries of Im[0.5 * (M(R) + M(-R)^dagger)] from imaginary accumulated targets."""
+        return 0.5 * (acc[self.out_pos] - acc[self.partner_pos])
+
+
+def build_reduced_output_layout(
+    Rijk_list: np.ndarray,
+    atom_pairs: np.ndarray,
+    atom_num_orbits_cumsum: np.ndarray,
+    keep_global: list[int],
+) -> ReducedOutputLayout:
+    """
+    Sparse equivalent of the block selection done by :func:`dump_reduced_matrix_h5`
+    combined with :func:`hermitize_real_space_blocks`.
+
+    The written entries are exactly those ``dump_reduced_matrix_h5`` would
+    extract from a dense ``mats_R``. Hermitization maps entry (R, a, b) to
+    0.5 * (M(R)[a, b] + conj(M(-R)[b, a])), or to the same formula with -R
+    replaced by R when -R is absent from ``Rijk_list``; the partner
+    (-R, b, a) is added to the targets even when it is not itself written.
+    """
+    if Rijk_list is None:
+        raise ValueError("Rijk_list is None")
+
+    keep_arr = np.array(sorted(set(int(i) for i in keep_global)), dtype=np.int64)
+    nkp = len(keep_arr)
+    nkp2 = np.int64(nkp) * np.int64(nkp)
+    n_r = len(Rijk_list)
+
+    r_to_idx = {tuple(int(v) for v in r): i for i, r in enumerate(Rijk_list)}
+    atom_pairs = np.asarray(atom_pairs, dtype=np.int64)
+
+    per_atom_reduced_indices = []
+    n_atoms = len(atom_num_orbits_cumsum) - 1
+    for ia in range(n_atoms):
+        a0 = int(atom_num_orbits_cumsum[ia])
+        a1 = int(atom_num_orbits_cumsum[ia + 1])
+        per_atom_reduced_indices.append(np.where((keep_arr >= a0) & (keep_arr < a1))[0].astype(np.int64))
+
+    chunk_shapes = np.zeros((len(atom_pairs), 2), dtype=np.int64)
+    chunk_boundaries = np.zeros(len(atom_pairs) + 1, dtype=np.int64)
+    key_chunks = []
+    for i_ap, ap in enumerate(atom_pairs):
+        i_r = r_to_idx[(int(ap[0]), int(ap[1]), int(ap[2]))]
+        ii = per_atom_reduced_indices[int(ap[3])]
+        jj = per_atom_reduced_indices[int(ap[4])]
+        chunk_shapes[i_ap] = (len(ii), len(jj))
+        chunk_boundaries[i_ap + 1] = chunk_boundaries[i_ap] + len(ii) * len(jj)
+        key_chunks.append((i_r * nkp2 + ii[:, None] * nkp + jj[None, :]).reshape(-1))
+
+    out_keys = np.concatenate(key_chunks) if key_chunks else np.zeros(0, dtype=np.int64)
+
+    neg_idx = np.arange(n_r, dtype=np.int64)
+    for r, i_r in r_to_idx.items():
+        i_neg = r_to_idx.get((-r[0], -r[1], -r[2]))
+        if i_neg is not None:
+            neg_idx[i_r] = i_neg
+
+    r_of = out_keys // nkp2
+    rem = out_keys % nkp2
+    a_of = rem // nkp
+    b_of = rem % nkp
+    partner_keys = neg_idx[r_of] * nkp2 + b_of * nkp + a_of
+    del r_of, rem, a_of, b_of
+
+    # Sorted union of written entries and partners (np.union1d is several
+    # times slower here: numpy's unique is hash-based for large int arrays).
+    target_keys = np.concatenate([out_keys, partner_keys])
+    target_keys.sort()
+    if len(target_keys):
+        target_keys = target_keys[np.r_[True, target_keys[1:] != target_keys[:-1]]]
+    out_pos = np.searchsorted(target_keys, out_keys)
+    partner_pos = np.searchsorted(target_keys, partner_keys)
+    r_bounds = np.searchsorted(target_keys, np.arange(n_r + 1, dtype=np.int64) * nkp2)
+
+    return ReducedOutputLayout(
+        atom_pairs=atom_pairs,
+        chunk_shapes=chunk_shapes,
+        chunk_boundaries=chunk_boundaries,
+        nkp=nkp,
+        target_keys=target_keys,
+        r_bounds=r_bounds,
+        out_pos=out_pos,
+        partner_pos=partner_pos,
+    )
+
+
+def dump_reduced_entries_h5(
+    out_path: Path,
+    layout: ReducedOutputLayout,
+    entries: np.ndarray | None,
+) -> Path:
+    """
+    Write already-extracted reduced entries (file order, see
+    :class:`ReducedOutputLayout`) to a DeepH-like h5. ``entries=None`` writes
+    an all-zero ``entries`` dataset that takes no disk space (dummy Hamiltonians).
+    """
+    with h5py.File(out_path, "w") as f:
+        f.create_dataset("atom_pairs", data=layout.atom_pairs)
+        f.create_dataset("chunk_shapes", data=layout.chunk_shapes)
+        f.create_dataset("chunk_boundaries", data=layout.chunk_boundaries)
+        if entries is None:
+            create_zero_dataset(f, "entries", (int(layout.chunk_boundaries[-1]),), np.float64)
+        else:
+            f.create_dataset("entries", data=np.asarray(entries, dtype=np.float64))
     return out_path
 
 

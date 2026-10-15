@@ -13,7 +13,7 @@ from deepx_dock.CONSTANT import (
 )
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 
-from .io import dump_reduced_matrix_h5, hermitize_real_space_blocks, write_reduced_info_json
+from .io import build_reduced_output_layout, dump_reduced_entries_h5, write_reduced_info_json
 from .kspace import (
     available_cpu_count,
     build_uniform_kmesh,
@@ -98,61 +98,54 @@ def run_projection(
     if obj.Rijk_list is None:
         raise ValueError("Rijk_list is None")
 
-    # Streams the k-mesh in small chunks (chunk -> transform -> IFT ->
-    # accumulate) instead of materializing dense Hk/Sk for the whole mesh at
-    # once; see stream_project_to_real_space for why this is required, not
-    # just an optimization.
-    HR_new, SR_new = stream_project_to_real_space(
+    # Only the real-space entries that end up in the output files (plus their
+    # Hermitian partners) are ever accumulated -- never a dense
+    # (N_R, Nb_kept, Nb_kept) array; see build_reduced_output_layout and
+    # stream_project_to_real_space.
+    layout = build_reduced_output_layout(
+        obj.Rijk_list, obj.atom_pairs, obj.atom_num_orbits_cumsum, keep_global
+    )
+    HR_acc, SR_acc = stream_project_to_real_space(
         obj,
         ks,
         remove_indices=rm,
         reduction_mode=config.reduction_mode,
         Rijk_list=obj.Rijk_list,
+        target_flat=layout.target_flat,
+        r_bounds=layout.r_bounds,
         n_workers=n_workers,
         overlap_only=config.overlap_only,
     )
 
     # Process and store Hamiltonian only if not overlap_only mode
     if not config.overlap_only:
-        assert HR_new is not None
-        HR_new = hermitize_real_space_blocks(HR_new, obj.Rijk_list)
-        hamiltonian_path = dump_reduced_matrix_h5(
+        assert HR_acc is not None
+        hamiltonian_path = dump_reduced_entries_h5(
             config.output_dir / DEEPX_HAMILTONIAN_FILENAME,
-            HR_new,
-            obj.Rijk_list,
-            obj.atom_pairs,
-            obj.atom_num_orbits_cumsum,
-            keep_global,
+            layout,
+            layout.hermitize_real(HR_acc),
         )
+        del HR_acc
     elif config.overlap_only and config.write_dummy_hamiltonian:
         # Write dummy zeros hamiltonian for chaining overlaps in sequence.
-        # Only the block layout of SR_new is used; entries take no disk space.
-        hamiltonian_path = dump_reduced_matrix_h5(
-            config.output_dir / DEEPX_HAMILTONIAN_FILENAME,
-            SR_new,
-            obj.Rijk_list,
-            obj.atom_pairs,
-            obj.atom_num_orbits_cumsum,
-            keep_global,
-            zero_entries=True,
+        # Entries take no disk space.
+        hamiltonian_path = dump_reduced_entries_h5(
+            config.output_dir / DEEPX_HAMILTONIAN_FILENAME, layout, None
         )
     else:
         hamiltonian_path = None
 
     # Process and store Overlap
-    SR_new = hermitize_real_space_blocks(SR_new, obj.Rijk_list)
+    overlap_imag = layout.hermitize_imag(SR_acc.imag)
+    overlap_imag_max = float(np.max(np.abs(overlap_imag))) if overlap_imag.size > 0 else 0.0
+    del overlap_imag
 
-    overlap_imag_max = float(np.max(np.abs(np.imag(SR_new)))) if SR_new.size > 0 else 0.0
-    SR_new = np.asarray(np.real(SR_new), dtype=np.float64)
-
-    overlap_path = dump_reduced_matrix_h5(
+    overlap_path = dump_reduced_entries_h5(
         config.output_dir / DEEPX_OVERLAP_FILENAME,
-        SR_new,
-        obj.Rijk_list,
-        obj.atom_pairs,
-        obj.atom_num_orbits_cumsum,
-        keep_global,
+        layout,
+        layout.hermitize_real(SR_acc.real),
     )
+    del SR_acc
 
     reduced_orbital_counts = []
     csum = obj.atom_num_orbits_cumsum

@@ -74,6 +74,8 @@ class SparseAOMatrixObj(AOMatrixObj):
             self._entry_col = None
             self._entry_r_index = None
             self._entries_expanded = None
+            self._dense_lin = None
+            self._dense_starts = None
             self._mat_dim = int(self.orbits_quantity * (2 if self.spinful else 1))
             return
 
@@ -168,25 +170,48 @@ class SparseAOMatrixObj(AOMatrixObj):
             entry_r_index = np.concatenate([entry_r_index, entry_r_index])
             entries_expanded = np.concatenate([entries_expanded, entries_expanded])
 
-        self._entry_row = entry_row
-        self._entry_col = entry_col
-        self._entry_r_index = entry_r_index
-        self._entries_expanded = entries_expanded
+        # Sort entries by destination (row, col) once, so every k-point can
+        # sum duplicates (same (row, col), different R) with a single
+        # np.add.reduceat over contiguous segments instead of going through a
+        # scipy COO matrix (whose constructor re-checks all nnz indices on
+        # every call). Row/col fit in int32, halving their footprint.
+        dim = np.int64(self._mat_dim)
+        lin = entry_row.astype(np.int64) * dim + entry_col
+        order = np.argsort(lin, kind="stable")
+        lin = lin[order]
+        starts = np.flatnonzero(np.r_[True, lin[1:] != lin[:-1]]) if len(lin) else np.zeros(0, dtype=np.int64)
 
-    def _coo_k(self, k: np.ndarray) -> coo_matrix:
-        """Phase-weighted (mat_dim, mat_dim) COO matrix at one fractional k-point (duplicates not yet summed)."""
+        self._entry_row = entry_row[order].astype(np.int32)
+        self._entry_col = entry_col[order].astype(np.int32)
+        self._entry_r_index = entry_r_index[order]
+        self._entries_expanded = entries_expanded[order]
+        self._dense_lin = lin[starts]
+        self._dense_starts = starts
+
+    def _weighted_k(self, k: np.ndarray) -> np.ndarray:
+        """Phase-weighted entries at one fractional k-point, in stored (destination-sorted) order."""
         if self._entries_expanded is None:
             raise AttributeError(
                 "This SparseAOMatrixObj was constructed with load_matrix=False (structure/metadata "
                 "only, e.g. for overlap-only cross-validation) -- its matrix values were never read."
             )
         phase_per_r = np.exp(2j * np.pi * (self.Rijk_list.astype(np.float64) @ np.asarray(k, dtype=np.float64)))
-        weighted = phase_per_r[self._entry_r_index] * self._entries_expanded
+        weighted = phase_per_r[self._entry_r_index]
+        weighted *= self._entries_expanded
+        return weighted
+
+    def _coo_k(self, k: np.ndarray) -> coo_matrix:
+        """Phase-weighted (mat_dim, mat_dim) COO matrix at one fractional k-point (duplicates not yet summed)."""
+        weighted = self._weighted_k(k)
         return coo_matrix((weighted, (self._entry_row, self._entry_col)), shape=(self._mat_dim, self._mat_dim))
 
     def _dense_k(self, k: np.ndarray) -> np.ndarray:
         """Build the dense (mat_dim, mat_dim) matrix at one fractional k-point."""
-        return self._coo_k(k).toarray()
+        weighted = self._weighted_k(k)
+        out = np.zeros(self._mat_dim * self._mat_dim, dtype=np.complex128)
+        if len(weighted):
+            out[self._dense_lin] = np.add.reduceat(weighted, self._dense_starts)
+        return out.reshape(self._mat_dim, self._mat_dim)
 
     def _sparse_k(self, k: np.ndarray) -> csr_matrix:
         """
