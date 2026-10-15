@@ -390,6 +390,13 @@ _ROW_BLOCK_BYTES = 128 * 1024**2
 _GATHER_MAX_DENSITY_INV = 32
 # Fraction of the available memory the workers are allowed to plan for.
 _MEMORY_SAFETY = 0.8
+# Schur reductions removing at least this many orbitals are dominated by
+# large gemms (~16 * nkp^2 * n_rm flops per matrix and k-point vs O(Nb^2)
+# for everything else). Concurrent multi-threaded calls scale badly with
+# OpenBLAS (pthreads): for this gemm shape, 32 cores gave 953 / 646 / 352
+# GFLOP/s total with 1 x 32 / 2 x 16 / 4 x 8 workers x BLAS threads. So by
+# default such runs use one worker with every core in BLAS.
+_BLAS_BOUND_MIN_REMOVED = 128
 
 _C16 = np.dtype(np.complex128).itemsize
 
@@ -574,7 +581,7 @@ def stream_project_to_real_space(
     Rijk_list: np.ndarray,
     target_flat: np.ndarray,
     r_bounds: np.ndarray,
-    n_workers: int = 1,
+    n_workers: int | None = None,
     overlap_only: bool = False,
     k_chunk_size: int | None = None,
 ) -> tuple[np.ndarray | None, np.ndarray]:
@@ -602,6 +609,13 @@ def stream_project_to_real_space(
     capped to what fits in ``available_memory_bytes()``; spare CPUs go to
     BLAS inside each worker instead.
 
+    ``n_workers=None`` picks the split automatically: one worker with all
+    CPUs in BLAS for gemm-bound Schur reductions (at least
+    ``_BLAS_BOUND_MIN_REMOVED`` removed orbitals), otherwise one worker per
+    CPU. An explicit ``n_workers`` is honoured (still capped by memory and by
+    the number of k-points); BLAS gets ``available_cpu_count() // n_workers``
+    threads per worker.
+
     Parallelism: chunks are processed by worker threads; each worker also
     folds its own chunk into the shared accumulators (one lock per R
     block), so the IFT runs in parallel without per-worker copies of the
@@ -628,8 +642,13 @@ def stream_project_to_real_space(
 
     ks = np.asarray(ks, dtype=np.float64)
     total_nk = len(ks)
-    n_cpus = max(1, int(n_workers))
-    n_workers = max(1, min(n_cpus, total_nk))
+    if n_workers is None:
+        blas_bound = schur and len(rm) >= _BLAS_BOUND_MIN_REMOVED
+        n_workers = 1 if blas_bound else available_cpu_count()
+        worker_mode = "auto, BLAS-bound" if blas_bound else "auto"
+    else:
+        worker_mode = "requested"
+    n_workers = max(1, min(int(n_workers), total_nk))
     if k_chunk_size is None:
         k_chunk_size = max(1, _K_CHUNK_BYTES // max(1, n_mats * nkp2 * _C16))
         k_chunk_size = min(k_chunk_size, -(-total_nk // n_workers))
@@ -668,7 +687,7 @@ def stream_project_to_real_space(
     threads_per_worker = max(1, available_cpu_count() // n_workers)
     print(
         f"[projection] Nb={nb} kept={nkp} removed={len(rm)} Nk={total_nk} "
-        f"chunk={k_chunk_size} workers={n_workers} blas_threads={threads_per_worker} ({mem_note})",
+        f"chunk={k_chunk_size} workers={n_workers} ({worker_mode}) blas_threads={threads_per_worker} ({mem_note})",
         flush=True,
     )
 

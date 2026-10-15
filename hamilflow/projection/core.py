@@ -15,7 +15,6 @@ from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 
 from .io import build_reduced_output_layout, dump_reduced_entries_h5, write_reduced_info_json
 from .kspace import (
-    available_cpu_count,
     build_uniform_kmesh,
     stream_project_to_real_space,
 )
@@ -88,7 +87,6 @@ def run_projection(
     )
 
     rm = sorted(set(rm))
-    n_workers = config.n_workers if config.n_workers is not None else available_cpu_count()
 
     resolved_kgrid = _resolve_projection_kgrid(config)
     ks = build_uniform_kmesh(resolved_kgrid)
@@ -113,7 +111,7 @@ def run_projection(
         Rijk_list=obj.Rijk_list,
         target_flat=layout.target_flat,
         r_bounds=layout.r_bounds,
-        n_workers=n_workers,
+        n_workers=config.n_workers,
         overlap_only=config.overlap_only,
     )
 

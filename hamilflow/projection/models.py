@@ -42,8 +42,10 @@ class ProjectionConfig:
     reduction_mode: ReductionMode = "schur"
     overlap_only: bool = False
     write_dummy_hamiltonian: bool = False
-    # Thread worker count for the k-point elimination transform.
-    # If None, the job resolves it to the available CPUs at runtime.
+    # Thread worker count for the k-point transform. If None, it is chosen at
+    # runtime: one worker with every allocated CPU in BLAS for gemm-bound
+    # Schur reductions, otherwise one worker per CPU. Always capped by the
+    # available memory and the number of k-points.
     n_workers: int | None = None
 
     def __post_init__(self) -> None:
