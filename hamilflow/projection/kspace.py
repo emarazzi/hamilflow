@@ -378,12 +378,171 @@ def sk_to_real(
 
 
 # Target size of one chunk's reduced k-space matrices (H' and S') per worker.
+# Never fewer than one k-point per chunk, so for very large Nb a chunk is
+# simply one k-point (see _estimate_worker_bytes for the true per-worker cost).
 _K_CHUNK_BYTES = 256 * 1024**2
-# Max size of the per-worker temporary real-space block (a group of full
-# reduced R-blocks) produced by one IFT gemm.
+# Max size of the per-worker IFT temporary (a group of R vectors times a
+# slice of the reduced matrix columns).
 _IFT_BLOCK_BYTES = 64 * 1024**2
+# Max size of the per-worker row-block temporaries in the Schur/truncate step.
+_ROW_BLOCK_BYTES = 128 * 1024**2
 # R-blocks with fewer than nkp^2 / this many targets are IFT'd by gathering.
 _GATHER_MAX_DENSITY_INV = 32
+# Fraction of the available memory the workers are allowed to plan for.
+_MEMORY_SAFETY = 0.8
+
+_C16 = np.dtype(np.complex128).itemsize
+
+
+def _cgroup_memory_limit() -> int | None:
+    """Tightest memory limit of this process's cgroup or any ancestor (v2 or v1), in bytes."""
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+
+    candidates = []
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        _, controllers, rel = parts
+        if controllers == "":
+            candidates.append(("/sys/fs/cgroup", rel, "memory.max"))
+        elif "memory" in controllers.split(","):
+            candidates.append(("/sys/fs/cgroup/memory", rel, "memory.limit_in_bytes"))
+
+    best = None
+    for root, rel, fname in candidates:
+        rel_parts = [p for p in rel.split("/") if p]
+        for depth in range(len(rel_parts), -1, -1):
+            path = os.path.join(root, *rel_parts[:depth], fname)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    raw = f.read().strip()
+            except OSError:
+                continue
+            if raw == "max":
+                continue
+            try:
+                val = int(raw)
+            except ValueError:
+                continue
+            # cgroup v1 reports "unlimited" as a huge page-aligned number.
+            if val < (1 << 60):
+                best = val if best is None else min(best, val)
+    return best
+
+
+def _proc_status_bytes(field: str) -> int:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(field + ":"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def available_memory_bytes() -> int | None:
+    """
+    Memory this process can still use, respecting cgroup limits (what SLURM
+    --mem sets), the SLURM env vars, the node's MemAvailable and RLIMIT_AS.
+    ``None`` if nothing could be determined.
+    """
+    rss = _proc_status_bytes("VmRSS")
+    bounds = []
+
+    limit = _cgroup_memory_limit()
+    if limit is not None:
+        bounds.append(limit - rss)
+
+    mem_node = os.environ.get("SLURM_MEM_PER_NODE")
+    mem_cpu = os.environ.get("SLURM_MEM_PER_CPU")
+    try:
+        if mem_node:
+            bounds.append(int(mem_node) * 1024**2 - rss)
+        elif mem_cpu:
+            bounds.append(int(mem_cpu) * 1024**2 * available_cpu_count() - rss)
+    except ValueError:
+        pass
+
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    bounds.append(int(line.split()[1]) * 1024)
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+
+    try:
+        import resource
+
+        soft, _ = resource.getrlimit(resource.RLIMIT_AS)
+        if soft != resource.RLIM_INFINITY:
+            bounds.append(soft - _proc_status_bytes("VmSize"))
+    except (ImportError, OSError, ValueError):
+        pass
+
+    return max(0, min(bounds)) if bounds else None
+
+
+def _estimate_worker_bytes(nb: int, nkp: int, n_rm: int, k_chunk_size: int, n_mats: int, nnz: int) -> int:
+    """Peak extra memory of one worker in stream_project_to_real_space."""
+    return int(
+        _C16 * nb * nb  # one dense H(k) or S(k) at a time
+        + _C16 * nnz  # phase-weighted entries while building it
+        + _C16 * n_mats * k_chunk_size * nkp * nkp  # reduced chunk buffers
+        + 3 * _C16 * n_rm * nkp  # Schur C, (M T)[rm] and the solve/product temporaries
+        + 3 * _ROW_BLOCK_BYTES
+        + _IFT_BLOCK_BYTES
+    )
+
+
+def _project_into(
+    M: np.ndarray,
+    C: np.ndarray | None,
+    keep: np.ndarray,
+    rm: np.ndarray,
+    out: np.ndarray,
+) -> None:
+    """
+    Write the reduced (nkp, nkp) matrix of one dense (Nb, Nb) M into ``out``.
+
+    ``C is None``: truncation, out = M[keep][:, keep].
+    Otherwise Schur with T(k) = [identity on kept rows; C on removed rows]
+    (same T as ``build_elimination_tk``): out = T^dagger M T, evaluated as
+    X = M[:, keep] + M[:, rm] C, out = X[keep] + C^dagger X[rm], without ever
+    forming T(k) or a full (Nb, nkp) X. Rows of ``out`` are produced in
+    blocks of at most ~``_ROW_BLOCK_BYTES``, so the only full-size arrays are
+    ``M`` itself and ``out``.
+    """
+    nb = M.shape[0]
+    nkp = len(keep)
+    X_rm = None
+    if C is not None:
+        X_rm = M[np.ix_(rm, keep)]
+        X_rm += M[np.ix_(rm, rm)] @ C
+
+    block = max(1, _ROW_BLOCK_BYTES // (_C16 * max(nb, 1)))
+    for b0 in range(0, nkp, block):
+        b1 = min(b0 + block, nkp)
+        M_rows = M[keep[b0:b1]]
+        o = out[b0:b1]
+        # mode='clip' (indices are valid): the default 'raise' buffers `out`.
+        np.take(M_rows, keep, axis=1, out=o, mode="clip")
+        if C is not None:
+            o += M_rows[:, rm] @ C
+            o += C[:, b0:b1].conj().T @ X_rm
+        del M_rows
+
+
+def _schur_coefficients(Sk: np.ndarray, keep: np.ndarray, rm: np.ndarray) -> np.ndarray:
+    """C = -S_rr^{-1} S_rk, the removed-orbital rows of T(k)."""
+    return -np.linalg.solve(Sk[np.ix_(rm, rm)], Sk[np.ix_(rm, keep)])
 
 
 def _reduce_one_k(
@@ -393,32 +552,18 @@ def _reduce_one_k(
     rm: np.ndarray,
     reduction_mode: str,
 ) -> tuple[np.ndarray | None, np.ndarray]:
-    """
-    Reduce one k-point's dense (Nb, Nb) H/S to the kept basis.
-
-    Schur: same T(k) as ``build_elimination_tk`` (identity on kept rows,
-    C = -S_rr^{-1} S_rk on removed rows), but T^dagger M T is evaluated
-    blockwise as X = M[:, keep] + M[:, rm] C, then X[keep] + C^dagger X[rm],
-    so T(k) is never built and the cost is O(Nb^2 * N_rm) instead of O(Nb^3).
-    """
+    """Reduce one k-point's dense (Nb, Nb) H/S to the kept basis (allocating the outputs)."""
     if len(rm) == 0:
         return Hk, Sk
-    if reduction_mode == "truncate":
-        H_new = None if Hk is None else Hk[np.ix_(keep, keep)]
-        return H_new, Sk[np.ix_(keep, keep)]
-
-    C = -np.linalg.solve(Sk[np.ix_(rm, rm)], Sk[np.ix_(rm, keep)])
-    Ch = C.conj().T
-
-    def project(M: np.ndarray) -> np.ndarray:
-        X = M[:, keep]
-        X += M[:, rm] @ C
-        out = X[keep]
-        out += Ch @ X[rm]
-        return out
-
-    H_new = None if Hk is None else project(Hk)
-    return H_new, project(Sk)
+    C = _schur_coefficients(Sk, keep, rm) if reduction_mode == "schur" else None
+    nkp = len(keep)
+    S_new = np.empty((nkp, nkp), dtype=np.complex128)
+    _project_into(Sk, C, keep, rm, S_new)
+    H_new = None
+    if Hk is not None:
+        H_new = np.empty((nkp, nkp), dtype=np.complex128)
+        _project_into(Hk, C, keep, rm, H_new)
+    return H_new, S_new
 
 
 def stream_project_to_real_space(
@@ -440,22 +585,25 @@ def stream_project_to_real_space(
     Returns ``(HR_re, SR)``: for every target (see
     ``io.ReducedOutputLayout``; entries of R index ``r`` are
     ``target_flat[r_bounds[r]:r_bounds[r + 1]]``, flat ``a * nkp + b``
-    indices into the reduced matrix), the real part of the IFT'd reduced
-    Hamiltonian (``None`` with ``overlap_only``) and the complex IFT'd
-    reduced overlap. Only the real part of H is kept because the output
-    files only store real entries.
+    indices into the reduced matrix, sorted within each R), the real part of
+    the IFT'd reduced Hamiltonian (``None`` with ``overlap_only``) and the
+    complex IFT'd reduced overlap. Only the real part of H is kept because
+    the output files only store real entries.
 
     Memory: the dense real-space (N_R, Nb_kept, Nb_kept) arrays of the
     straightforward approach are never formed -- the accumulators have one
-    scalar per target, i.e. the size of the output files. In k-space, each
-    worker holds one k-chunk of *reduced* matrices (sized by
-    ``k_chunk_size``, by default ~``_K_CHUNK_BYTES``, independent of
-    ``n_workers`` and of the mesh size), one dense (Nb, Nb) H/S pair at a
-    time (``obj._dense_k`` builds a single k-point from the sparse blocks),
-    and one IFT temporary of at most ~``_IFT_BLOCK_BYTES``.
+    scalar per target, i.e. the size of the output files. Per worker, the
+    peak is one dense (Nb, Nb) H(k) or S(k) (built from the sparse blocks
+    by ``obj._dense_k``, freed right after its reduction), the chunk of
+    reduced matrices (``k_chunk_size`` k-points, by default
+    ~``_K_CHUNK_BYTES`` but at least one), the Schur coefficients, and
+    row/IFT blocks of bounded size; see ``_estimate_worker_bytes``. For
+    large Nb that is several dense matrices per worker, so ``n_workers`` is
+    capped to what fits in ``available_memory_bytes()``; spare CPUs go to
+    BLAS inside each worker instead.
 
-    Parallelism: chunks are processed by ``n_workers`` threads; each worker
-    also folds its own chunk into the shared accumulators (one lock per R
+    Parallelism: chunks are processed by worker threads; each worker also
+    folds its own chunk into the shared accumulators (one lock per R
     block), so the IFT runs in parallel without per-worker copies of the
     real-space result.
 
@@ -474,40 +622,69 @@ def stream_project_to_real_space(
     if keep.size == 0:
         raise ValueError("Cannot remove all orbitals")
     nkp = len(keep)
+    nkp2 = nkp * nkp
+    n_mats = 1 if overlap_only else 2
+    schur = reduction_mode == "schur" and len(rm) > 0
 
     ks = np.asarray(ks, dtype=np.float64)
     total_nk = len(ks)
-    n_workers = max(1, min(int(n_workers), total_nk))
+    n_cpus = max(1, int(n_workers))
+    n_workers = max(1, min(n_cpus, total_nk))
     if k_chunk_size is None:
-        bytes_per_k = (1 if overlap_only else 2) * nkp * nkp * np.dtype(np.complex128).itemsize
-        k_chunk_size = max(1, _K_CHUNK_BYTES // max(1, bytes_per_k))
+        k_chunk_size = max(1, _K_CHUNK_BYTES // max(1, n_mats * nkp2 * _C16))
         k_chunk_size = min(k_chunk_size, -(-total_nk // n_workers))
     k_chunk_size = max(1, int(k_chunk_size))
-    k_chunks = [ks[i : i + k_chunk_size] for i in range(0, total_nk, k_chunk_size)]
 
     Rs = np.asarray(Rijk_list, dtype=np.float64)
     r_bounds = np.asarray(r_bounds, dtype=np.int64)
-    target_flat = np.asarray(target_flat, dtype=np.int64)
+    target_flat = np.asarray(target_flat)
     n_targets = len(target_flat)
     active_r = [r for r in range(len(Rs)) if r_bounds[r + 1] > r_bounds[r]]
     r_locks = {r: threading.Lock() for r in active_r}
 
-    # Per R, the IFT either gathers the targets' columns for every k-point
-    # (cost ~ n_targets_r * Nk, scattered reads) or contracts the whole
-    # reduced R-block with BLAS and picks the targets afterwards (cost
-    # ~ nkp^2 * Nk, but at gemm speed). The block product wins unless the
-    # R-block is very sparse (large supercells, distant R).
-    nkp2 = nkp * nkp
-    dense_r = [r for r in active_r if (r_bounds[r + 1] - r_bounds[r]) * _GATHER_MAX_DENSITY_INV >= nkp2]
-    dense_set = set(dense_r)
-    sparse_r = [r for r in active_r if r not in dense_set]
-    bytes_per_r = (1 if overlap_only else 2) * nkp2 * np.dtype(np.complex128).itemsize
-    r_group = max(1, _IFT_BLOCK_BYTES // bytes_per_r)
-
     HR_acc = None if overlap_only else np.zeros(n_targets, dtype=np.float64)
     SR_acc = np.zeros(n_targets, dtype=np.complex128)
 
+    # Cap the number of concurrent workers by memory (accumulators above are
+    # already allocated, so available_memory_bytes() accounts for them).
     s_obj = obj._s_obj
+    nnz = max(
+        len(s_obj._entries_expanded),
+        0 if overlap_only else len(obj._entries_expanded),
+    )
+    worker_bytes = _estimate_worker_bytes(nb, nkp, len(rm) if schur else 0, k_chunk_size, n_mats, nnz)
+    avail = available_memory_bytes()
+    mem_note = "memory limit unknown"
+    if avail is not None:
+        fit = int(_MEMORY_SAFETY * avail // max(1, worker_bytes))
+        mem_note = f"{avail / 1024**3:.1f} GiB available, ~{worker_bytes / 1024**3:.2f} GiB per worker"
+        if fit < n_workers:
+            n_workers = max(1, fit)
+            if fit < 1:
+                mem_note += " -- WARNING: even one worker may not fit"
+            k_chunk_size = min(k_chunk_size, max(1, -(-total_nk // n_workers)))
+    k_chunks = [ks[i : i + k_chunk_size] for i in range(0, total_nk, k_chunk_size)]
+    n_workers = max(1, min(n_workers, len(k_chunks)))
+    threads_per_worker = max(1, available_cpu_count() // n_workers)
+    print(
+        f"[projection] Nb={nb} kept={nkp} removed={len(rm)} Nk={total_nk} "
+        f"chunk={k_chunk_size} workers={n_workers} blas_threads={threads_per_worker} ({mem_note})",
+        flush=True,
+    )
+
+    # Per R, the IFT either gathers the targets' columns for every k-point
+    # (cost ~ n_targets_r * Nk, scattered reads) or contracts reduced
+    # R-blocks with BLAS and picks the targets afterwards (cost ~ nkp^2 * Nk,
+    # but at gemm speed). The block product wins unless the R-block is very
+    # sparse (large supercells, distant R). Block products are done for
+    # groups of R and slices of columns so the temporary stays within
+    # _IFT_BLOCK_BYTES.
+    dense_r = [r for r in active_r if (r_bounds[r + 1] - r_bounds[r]) * _GATHER_MAX_DENSITY_INV >= nkp2]
+    dense_set = set(dense_r)
+    sparse_r = [r for r in active_r if r not in dense_set]
+    bytes_per_r = n_mats * nkp2 * _C16
+    r_group = max(1, _IFT_BLOCK_BYTES // bytes_per_r)
+    col_block = nkp2 if r_group > 1 else max(1, _IFT_BLOCK_BYTES // (n_mats * _C16))
 
     def process(ks_chunk: np.ndarray) -> None:
         nkc = len(ks_chunk)
@@ -515,19 +692,20 @@ def stream_project_to_real_space(
         Hk_red = None if overlap_only else np.empty((nkc, nkp, nkp), dtype=np.complex128)
         for i, k in enumerate(ks_chunk):
             Sk = s_obj._dense_k(k)
-            Hk = None if overlap_only else obj._dense_k(k)
-            H_new, S_new = _reduce_one_k(Hk, Sk, keep, rm, reduction_mode)
-            del Hk, Sk
-            Sk_red[i] = S_new
+            C = _schur_coefficients(Sk, keep, rm) if schur else None
+            _project_into(Sk, C, keep, rm, Sk_red[i])
+            del Sk
             if Hk_red is not None:
-                Hk_red[i] = H_new
+                Hk = obj._dense_k(k)
+                _project_into(Hk, C, keep, rm, Hk_red[i])
+                del Hk
+            del C
 
         S_flat = Sk_red.reshape(nkc, -1)
         H_flat = None if Hk_red is None else Hk_red.reshape(nkc, -1)
         phase = np.exp(-2j * np.pi * (Rs @ ks_chunk.T)) / total_nk
 
-        def fold(r: int, s_part: np.ndarray, h_part: np.ndarray | None) -> None:
-            s, e = r_bounds[r], r_bounds[r + 1]
+        def fold(r: int, s: int, e: int, s_part: np.ndarray, h_part: np.ndarray | None) -> None:
             with r_locks[r]:
                 SR_acc[s:e] += s_part
                 if h_part is not None:
@@ -535,21 +713,30 @@ def stream_project_to_real_space(
 
         # Sparse R blocks: gather the targets' k-columns and contract them.
         for r in sparse_r:
-            idx = target_flat[r_bounds[r] : r_bounds[r + 1]]
+            s, e = r_bounds[r], r_bounds[r + 1]
+            idx = target_flat[s:e]
             ph = phase[r]
-            fold(r, ph @ S_flat[:, idx], None if H_flat is None else (ph @ H_flat[:, idx]).real)
+            fold(r, s, e, ph @ S_flat[:, idx], None if H_flat is None else (ph @ H_flat[:, idx]).real)
 
-        # Dense R blocks: one zgemm per group of R (the full reduced R-blocks,
-        # bounded by _IFT_BLOCK_BYTES), then pick the targets out of it.
+        # Dense R blocks: one gemm per (group of R, column slice), then pick
+        # the targets falling in that slice (targets are sorted within an R).
         for g in range(0, len(dense_r), r_group):
             rs = dense_r[g : g + r_group]
             ph = phase[rs]
-            S_R = ph @ S_flat
-            H_R = None if H_flat is None else ph @ H_flat
-            for j, r in enumerate(rs):
-                idx = target_flat[r_bounds[r] : r_bounds[r + 1]]
-                fold(r, S_R[j, idx], None if H_R is None else H_R[j, idx].real)
-            del S_R, H_R
+            for c0 in range(0, nkp2, col_block):
+                c1 = min(c0 + col_block, nkp2)
+                S_R = ph @ S_flat[:, c0:c1]
+                H_R = None if H_flat is None else ph @ H_flat[:, c0:c1]
+                for j, r in enumerate(rs):
+                    rb0, rb1 = r_bounds[r], r_bounds[r + 1]
+                    idx_r = target_flat[rb0:rb1]
+                    s = rb0 + int(np.searchsorted(idx_r, c0))
+                    e = rb0 + int(np.searchsorted(idx_r, c1))
+                    if s == e:
+                        continue
+                    idx = target_flat[s:e] - c0
+                    fold(r, s, e, S_R[j, idx], None if H_R is None else H_R[j, idx].real)
+                del S_R, H_R
 
     # threadpoolctl mutates process-global BLAS thread state, not per-thread
     # state, so it must be set once around the whole pool (single caller,
@@ -557,7 +744,6 @@ def stream_project_to_real_space(
     # concurrently from multiple threads races on that global state and can
     # crash the underlying BLAS library (seen as a segfault on some HPC
     # MKL/OpenBLAS builds, even when it happens to survive elsewhere).
-    threads_per_worker = max(1, available_cpu_count() // n_workers)
     with threadpoolctl.threadpool_limits(limits=threads_per_worker):
         if n_workers == 1:
             for chunk in k_chunks:

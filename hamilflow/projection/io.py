@@ -196,26 +196,23 @@ class ReducedOutputLayout:
     ``r * nkp**2 + a * nkp + b`` (``r`` indexes ``Rijk_list``, ``a``/``b``
     are reduced-basis orbital indices).
 
-    ``target_keys`` is the sorted union of written entries and their
-    partners, so it is grouped by R: entries for R index ``r`` are
-    ``target_keys[r_bounds[r]:r_bounds[r + 1]]``. ``out_pos``/``partner_pos``
-    map every written entry (in file order) and its Hermitian partner into
-    ``target_keys``.
+    The targets are the sorted union of written entries and their partners,
+    so they are grouped by R: entries for R index ``r`` are
+    ``target_flat[r_bounds[r]:r_bounds[r + 1]]`` (flat ``a * nkp + b`` index
+    inside the reduced R-block, ascending). ``out_pos``/``partner_pos`` map
+    every written entry (in file order) and its Hermitian partner into the
+    targets. Index arrays are int32 whenever the values fit, since for large
+    structures they are as long as the output files.
     """
 
     atom_pairs: np.ndarray
     chunk_shapes: np.ndarray
     chunk_boundaries: np.ndarray
     nkp: int
-    target_keys: np.ndarray
+    target_flat: np.ndarray
     r_bounds: np.ndarray
     out_pos: np.ndarray
     partner_pos: np.ndarray
-
-    @property
-    def target_flat(self) -> np.ndarray:
-        """Flat (a * nkp + b) index of each target inside its reduced R-block."""
-        return self.target_keys % (self.nkp * self.nkp)
 
     def hermitize_real(self, acc: np.ndarray) -> np.ndarray:
         """Written entries of Re[0.5 * (M(R) + M(-R)^dagger)] from real accumulated targets."""
@@ -224,6 +221,10 @@ class ReducedOutputLayout:
     def hermitize_imag(self, acc: np.ndarray) -> np.ndarray:
         """Written entries of Im[0.5 * (M(R) + M(-R)^dagger)] from imaginary accumulated targets."""
         return 0.5 * (acc[self.out_pos] - acc[self.partner_pos])
+
+
+def _index_dtype(max_value: int) -> type:
+    return np.int32 if max_value < np.iinfo(np.int32).max else np.int64
 
 
 def build_reduced_output_layout(
@@ -279,12 +280,19 @@ def build_reduced_output_layout(
         if i_neg is not None:
             neg_idx[i_r] = i_neg
 
+    # partner of (r, a, b) is (neg_idx[r], b, a); built in place to limit temporaries.
     r_of = out_keys // nkp2
-    rem = out_keys % nkp2
+    rem = out_keys - r_of * nkp2
+    partner_keys = neg_idx[r_of]
+    del r_of
+    partner_keys *= nkp2
     a_of = rem // nkp
-    b_of = rem % nkp
-    partner_keys = neg_idx[r_of] * nkp2 + b_of * nkp + a_of
-    del r_of, rem, a_of, b_of
+    rem -= a_of * nkp
+    rem *= nkp
+    partner_keys += rem
+    del rem
+    partner_keys += a_of
+    del a_of
 
     # Sorted union of written entries and partners (np.union1d is several
     # times slower here: numpy's unique is hash-based for large int arrays).
@@ -292,16 +300,22 @@ def build_reduced_output_layout(
     target_keys.sort()
     if len(target_keys):
         target_keys = target_keys[np.r_[True, target_keys[1:] != target_keys[:-1]]]
-    out_pos = np.searchsorted(target_keys, out_keys)
-    partner_pos = np.searchsorted(target_keys, partner_keys)
+    pos_dtype = _index_dtype(len(target_keys))
+    out_pos = np.searchsorted(target_keys, out_keys).astype(pos_dtype)
+    del out_keys
+    partner_pos = np.searchsorted(target_keys, partner_keys).astype(pos_dtype)
+    del partner_keys
     r_bounds = np.searchsorted(target_keys, np.arange(n_r + 1, dtype=np.int64) * nkp2)
+    target_keys %= nkp2
+    target_flat = target_keys.astype(_index_dtype(int(nkp2)))
+    del target_keys
 
     return ReducedOutputLayout(
         atom_pairs=atom_pairs,
         chunk_shapes=chunk_shapes,
         chunk_boundaries=chunk_boundaries,
         nkp=nkp,
-        target_keys=target_keys,
+        target_flat=target_flat,
         r_bounds=r_bounds,
         out_pos=out_pos,
         partner_pos=partner_pos,
