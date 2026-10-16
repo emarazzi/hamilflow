@@ -24,6 +24,12 @@ from .flows_base import (
 from .jobs import run_projection_for_structure, set_projection_job_name
 from pymatgen.io.aims.sets.core import StaticSetGenerator
 
+# Added on top of DEFAULT_AIMS_KWARGS for overlap-only runs: stop FHI-aims
+# right after writing the real-space matrices.
+DEFAULT_OVL_ONLY_AIMS_KWARGS: dict[str, Any] = {
+    "output_rs_matrices_stop": "",
+}
+
 @dataclass
 class GenerateAimsToProjectedDeephData:
     """
@@ -216,7 +222,7 @@ class GenerateOvlOnlyAimsToProjectedDeephData:
             structure_pattern=self.structure_pattern,
             structure_file_format=self.structure_file_format,
             name=self.name,
-            aims_kwargs=self.aims_kwargs,
+            aims_kwargs={**DEFAULT_OVL_ONLY_AIMS_KWARGS, **self.aims_kwargs},
             kgrid=self.kgrid,
             kpoints_updates=self.kpoints_updates,
             user_kpoints_settings=self.user_kpoints_settings,

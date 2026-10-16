@@ -41,7 +41,6 @@ DEFAULT_AIMS_KWARGS: dict[str, Any] = {
     "output_rs_matrices": "plain",
     "occupation_type": "gaussian 0.01",
     "sc_accuracy_etot": "1.0e-08 eV",
-    "compute_forces": "true",
     "preconditioner": "kerker 2.0",
     "sc_accuracy_rho": 1.0e-6,
     "use_local_index": "false",
