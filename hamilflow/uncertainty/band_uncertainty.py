@@ -47,9 +47,21 @@ class BandUncertaintyCalculator:
       `IllConditionedHandler`) is not supported: its energy window would have to be placed
       relative to the Fermi energy in info.json, which is copied from the DFT calculation and
       is not the Fermi level of a predicted Hamiltonian.
+    - `kpoints_settings`: alternative to the fixed `grid_mesh`. If given, it is passed as
+      `kpoints_updates` to `dft_workflows.kpoints.get_ksampling` with each structure's cell, so
+      the mesh is chosen per structure, e.g. {"grid_density": 1000},
+      {"reciprocal_density": 100} or {"k_grid": [4, 4, 4]}. It must resolve to a k_grid (not a
+      line path or explicit k-points). `grid_mesh` is then ignored; the mesh actually used is
+      stored with every structure's output as "grid_mesh".
+    - `kpoints_force_2d` / `kpoints_force_1d`: forwarded to `get_ksampling` as `force_2d` /
+      `force_1d` (mutually exclusive): the resolved k_grid is set to 1 along c (2D) or along
+      a and b (1D). Only used with `kpoints_settings`.
     """
 
     grid_mesh: tuple[int, int, int] = (2, 2, 2)
+    kpoints_settings: dict | None = None
+    kpoints_force_2d: bool = False
+    kpoints_force_1d: bool = False
     anchor_k: tuple[float, float, float] = (0.0, 0.0, 0.0)
     symprec: float = 1e-5
     species_number: dict[str, int] = field(default_factory=dict)  # overrides ase.data.atomic_numbers
@@ -111,6 +123,24 @@ class BandUncertaintyCalculator:
             int(np.min(np.sum(e < 0.5 * self._ILL_FILL_VALUE, axis=0))) for e in eigvals
         )
         return [e[:n_real] for e in eigvals]
+
+    def resolve_mesh(self, h_obj) -> tuple[int, int, int]:
+        """`grid_mesh`, or the k_grid `get_ksampling` gives for `h_obj`'s cell if
+        `kpoints_settings` is set."""
+        if self.kpoints_settings is None:
+            return tuple(self.grid_mesh)
+        from pymatgen.core import Lattice, Structure
+
+        from hamilflow.dft_workflows.kpoints import get_ksampling
+
+        structure = Structure(Lattice(h_obj.lattice), list(h_obj.elements), h_obj.frac_coords)
+        ksampling = get_ksampling(structure, kpoints_updates=self.kpoints_settings,
+                                  force_2d=self.kpoints_force_2d, force_1d=self.kpoints_force_1d)
+        if not ksampling or "k_grid" not in ksampling:
+            raise ValueError(
+                f"kpoints_settings {self.kpoints_settings!r} must resolve to a k_grid, got {ksampling!r}"
+            )
+        return tuple(ksampling["k_grid"])
 
     def build_irreducible_kpoints(self, h_obj, mesh, symprec):
         from ase.data import atomic_numbers
@@ -212,7 +242,8 @@ class BandUncertaintyCalculator:
     ) -> dict:
         """Band uncertainty of one structure (shared by `compute` and `compute_parallel`)."""
         ref_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
-        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ref_obj, self.grid_mesh, self.symprec)
+        mesh = self.resolve_mesh(ref_obj)
+        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ref_obj, mesh, self.symprec)
         ill_handler = self.make_ill_handler(ref_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
         diag_kwargs = dict(bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k, ill_handler=ill_handler)
 
@@ -262,7 +293,7 @@ class BandUncertaintyCalculator:
 
         return {
             **self.settings(),
-            "grid_mesh": list(self.grid_mesh),
+            "grid_mesh": list(mesh),
             "n_irreducible_kpoints": n_irr,
             "n_bands": int(avg_raw.shape[0]),
             "n_kept_orbitals": self.n_kept_orbitals(ill_handler),
@@ -339,7 +370,7 @@ class BandUncertaintyCalculator:
         - `skip_existing`: if True and `output_path` already exists, structures already in it
           are not recomputed and their stored results are kept in the returned dict. Set to
           False to recompute everything (the file is then overwritten). Note that stored
-          results are reused as-is, even if `grid_mesh` or the models changed (a warning is
+          results are reused as-is, even if `grid_mesh`/`kpoints_settings` or the models changed (a warning is
           printed when they were computed with different `settings()`).
         - `average_hamiltonian_dir`: root containing (or to receive) each structure's averaged
           `hamiltonian.h5` (see `hamiltonian_io.average_predicted_hamiltonians`), diagonalized to
@@ -484,7 +515,8 @@ class BandUncertaintyCalculator:
 
         dft_obj = SparseHamiltonianObj(dft_root / structure_name)
 
-        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, self.grid_mesh, self.symprec)
+        mesh = self.resolve_mesh(dft_obj)
+        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, mesh, self.symprec)
         ill_handler = self.make_ill_handler(dft_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
         diag_kwargs = dict(bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k, ill_handler=ill_handler)
 
@@ -519,6 +551,7 @@ class BandUncertaintyCalculator:
         print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
         return structure_name, {
             **self.settings(),
+            "grid_mesh": list(mesh),
             "overall_mae_eV": overall_mae,
             **({"avg_vs_dft_rigid_shift_eV": rigid["c_eV"],
                 "avg_vs_dft_rigid_shift_residual": rigid["residual"]} if rigid else {}),
