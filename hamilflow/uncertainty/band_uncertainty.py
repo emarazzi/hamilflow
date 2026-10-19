@@ -52,7 +52,7 @@ class BandUncertaintyCalculator:
     grid_mesh: tuple[int, int, int] = (2, 2, 2)
     anchor_k: tuple[float, float, float] = (0.0, 0.0, 0.0)
     symprec: float = 1e-5
-    species_number: dict[str, int] = field(default_factory=lambda: {"Mo": 42, "S": 16})
+    species_number: dict[str, int] = field(default_factory=dict)  # overrides ase.data.atomic_numbers
     hamiltonian_name: str = "hamiltonian.h5"
     overlap_name: str = "overlap.h5"
     align_mode: str = "matrix"
@@ -113,8 +113,10 @@ class BandUncertaintyCalculator:
         return [e[:n_real] for e in eigvals]
 
     def build_irreducible_kpoints(self, h_obj, mesh, symprec):
+        from ase.data import atomic_numbers
+
         try:
-            species = [self.species_number[el] for el in h_obj.elements]
+            species = [self.species_number.get(el) or atomic_numbers[el] for el in h_obj.elements]
         except KeyError as e:
             raise ValueError(f"No species_number tag for element {e}") from e
 
