@@ -7,6 +7,9 @@ import json
 import os
 import time
 
+import threadpoolctl
+from scipy.linalg import eigh
+
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 
 from .alignment import fit_rigid_shifts, write_aligned_hamiltonian
@@ -56,6 +59,22 @@ class BandUncertaintyCalculator:
     - `kpoints_force_2d` / `kpoints_force_1d`: forwarded to `get_ksampling` as `force_2d` /
       `force_1d` (mutually exclusive): the resolved k_grid is set to 1 along c (2D) or along
       a and b (1D). Only used with `kpoints_settings`.
+    - `method`: how the members' eigenvalues are obtained in `compute`/`compute_parallel`.
+      "exact" (default): every member is diagonalized.
+      "projected": only the averaged Hamiltonian is diagonalized; each member is projected onto
+      the averaged Hamiltonian's eigenvectors `C_W` of a band window W around the gap (see
+      `n_bands_below`/`n_bands_above`) and its window eigenvalues are those of
+      `E_W + C_W^dag (H_m - H_avg - c_m S) C_W` (Rayleigh-Ritz in the window, with `c_m` the
+      member's rigid shift). Needs `align_mode="matrix"`. Accurate as long as the members'
+      deviations are small compared to the separation from the bands outside the window; a member
+      state entering the window from outside it (e.g. a spurious in-gap state) is not seen. With
+      the window covering every band it reproduces "exact". The output has the same layout,
+      restricted to the window bands: `vbm_index` is relative to the window, `first_band_index` is
+      the window's first band and `n_bands_total` the number of bands of the averaged
+      Hamiltonian; `per_model_gap_eV` is the gap of the members' window eigenvalues.
+    - `n_bands_below` / `n_bands_above`: with `method="projected"`, the number of valence bands
+      (counting the VBM band) and of conduction bands (counting the CBM band) in the window; None
+      takes every band on that side.
     """
 
     grid_mesh: tuple[int, int, int] = (2, 2, 2)
@@ -72,6 +91,9 @@ class BandUncertaintyCalculator:
     batch_entries: int = 4_000_000
     ill_method: str | None = None
     ill_threshold: float = 1e-3
+    method: str = "exact"
+    n_bands_below: int | None = None
+    n_bands_above: int | None = None
 
     _ILL_FILL_VALUE = 1e4
 
@@ -82,14 +104,23 @@ class BandUncertaintyCalculator:
             self.ill_method = None
         if self.ill_method not in (None, "orbital_removal"):
             raise ValueError(f"ill_method must be None or 'orbital_removal', got {self.ill_method!r}")
+        if self.method not in ("exact", "projected"):
+            raise ValueError(f"method must be 'exact' or 'projected', got {self.method!r}")
+        if self.method == "projected" and self.align_mode != "matrix":
+            raise ValueError("method='projected' needs align_mode='matrix'")
 
     def settings(self) -> dict:
         """Settings that change the results, stored with every structure's output."""
-        return {
+        settings = {
             "align_mode": self.align_mode,
             "ill_method": self.ill_method,
             "ill_threshold": self.ill_threshold if self.ill_method else None,
         }
+        # only added for "projected", so outputs of the exact method keep their old settings
+        if self.method == "projected":
+            settings.update(method=self.method, n_bands_below=self.n_bands_below,
+                            n_bands_above=self.n_bands_above)
+        return settings
 
     def make_ill_handler(self, h_obj, ks, n_jobs: int = -1, parallel_k: bool = True):
         """`IllConditionedHandler` for one structure, or None if `ill_method` is None.
@@ -231,6 +262,133 @@ class BandUncertaintyCalculator:
                 )
         return rigid
 
+    @staticmethod
+    def _map_k(fn, n_k: int, n_jobs: int = -1, parallel_k: bool = True) -> list:
+        """`[fn(i_k) for i_k in range(n_k)]`, with the thread/BLAS split of
+        `SparseHamiltonianObj.diag`."""
+        if n_jobs < 0:
+            n_jobs = os.cpu_count() or 1
+        n_workers = max(1, min(n_jobs, n_k)) if parallel_k else 1
+        n_blas_threads = max(1, n_jobs // n_workers)
+        with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
+            if n_workers <= 1:
+                return [fn(i_k) for i_k in range(n_k)]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
+                return list(ex.map(fn, range(n_k)))
+
+    @staticmethod
+    def _eig_with_vecs(h_obj, k, ill_handler) -> tuple[np.ndarray, np.ndarray]:
+        """Real eigenvalues and S-orthonormal eigenvectors (rows in the full orbital basis) at one
+        k-point; with `ill_handler`, only the eigenvalues of the kept basis."""
+        Hk, Sk = h_obj._dense_k(k), h_obj._s_obj._dense_k(k)
+        if ill_handler is None:
+            return eigh(Hk, Sk)
+        vals, vecs = ill_handler.process_k(Hk, Sk, return_vecs=True)
+        return vals[: vecs.shape[1]], vecs
+
+    def _band_window(self, n_bands: int, h_obj) -> tuple[int, int]:
+        """`[first, stop)` band indices of the `method="projected"` window."""
+        homo_idx, lumo_idx = self.homo_lumo_indices(h_obj)
+        first = 0 if self.n_bands_below is None else max(0, homo_idx + 1 - self.n_bands_below)
+        stop = n_bands if self.n_bands_above is None else min(n_bands, lumo_idx + self.n_bands_above)
+        return first, stop
+
+    def _projected_structure_uncertainty(
+        self,
+        structure_name: str,
+        model_dirs: list[Path],
+        average_hamiltonian_dir: Path,
+        n_jobs: int = -1,
+        parallel_k: bool = True,
+        log_models: bool = False,
+    ) -> dict:
+        """`_structure_uncertainty` for `method="projected"`."""
+        ref_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
+        mesh = self.resolve_mesh(ref_obj)
+        ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ref_obj, mesh, self.symprec)
+        ill_handler = self.make_ill_handler(ref_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
+
+        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir)
+        eigs = self._map_k(lambda i_k: self._eig_with_vecs(avg_obj, ks[i_k], ill_handler),
+                           len(ks), n_jobs, parallel_k)
+        n_bands = min(len(vals) for vals, _ in eigs)
+        avg_raw = np.stack([vals[:n_bands] for vals, _ in eigs], axis=1)
+        first, stop = self._band_window(n_bands, ref_obj)
+        # only the window's eigenvectors are kept, not the full (n_orb, n_orb) set per k-point
+        e_win = [vals[first:stop] for vals, _ in eigs]
+        c_win = [vecs[:, first:stop] for _, vecs in eigs]
+        del eigs
+        avg_ham_aligned, avg_ham_shift = self.align_to_midgap(avg_raw, ref_obj, anchor_k_idx)
+
+        member_paths = [Path(d) / structure_name / self.hamiltonian_name for d in model_dirs]
+        rigid = self._fit_and_save(member_paths, avg_obj.matrix_path, model_dirs[0] / structure_name,
+                                   [f"model_{k + 1}" for k in range(len(member_paths))], structure_name,
+                                   aligned_to="ensemble average")
+        del avg_obj
+
+        # deviations[m, band, k] of member m's aligned window eigenvalues from the average's
+        deviations = []
+        for i_model, model in enumerate(model_dirs):
+            t_model = time.monotonic()
+            h_obj = SparseHamiltonianObj(model / structure_name)
+            c_m = rigid[i_model]["c_eV"]
+
+            # C^dag S C = 1 and C^dag H_avg C = E, so C^dag (H_m - H_avg - c_m S) C = C^dag H_m C - E - c_m
+            def window_deviation(i_k):
+                c, e = c_win[i_k], e_win[i_k]
+                p = c.conj().T @ (h_obj._dense_k(ks[i_k]) @ c)
+                p = 0.5 * (p + p.conj().T)
+                p[np.diag_indices(len(e))] -= e + c_m
+                return np.linalg.eigvalsh(np.diag(e) + p) - e
+
+            deviations.append(np.stack(self._map_k(window_deviation, len(ks), n_jobs, parallel_k), axis=1))
+            del h_obj
+            if log_models:
+                print(
+                    f"[{structure_name}] model {i_model + 1}/{len(model_dirs)} projected "
+                    f"in {time.monotonic() - t_model:.1f}s",
+                    flush=True,
+                )
+        deviations = np.stack(deviations, axis=0)
+
+        # the averaged Hamiltonian's eigenvalues are a constant per (band, k), so the spread of the
+        # members' eigenvalues is the spread of their deviations
+        sigma_eigvals = np.std(deviations, axis=0, ddof=1)
+        sigma_eigvals_avg_ham = np.sqrt(np.mean(deviations ** 2, axis=0))
+        avg_window = avg_ham_aligned[first:stop]
+        homo_w = self.homo_lumo_indices(ref_obj)[0] - first
+        member_window = avg_raw[first:stop][None] + deviations
+        member_gaps = member_window[:, homo_w + 1].min(axis=1) - member_window[:, homo_w].max(axis=1)
+
+        result_per_k = {}
+        for i_k in range(len(ks)):
+            result_per_k[f"k{i_k}"] = {
+                "k_frac": ks[i_k].tolist(),
+                "weight": int(weights[i_k]),
+                "sigma_eV": sigma_eigvals[:, i_k].tolist(),
+                "sigma_eV_avg_ham": sigma_eigvals_avg_ham[:, i_k].tolist(),
+                "eigvals_avg_ham_eV": avg_window[:, i_k].tolist(),
+            }
+
+        return {
+            **self.settings(),
+            "grid_mesh": list(mesh),
+            "n_irreducible_kpoints": len(ks),
+            "n_bands": stop - first,
+            "n_bands_total": n_bands,
+            "first_band_index": first,
+            "n_kept_orbitals": self.n_kept_orbitals(ill_handler),
+            "occupation": ref_obj.occupation,
+            "vbm_index": homo_w,
+            "per_model_shift_eV": [float(avg_ham_shift - r["c_eV"]) for r in rigid],
+            "avg_hamiltonian_shift_eV": float(avg_ham_shift),
+            "per_model_rigid_shift_eV": [r["c_eV"] for r in rigid],
+            "per_model_rigid_shift_residual": [r["residual"] for r in rigid],
+            "per_model_gap_eV": [float(g) for g in member_gaps],
+            "avg_hamiltonian_gap_eV": self.gap(avg_raw, ref_obj),
+            "kpoints": result_per_k,
+        }
+
     def _structure_uncertainty(
         self,
         structure_name: str,
@@ -241,6 +399,10 @@ class BandUncertaintyCalculator:
         log_models: bool = False,
     ) -> dict:
         """Band uncertainty of one structure (shared by `compute` and `compute_parallel`)."""
+        if self.method == "projected":
+            return self._projected_structure_uncertainty(
+                structure_name, model_dirs, average_hamiltonian_dir, n_jobs, parallel_k, log_models
+            )
         ref_obj = SparseHamiltonianObj(model_dirs[0] / structure_name)
         mesh = self.resolve_mesh(ref_obj)
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ref_obj, mesh, self.symprec)
