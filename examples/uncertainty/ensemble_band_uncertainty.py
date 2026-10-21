@@ -43,6 +43,14 @@ MODEL_OUTPUT_GLOB = "train_{i}/infer/outputs/*/dft"
 INFERENCE_INPUTS_DIR = Path("/path/to/your/inference/inputs/dft")
 AVERAGE_HAM_DIR = ENSEMBLE_ROOT / "avg_ham"
 STRUCTURE_PATTERN = "*"  # glob on the structure folder names, e.g. "twisted_*"
+# k-point mesh, chosen per structure from its cell (see
+# dft_workflows.kpoints.get_ksampling). Must resolve to a k_grid, e.g.
+# {"reciprocal_density": 100}, {"grid_density": 1000} or {"k_grid": [3, 3, 1]}.
+KPOINTS_SETTINGS = {"reciprocal_density": 100}
+FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
+# Treatment of an ill-conditioned overlap: "orbital_removal" removes orbitals
+# until S(k) is well conditioned on the k-grid; None = no treatment.
+ILL_METHOD = "orbital_removal"
 OUTPUT_JSON = "band_uncertainty.json"
 # -----------------------------------------------------------------------------
 
@@ -60,10 +68,11 @@ for i in range(1, N_MODELS + 1):
     link_ensemble_files(structures=structures, ensemble_dir=model_dir, dst_parent=ENSEMBLE_ROOT)
     model_dirs.append(model_dir)
 
-# grid_mesh is a fixed k-grid for every structure; pass e.g.
-# kpoints_settings={"reciprocal_density": 100} instead for a per-structure mesh.
-# ill_method="orbital_removal" removes orbitals until S(k) is well conditioned.
-calc = BandUncertaintyCalculator(grid_mesh=(3, 3, 1), ill_method="orbital_removal")
+calc = BandUncertaintyCalculator(
+    kpoints_settings=KPOINTS_SETTINGS,
+    kpoints_force_2d=FORCE_2D,
+    ill_method=ILL_METHOD,
+)
 calc.compute_parallel(
     model_dirs,
     average_hamiltonian_dir=AVERAGE_HAM_DIR,

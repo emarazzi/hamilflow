@@ -8,7 +8,9 @@ same structures, it tells how well the ensemble spread tracks the true error
 (see ``UncertaintyCalibrator`` in ``hamilflow.uncertainty.band_postprocess``).
 
 Run ``ensemble_band_uncertainty.py`` first with the same settings: it prepares
-the model folders and writes the averaged Hamiltonians reused here.
+the model folders and writes the averaged Hamiltonians reused here. Keep
+KPOINTS_SETTINGS, FORCE_2D and ILL_METHOD identical in both scripts, so that
+error and uncertainty refer to the same states.
 
 Run with:  python ensemble_error_vs_dft.py   (e.g. inside a SLURM job)
 """
@@ -26,6 +28,14 @@ MODEL_OUTPUT_GLOB = "train_{i}/infer/outputs/*/dft"
 DFT_ROOT = Path("/path/to/your/test_set/dft")
 AVERAGE_HAM_DIR = ENSEMBLE_ROOT / "avg_ham"
 STRUCTURE_PATTERN = "*"  # glob on the structure folder names, e.g. "twisted_*"
+# k-point mesh, chosen per structure from its cell (see
+# dft_workflows.kpoints.get_ksampling). Must resolve to a k_grid, e.g.
+# {"reciprocal_density": 100}, {"grid_density": 1000} or {"k_grid": [3, 3, 1]}.
+KPOINTS_SETTINGS = {"reciprocal_density": 100}
+FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
+# Treatment of an ill-conditioned overlap: "orbital_removal" removes orbitals
+# until S(k) is well conditioned on the k-grid; None = no treatment.
+ILL_METHOD = "orbital_removal"
 OUTPUT_JSON = "error_vs_dft.json"
 # -----------------------------------------------------------------------------
 
@@ -35,9 +45,11 @@ model_dirs = []
 for i in range(1, N_MODELS + 1):
     model_dirs.extend(sorted(ENSEMBLE_ROOT.glob(MODEL_OUTPUT_GLOB.format(i=i))))
 
-# Use the same k-grid and ill-conditioning treatment as for the uncertainty,
-# so that error and uncertainty refer to the same states.
-calc = BandUncertaintyCalculator(grid_mesh=(3, 3, 1), ill_method="orbital_removal")
+calc = BandUncertaintyCalculator(
+    kpoints_settings=KPOINTS_SETTINGS,
+    kpoints_force_2d=FORCE_2D,
+    ill_method=ILL_METHOD,
+)
 calc.compare_averaged_to_dft_parallel(
     model_dirs=model_dirs,
     average_hamiltonian_dir=AVERAGE_HAM_DIR,
