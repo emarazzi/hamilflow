@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
+# One band-structure calculation per array task, one task per subdirectory of
+# PARENT_DIR. Set --array=1-<number of subdirectories>, then submit with:
+#   sbatch band_structure_slurm.sh /path/to/your/structures/folder [STRUCTURE_FILENAME] [OUTPUT_FILENAME]
+#SBATCH --job-name=band-structure
+#SBATCH --array=1-100
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH --account=your_account
+#SBATCH --partition=your_partition
 set -euo pipefail
 
-# Example Slurm header:
-# #SBATCH --job-name=band-structure
-# #SBATCH --array=1-100
-# #SBATCH --cpus-per-task=1
-# #SBATCH --mem=4G
-
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+# Under sbatch the script runs from a spool copy: point this to the folder
+# holding band_structure_single_task.py if SLURM_SUBMIT_DIR is not it.
+SCRIPT_DIR=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 
 PARENT_DIR=${1:?Usage: $0 PARENT_DIR [STRUCTURE_FILENAME] [OUTPUT_FILENAME]}
 STRUCTURE_FILENAME=${2:-POSCAR}
 OUTPUT_FILENAME=${3:-band_data.h5}
-
-cd "$REPO_ROOT"
 
 mapfile -t CASE_DIRS < <(find "$PARENT_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
 

@@ -28,28 +28,27 @@ def parse_args() -> ExamplePaths:
         description="Generate and plot a band structure using hamilflow.band_structures.band_calculation."
     )
     parser.add_argument(
-        "--structure",
+        "workdir",
         type=Path,
-        default=Path("./Silicon/POSCAR"),
-        help="Path to a structure file readable by pymatgen.",
+        help="DeepH-format directory containing the Hamiltonian inputs (e.g. /path/to/your/structure/folder).",
     )
     parser.add_argument(
-        "--workdir",
+        "--structure",
         type=Path,
-        default=Path("./Silicon"),
-        help="Working directory containing the Hamiltonian inputs.",
+        default=None,
+        help="Path to a structure file readable by pymatgen. Default: <workdir>/POSCAR.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("./Silicon/band_structure.png"),
-        help="Output image path written by plot_band.",
+        default=None,
+        help="Output image path written by plot_band. Default: <workdir>/band_structure.png.",
     )
     args = parser.parse_args()
     return ExamplePaths(
-        structure_path=args.structure,
+        structure_path=args.structure or args.workdir / "POSCAR",
         workdir=args.workdir,
-        output_path=args.output,
+        output_path=args.output or args.workdir / "band_structure.png",
     )
 
 

@@ -98,8 +98,8 @@ def parse_args() -> BatchOptions:
         type=Path,
         default=None,
         help=(
-            "Optional parent directory for fallback K_PATH lookup. "
-            "When set, each case reads K_PATH from <k_path_parent_dir>/<case_name>/<k_path_filename>."
+            "Optional directory holding a fallback K_PATH file shared by all cases, used when "
+            "automatic k-path generation fails. Default: each case's own directory."
         ),
     )
     parser.add_argument(
