@@ -1,8 +1,8 @@
 """Band-energy uncertainty of an ensemble of DeepH models.
 
 Given N independently trained DeepH models (e.g. from k-fold training) that
-all ran inference on the same structures, this script diagonalizes every
-member's predicted Hamiltonian on a k-grid and writes, per structure and
+all ran inference on the same structures, this script obtains every
+member's band energies on a k-grid (see METHOD below) and writes, per structure and
 k-point, the spread (sigma, eV) of the band energies across the ensemble.
 No DFT reference Hamiltonian is needed, so it can be used to pick new
 structures for active learning (see ``candidate_selection/uncertainty_map.py``).
@@ -18,6 +18,24 @@ Expected layout (edit the "User settings" section to match yours):
 ``link_ensemble_files`` first prepares each model's output folder: it copies
 ``hamiltonian_pred.h5`` to ``hamiltonian.h5`` and links ``POSCAR``,
 ``info.json`` and ``overlap.h5`` from the inference inputs.
+
+METHOD picks how the members' band energies are obtained:
+
+- "exact": every member's Hamiltonian is diagonalized at every k-point, all
+  bands are written.
+- "projected": only the averaged Hamiltonian is diagonalized. Each member is
+  projected onto the averaged Hamiltonian's eigenstates in a window of
+  N_BANDS_BELOW valence and N_BANDS_ABOVE conduction bands around the gap,
+  and its band energies are obtained by diagonalizing that small window
+  block. That is one large diagonalization per structure instead of one per
+  member, and the result matches "exact" closely as long as the members'
+  errors are small compared to the distance to the bands outside the window.
+  Only the window bands are written (same JSON layout; ``vbm_index`` counts
+  from the window's first band, ``first_band_index`` gives its position).
+  A member state that enters the window from outside it, such as a spurious
+  in-gap state, is not seen, so keep ILL_METHOD = "orbital_removal". For
+  band-edge-weighted statistics, choose the window wide enough to cover
+  e_cut plus a few tau on both sides of the gap.
 
 The averaged Hamiltonian of each structure is written in AVERAGE_HAM_DIR (or
 read from it, if already there) and is reused by ``ensemble_error_vs_dft.py``.
@@ -51,6 +69,14 @@ FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
 # Treatment of an ill-conditioned overlap: "orbital_removal" removes orbitals
 # until S(k) is well conditioned on the k-grid; None = no treatment.
 ILL_METHOD = "orbital_removal"
+# "exact" (diagonalize every member) or "projected" (see the docstring above).
+METHOD = "exact"
+# With METHOD = "projected": number of valence bands (counting the VBM band) and
+# conduction bands (counting the CBM band) in the window; None = all bands on that side.
+N_BANDS_BELOW = 25
+N_BANDS_ABOVE = 25
+# Use a new file when changing METHOD or the window: rerunning on an existing
+# file keeps the structures already in it.
 OUTPUT_JSON = "band_uncertainty.json"
 # -----------------------------------------------------------------------------
 
@@ -72,6 +98,9 @@ calc = BandUncertaintyCalculator(
     kpoints_settings=KPOINTS_SETTINGS,
     kpoints_force_2d=FORCE_2D,
     ill_method=ILL_METHOD,
+    method=METHOD,
+    n_bands_below=N_BANDS_BELOW,
+    n_bands_above=N_BANDS_ABOVE,
 )
 calc.compute_parallel(
     model_dirs,

@@ -12,6 +12,14 @@ the model folders and writes the averaged Hamiltonians reused here. Keep
 KPOINTS_SETTINGS, FORCE_2D and ILL_METHOD identical in both scripts, so that
 error and uncertainty refer to the same states.
 
+The error is always computed by diagonalizing the averaged and the DFT
+Hamiltonians and covers all bands, whatever METHOD was used for the
+uncertainty. If the uncertainty was computed with METHOD = "projected", it
+only covers its band window: compare the two with the band-edge-weighted
+statistics (``weighted_max_eV`` / ``weighted_mean_eV``), with the window
+wider than e_cut plus a few tau, and without ``bands`` / ``vbm_fraction``,
+whose band indices refer to different band lists in the two files.
+
 Run with:  python ensemble_error_vs_dft.py   (e.g. inside a SLURM job)
 """
 
