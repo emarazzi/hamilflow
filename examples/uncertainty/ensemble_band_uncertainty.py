@@ -34,8 +34,14 @@ METHOD picks how the members' band energies are obtained:
   from the window's first band, ``first_band_index`` gives its position).
   A member state that enters the window from outside it, such as a spurious
   in-gap state, is not seen, so keep ILL_METHOD = "orbital_removal". For
-  band-edge-weighted statistics, choose the window wide enough to cover
-  e_cut plus a few tau on both sides of the gap.
+  band-edge-weighted statistics, the window should cover e_cut plus a few tau
+  on both sides of the gap: WINDOW_E sets it by energy (the same distance from
+  the VBM and from the CBM, like e_cut), so the number of bands follows each
+  structure's band density (otherwise N_BANDS_BELOW / N_BANDS_ABOVE count bands). With DOWNFOLD the coupling to
+  all the bands outside the window (up to tens of eV above the gap, which no
+  window reaches) is added to the window block at second order; without it
+  the window eigenvalues of a member that differs from the average by more
+  than a rigid shift can come out too high by several meV.
 
 The averaged Hamiltonian of each structure is written in AVERAGE_HAM_DIR (or
 read from it, if already there) and is reused by ``ensemble_error_vs_dft.py``.
@@ -71,10 +77,15 @@ FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
 ILL_METHOD = "orbital_removal"
 # "exact" (diagonalize every member) or "projected" (see the docstring above).
 METHOD = "exact"
-# With METHOD = "projected": number of valence bands (counting the VBM band) and
-# conduction bands (counting the CBM band) in the window; None = all bands on that side.
-N_BANDS_BELOW = 25
-N_BANDS_ABOVE = 25
+# With METHOD = "projected": the window by energy (eV below the VBM and above the
+# CBM; e_cut plus a few tau), or, with WINDOW_E = None, by number of valence bands
+# (counting the VBM band) and conduction bands (counting the CBM band); None = all
+# bands on that side.
+WINDOW_E = 2.5
+N_BANDS_BELOW = None
+N_BANDS_ABOVE = None
+# With METHOD = "projected": second-order coupling to the bands outside the window.
+DOWNFOLD = True
 # Use a new file when changing METHOD or the window: rerunning on an existing
 # file keeps the structures already in it.
 OUTPUT_JSON = "band_uncertainty.json"
@@ -101,6 +112,8 @@ calc = BandUncertaintyCalculator(
     method=METHOD,
     n_bands_below=N_BANDS_BELOW,
     n_bands_above=N_BANDS_ABOVE,
+    window_e=WINDOW_E,
+    downfold=DOWNFOLD,
 )
 calc.compute_parallel(
     model_dirs,

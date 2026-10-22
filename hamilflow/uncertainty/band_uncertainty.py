@@ -65,16 +65,33 @@ class BandUncertaintyCalculator:
       the averaged Hamiltonian's eigenvectors `C_W` of a band window W around the gap (see
       `n_bands_below`/`n_bands_above`) and its window eigenvalues are those of
       `E_W + C_W^dag (H_m - H_avg - c_m S) C_W` (Rayleigh-Ritz in the window, with `c_m` the
-      member's rigid shift). Needs `align_mode="matrix"`. Accurate as long as the members'
-      deviations are small compared to the separation from the bands outside the window; a member
-      state entering the window from outside it (e.g. a spurious in-gap state) is not seen. With
-      the window covering every band it reproduces "exact". The output has the same layout,
-      restricted to the window bands: `vbm_index` is relative to the window, `first_band_index` is
-      the window's first band and `n_bands_total` the number of bands of the averaged
-      Hamiltonian; `per_model_gap_eV` is the gap of the members' window eigenvalues.
+      member's rigid shift), plus the downfolding correction below if `downfold`. Needs
+      `align_mode="matrix"`. Accurate as long as the members' deviations are small compared to
+      the separation from the bands outside the window; a member state entering the window from
+      outside it (e.g. a spurious in-gap state) is not seen. With the window covering every band
+      it reproduces "exact". The output has the same layout, restricted to the window bands:
+      `vbm_index` is relative to the window, `first_band_index` is the window's first band and
+      `n_bands_total` the number of bands of the averaged Hamiltonian; `per_model_gap_eV` is the
+      gap of the members' window eigenvalues.
     - `n_bands_below` / `n_bands_above`: with `method="projected"`, the number of valence bands
       (counting the VBM band) and of conduction bands (counting the CBM band) in the window; None
-      takes every band on that side.
+      takes every band on that side (unless `window_e` is set).
+    - `window_e`: with `method="projected"`, the window by energy instead of band count (eV,
+      alternative to `n_bands_below`/`n_bands_above`): it takes every valence band that comes
+      within `window_e` of the VBM, and every conduction band within `window_e` of the CBM, at
+      some k-point of the grid (band edges over the grid, as for the gap). The number of bands
+      then adapts to each structure's band density. One value for both sides, like the `e_cut`
+      of the band-edge-weighted statistics in `BandUncertaintyPostProcessor`; use e_cut plus a
+      few tau.
+    - `downfold`: with `method="projected"`, fold the coupling to every band outside the window
+      back into the window block (Loewdin partitioning, second order, `H_oo ~ E_o`): with
+      `D = C^dag (H_m - H_avg - c_m S) C` in the averaged Hamiltonian's eigenbasis, the window
+      block gets `Sigma_ij = sum_o D_io D_oj (1/(E_i - E_o) + 1/(E_j - E_o)) / 2`. Small
+      admixtures of high-energy states, which no window around the gap reaches, otherwise leave
+      the window eigenvalues too high. Costs one product of `C_W^dag H_m` with all eigenvectors
+      per member and k-point, and the averaged Hamiltonian's eigenvectors of all bands are kept
+      during the member loop instead of the window's only. Stops being valid where an outside
+      band comes close to a window band, i.e. at the window edges.
     """
 
     grid_mesh: tuple[int, int, int] = (2, 2, 2)
@@ -94,6 +111,8 @@ class BandUncertaintyCalculator:
     method: str = "exact"
     n_bands_below: int | None = None
     n_bands_above: int | None = None
+    window_e: float | None = None
+    downfold: bool = True
 
     _ILL_FILL_VALUE = 1e4
 
@@ -108,6 +127,11 @@ class BandUncertaintyCalculator:
             raise ValueError(f"method must be 'exact' or 'projected', got {self.method!r}")
         if self.method == "projected" and self.align_mode != "matrix":
             raise ValueError("method='projected' needs align_mode='matrix'")
+        if self.window_e is not None:
+            if self.n_bands_below is not None or self.n_bands_above is not None:
+                raise ValueError("set either window_e or n_bands_below/n_bands_above, not both")
+            if self.window_e < 0:
+                raise ValueError(f"window_e must be >= 0, got {self.window_e}")
 
     def settings(self) -> dict:
         """Settings that change the results, stored with every structure's output."""
@@ -119,7 +143,8 @@ class BandUncertaintyCalculator:
         # only added for "projected", so outputs of the exact method keep their old settings
         if self.method == "projected":
             settings.update(method=self.method, n_bands_below=self.n_bands_below,
-                            n_bands_above=self.n_bands_above)
+                            n_bands_above=self.n_bands_above, window_e=self.window_e,
+                            downfold=self.downfold)
         return settings
 
     def make_ill_handler(self, h_obj, ks, n_jobs: int = -1, parallel_k: bool = True):
@@ -286,12 +311,34 @@ class BandUncertaintyCalculator:
         vals, vecs = ill_handler.process_k(Hk, Sk, return_vecs=True)
         return vals[: vecs.shape[1]], vecs
 
-    def _band_window(self, n_bands: int, h_obj) -> tuple[int, int]:
-        """`[first, stop)` band indices of the `method="projected"` window."""
+    def _band_window(self, eigvals: np.ndarray, h_obj) -> tuple[int, int]:
+        """`[first, stop)` band indices of the `method="projected"` window, from the averaged
+        Hamiltonian's `eigvals[band, k]`."""
+        n_bands = eigvals.shape[0]
         homo_idx, lumo_idx = self.homo_lumo_indices(h_obj)
-        first = 0 if self.n_bands_below is None else max(0, homo_idx + 1 - self.n_bands_below)
-        stop = n_bands if self.n_bands_above is None else min(n_bands, lumo_idx + self.n_bands_above)
+        vbm, cbm = self.band_edges(eigvals, h_obj)
+        if self.window_e is not None:
+            # bands are sorted at every k, so the bands reaching the window are contiguous
+            first = int(np.argmax(eigvals[: homo_idx + 1].max(axis=1) >= vbm - self.window_e))
+            stop = lumo_idx + int(np.sum(eigvals[lumo_idx:].min(axis=1) <= cbm + self.window_e))
+            return first, stop
+        if self.n_bands_below is not None:
+            first = max(0, homo_idx + 1 - self.n_bands_below)
+        else:
+            first = 0
+        if self.n_bands_above is not None:
+            stop = min(n_bands, lumo_idx + self.n_bands_above)
+        else:
+            stop = n_bands
         return first, stop
+
+    @staticmethod
+    def _downfold_correction(e_w: np.ndarray, d_wo: np.ndarray, e_o: np.ndarray) -> np.ndarray:
+        """Second-order coupling of the window to the outside bands, symmetrized at the window
+        energies: `Sigma_ij = sum_o D_io D_oj (1/(E_i - E_o) + 1/(E_j - E_o)) / 2`, with
+        `d_wo[i, o] = D_io` and `D_oj = conj(D_jo)`."""
+        a = d_wo / (e_w[:, None] - e_o[None, :])
+        return 0.5 * (a @ d_wo.conj().T + d_wo @ a.conj().T)
 
     def _projected_structure_uncertainty(
         self,
@@ -313,10 +360,16 @@ class BandUncertaintyCalculator:
                            len(ks), n_jobs, parallel_k)
         n_bands = min(len(vals) for vals, _ in eigs)
         avg_raw = np.stack([vals[:n_bands] for vals, _ in eigs], axis=1)
-        first, stop = self._band_window(n_bands, ref_obj)
-        # only the window's eigenvectors are kept, not the full (n_orb, n_orb) set per k-point
+        first, stop = self._band_window(avg_raw, ref_obj)
         e_win = [vals[first:stop] for vals, _ in eigs]
         c_win = [vecs[:, first:stop] for _, vecs in eigs]
+        if self.downfold:
+            # every band outside the window, at every k-point (all real bands of that k-point)
+            outside = [np.r_[0:first, stop:len(vals)] for vals, _ in eigs]
+            e_out = [vals[o] for (vals, _), o in zip(eigs, outside)]
+            c_out = [vecs[:, o] for (_, vecs), o in zip(eigs, outside)]
+        # without downfolding only the window's eigenvectors are kept, not the full
+        # (n_orb, n_orb) set per k-point
         del eigs
         avg_ham_aligned, avg_ham_shift = self.align_to_midgap(avg_raw, ref_obj, anchor_k_idx)
 
@@ -334,11 +387,15 @@ class BandUncertaintyCalculator:
             c_m = rigid[i_model]["c_eV"]
 
             # C^dag S C = 1 and C^dag H_avg C = E, so C^dag (H_m - H_avg - c_m S) C = C^dag H_m C - E - c_m
+            # on the window block and C_W^dag H_m C_o off it
             def window_deviation(i_k):
                 c, e = c_win[i_k], e_win[i_k]
-                p = c.conj().T @ (h_obj._dense_k(ks[i_k]) @ c)
+                y = c.conj().T @ h_obj._dense_k(ks[i_k])
+                p = y @ c
                 p = 0.5 * (p + p.conj().T)
                 p[np.diag_indices(len(e))] -= e + c_m
+                if self.downfold:
+                    p = p + self._downfold_correction(e, y @ c_out[i_k], e_out[i_k])
                 return np.linalg.eigvalsh(np.diag(e) + p) - e
 
             deviations.append(np.stack(self._map_k(window_deviation, len(ks), n_jobs, parallel_k), axis=1))
