@@ -136,6 +136,8 @@ Thumbs.db
 # Project-specific
 *.h5
 *.json
+# Example removal plans shipped with the examples
+!examples/**/removal_plan_*.json
 *.tmp
 deepx_dock/
 

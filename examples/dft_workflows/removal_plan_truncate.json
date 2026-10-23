@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Stage 2 removal plan (reduction_mode='truncate'): drop the high-l polarisation functions of MoS2.",
+    "Truncation simply deletes the rows/columns of H and S, so use it only for orbitals that barely affect the bands of interest, such as polarisation functions.",
+    "See removal_plan_schur.json for the full description of the rule fields.",
+    "",
+    "This plan is applied to the OUTPUT of stage 1, whose info.json already lacks the shells removed there. Shell counters such as '1s' are therefore renumbered between the stages, which is why this plan selects whole l families with 'remove_orbitals': it does not depend on what stage 1 removed, nor on how many g (or f) shells the chosen basis tier contains."
+  ],
+  "rules": [
+    {
+      "_comment": "Mo: remove all g shells; the f shell is kept.",
+      "target_elements": ["Mo"],
+      "remove_shells": [],
+      "remove_orbitals": ["g"]
+    },
+    {
+      "_comment": "S: remove all f and g shells; for a 3s3p element they are pure polarisation functions.",
+      "target_elements": ["S"],
+      "remove_shells": [],
+      "remove_orbitals": ["f", "g"]
+    }
+  ]
+}
