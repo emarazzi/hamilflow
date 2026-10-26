@@ -72,7 +72,7 @@ class SparseBandDataGenerator(BandDataGenerator):
 
         ill_handler = None
         if ill_method is not None:
-            from deepx_dock.compute.eigen.ill_conditioned import IllConditionedHandler
+            from hamilflow.sparse_hamiltonian.ill_conditioned import IllConditionedHandler
 
             ill_handler = IllConditionedHandler(
                 method=ill_method,
@@ -84,7 +84,7 @@ class SparseBandDataGenerator(BandDataGenerator):
             if ill_method == "orbital_removal":
                 ks = np.array(self.kpoints_frac_list)
                 Sk_list = self.obj_H.get_all_Sk(ks, n_jobs=n_jobs, parallel_k=parallel_k)
-                ill_handler.prepare_orbital_truncation(Sk_list)
+                ill_handler.prepare_orbital_truncation(Sk_list, n_jobs=n_jobs, parallel_k=parallel_k)
 
         if sparse_calc:
             num_band = self.band_conf.get("num_band", 50)

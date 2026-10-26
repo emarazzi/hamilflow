@@ -9,6 +9,7 @@ import threadpoolctl
 from scipy.linalg import eigh
 from scipy.sparse.linalg import eigsh
 
+from .ill_conditioned import eig_with_orbital_mask
 from .matrix_obj import SparseAOMatrixObj
 
 
@@ -161,8 +162,6 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
                 return ill_handler.process_k(Hk, Sk, return_vecs=not bands_only)
 
             if kept_orbitals is not None:
-                from deepx_dock.compute.eigen.ill_conditioned import eig_with_orbital_mask
-
                 return eig_with_orbital_mask(Hk, Sk, kept_orbitals, return_vecs=not bands_only)
 
             if sparse_calc:

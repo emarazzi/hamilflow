@@ -48,13 +48,13 @@ class BandUncertaintyCalculator:
       stored as an attribute. Not needed for the uncertainty itself; off by default.
     - `ill_method`: None or "orbital_removal" -- handling of an ill-conditioned overlap,
       applied to every diagonalization (members, averaged Hamiltonian, DFT). Orbitals are removed
-      (`deepx_dock`'s global orbital truncation) until the smallest eigenvalue of S(k) on the
-      k-grid exceeds `ill_threshold`. The choice depends on S only, so it is made once per
-      structure and all spectra of a structure are computed in the same reduced basis; the
-      removed eigenvalue slots are dropped. "window_regularization" (also offered by
-      `IllConditionedHandler`) is not supported: its energy window would have to be placed
-      relative to the Fermi energy in info.json, which is copied from the DFT calculation and
-      is not the Fermi level of a predicted Hamiltonian.
+      (`sparse_hamiltonian.ill_conditioned.global_orbital_truncation`) until the smallest
+      eigenvalue of S(k) on the k-grid exceeds `ill_threshold`. The choice depends on S only, so
+      it is made once per structure and all spectra of a structure are computed in the same
+      reduced basis; the removed eigenvalue slots are dropped. "window_regularization" (also
+      offered by `IllConditionedHandler`) is not supported: its energy window would have to be
+      placed relative to the Fermi energy in info.json, which is copied from the DFT calculation
+      and is not the Fermi level of a predicted Hamiltonian.
     - `kpoints_settings`: alternative to the fixed `grid_mesh`. If given, it is passed as
       `kpoints_updates` to `dft_workflows.kpoints.get_ksampling` with each structure's cell, so
       the mesh is chosen per structure, e.g. {"grid_density": 1000},
@@ -160,7 +160,7 @@ class BandUncertaintyCalculator:
         """
         if self.ill_method is None:
             return None
-        from deepx_dock.compute.eigen.ill_conditioned import IllConditionedHandler
+        from hamilflow.sparse_hamiltonian.ill_conditioned import IllConditionedHandler
 
         handler = IllConditionedHandler(
             method=self.ill_method,
@@ -168,7 +168,8 @@ class BandUncertaintyCalculator:
             fill_value=self._ILL_FILL_VALUE,
             verbose=False,
         )
-        handler.prepare_orbital_truncation(h_obj.get_all_Sk(ks, n_jobs=n_jobs, parallel_k=parallel_k))
+        handler.prepare_orbital_truncation(h_obj.get_all_Sk(ks, n_jobs=n_jobs, parallel_k=parallel_k),
+                                           n_jobs=n_jobs, parallel_k=parallel_k)
         return handler
 
     @staticmethod
@@ -390,9 +391,9 @@ class BandUncertaintyCalculator:
             t_model = time.monotonic()
             h_obj = SparseHamiltonianObj(model / structure_name)
             c_m = rigid[i_model]["c_eV"]
-
             # the sparse C^dag H product beats dense GEMM only for a sparse enough H(k)
             build_k = h_obj._sparse_k if h_obj.fill_fraction < SPARSE_PRODUCT_MAX_FILL else h_obj._dense_k
+
             # C^dag S C = 1 and C^dag H_avg C = E, so C^dag (H_m - H_avg - c_m S) C = C^dag H_m C - E - c_m
             # on the window block and C_W^dag H_m C_o off it
             def window_deviation(i_k):
