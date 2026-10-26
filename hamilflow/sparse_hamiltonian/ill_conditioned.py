@@ -155,16 +155,31 @@ def _lowest_eigpair(
 ) -> Tuple[float, Optional[np.ndarray], Optional[np.ndarray]]:
     """Lowest eigenvalue and eigenvector of Sk (and the subspace-iteration block, to warm-start
     the next call), or (inf, None, None) if all eigenvalues are above `ill_threshold` (checked
-    with a Cholesky factorization of Sk - ill_threshold * 1)."""
-    try:
-        cholesky(Sk - ill_threshold * np.eye(len(Sk)), lower=True, check_finite=False)
+    with a Cholesky factorization of Sk - ill_threshold * 1).
+
+    A Ritz value is an upper bound on the lowest eigenvalue, so a subspace-iteration value at or
+    below the threshold already proves Sk ill-conditioned and the Cholesky test is skipped. With
+    a warm start (Sk was ill-conditioned at the previous iteration and likely still is) the
+    subspace iteration runs first; on a first visit the cheaper Cholesky test does."""
+
+    def well_conditioned() -> bool:
+        try:
+            cholesky(Sk - ill_threshold * np.eye(len(Sk)), lower=True, check_finite=False)
+            return True
+        except LinAlgError:
+            return False
+
+    use_subspace = len(Sk) >= _SUBSPACE_MIN_DIM
+    if (not use_subspace or x0 is None) and well_conditioned():
         return np.inf, None, None
-    except LinAlgError:
-        pass
-    if len(Sk) >= _SUBSPACE_MIN_DIM:
+    if use_subspace:
         val, vec, block = _lowest_eigpair_subspace(Sk, x0)
         if vec is not None:
-            return (np.inf, None, None) if val > ill_threshold else (val, vec, block)
+            if val <= ill_threshold:
+                return val, vec, block
+            # above the threshold, not yet a proof (or Cholesky failed by round-off only)
+            if x0 is None or well_conditioned():
+                return np.inf, None, None
     vals, vecs = eigh(Sk, subset_by_index=[0, 0], check_finite=False)
     if vals[0] > ill_threshold:  # Cholesky failed by round-off only
         return np.inf, None, None
