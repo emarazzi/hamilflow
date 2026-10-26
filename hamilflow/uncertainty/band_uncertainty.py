@@ -8,9 +8,8 @@ import os
 import time
 
 import threadpoolctl
-from scipy.linalg import eigh
-
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
+from hamilflow.sparse_hamiltonian.eigensolver import eigh_generalized
 
 from .alignment import fit_rigid_shifts, write_aligned_hamiltonian
 from .hamiltonian_io import average_predicted_hamiltonians
@@ -313,7 +312,7 @@ class BandUncertaintyCalculator:
         k-point; with `ill_handler`, only the eigenvalues of the kept basis."""
         Hk, Sk = h_obj._dense_k(k), h_obj._s_obj._dense_k(k)
         if ill_handler is None:
-            return eigh(Hk, Sk)
+            return eigh_generalized(Hk, Sk)
         vals, vecs = ill_handler.process_k(Hk, Sk, return_vecs=True)
         return vals[: vecs.shape[1]], vecs
 

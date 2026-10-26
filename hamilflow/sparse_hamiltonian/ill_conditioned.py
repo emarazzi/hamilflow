@@ -26,6 +26,8 @@ import numpy as np
 import threadpoolctl
 from scipy.linalg import LinAlgError, cho_factor, cho_solve, cholesky, eigh
 
+from .eigensolver import eigh_generalized
+
 
 def window_regularization_eig(
     Hk: np.ndarray,
@@ -46,7 +48,7 @@ def window_regularization_eig(
     """
     norb = Hk.shape[0]
 
-    eigvals, eigvecs = eigh(Hk, Sk)
+    eigvals, eigvecs = eigh_generalized(Hk, Sk)
 
     mask = (eigvals >= emin) & (eigvals <= emax)
     n_window = np.sum(mask)
@@ -264,7 +266,7 @@ def eig_with_orbital_mask(
 
     try:
         if return_vecs:
-            vals, vecs_sub = eigh(Hk_sub, Sk_sub)
+            vals, vecs_sub = eigh_generalized(Hk_sub, Sk_sub)
 
             full_vecs = np.zeros((norb_total, n_kept), dtype=vecs_sub.dtype)
             full_vecs[kept_orbitals, :] = vecs_sub
@@ -274,7 +276,7 @@ def eig_with_orbital_mask(
 
             return np.sort(full_vals), full_vecs[:, np.argsort(vals)]
 
-        vals = eigh(Hk_sub, Sk_sub, eigvals_only=True)
+        vals = eigh_generalized(Hk_sub, Sk_sub, eigvals_only=True)
         full_vals = np.full(norb_total, fill_value)
         full_vals[:n_kept] = vals
         return np.sort(full_vals), None

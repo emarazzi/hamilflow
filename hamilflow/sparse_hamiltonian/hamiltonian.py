@@ -6,9 +6,9 @@ from typing import List, Optional
 
 import numpy as np
 import threadpoolctl
-from scipy.linalg import eigh
 from scipy.sparse.linalg import eigsh
 
+from .eigensolver import eigh_generalized
 from .ill_conditioned import eig_with_orbital_mask
 from .matrix_obj import SparseAOMatrixObj
 
@@ -174,9 +174,9 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
                     return vals[idx], vecs[:, idx]
             else:
                 if bands_only:
-                    return eigh(Hk, Sk, eigvals_only=True)
+                    return eigh_generalized(Hk, Sk, eigvals_only=True)
                 else:
-                    return eigh(Hk, Sk)
+                    return eigh_generalized(Hk, Sk)
 
         if parallel_k:
             # Don't assume n_jobs k-points will actually run concurrently --
