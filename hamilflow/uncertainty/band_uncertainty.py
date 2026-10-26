@@ -17,6 +17,11 @@ from .hamiltonian_io import average_predicted_hamiltonians
 
 import spglib
 
+# Largest structural fill of H(k) for which method="projected" forms C_W^dag H_m(k) as a
+# sparse-dense product (O(nnz n_w)) instead of a dense GEMM (O(n^2 n_w)). Measured
+# crossover: sparse ~1.5x faster at 10% fill, slower above ~15%, independent of n.
+SPARSE_PRODUCT_MAX_FILL = 0.1
+
 @dataclass
 class BandUncertaintyCalculator:
     """Compute band-energy uncertainty across an ensemble of models.
@@ -386,11 +391,13 @@ class BandUncertaintyCalculator:
             h_obj = SparseHamiltonianObj(model / structure_name)
             c_m = rigid[i_model]["c_eV"]
 
+            # the sparse C^dag H product beats dense GEMM only for a sparse enough H(k)
+            build_k = h_obj._sparse_k if h_obj.fill_fraction < SPARSE_PRODUCT_MAX_FILL else h_obj._dense_k
             # C^dag S C = 1 and C^dag H_avg C = E, so C^dag (H_m - H_avg - c_m S) C = C^dag H_m C - E - c_m
             # on the window block and C_W^dag H_m C_o off it
             def window_deviation(i_k):
                 c, e = c_win[i_k], e_win[i_k]
-                y = c.conj().T @ h_obj._dense_k(ks[i_k])
+                y = c.conj().T @ build_k(ks[i_k])
                 p = y @ c
                 p = 0.5 * (p + p.conj().T)
                 p[np.diag_indices(len(e))] -= e + c_m

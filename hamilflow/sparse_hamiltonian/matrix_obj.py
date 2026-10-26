@@ -76,6 +76,8 @@ class SparseAOMatrixObj(AOMatrixObj):
             self._entries_expanded = None
             self._dense_lin = None
             self._dense_starts = None
+            self._csr_indices = None
+            self._csr_indptr = None
             self._mat_dim = int(self.orbits_quantity * (2 if self.spinful else 1))
             return
 
@@ -187,6 +189,17 @@ class SparseAOMatrixObj(AOMatrixObj):
         self._entries_expanded = entries_expanded[order]
         self._dense_lin = lin[starts]
         self._dense_starts = starts
+        # The summed segments are in row-major (row, col) order, i.e. already a
+        # canonical CSR layout: keep its column indices and row pointers so
+        # `_sparse_k` skips the COO -> CSR conversion at every k-point.
+        idx_dtype = np.int32 if len(starts) < np.iinfo(np.int32).max else np.int64
+        self._csr_indices = (self._dense_lin % dim).astype(idx_dtype)
+        self._csr_indptr = np.searchsorted(self._dense_lin // dim, np.arange(dim + 1)).astype(idx_dtype)
+
+    @property
+    def fill_fraction(self) -> float:
+        """Fraction of the (mat_dim, mat_dim) entries of M(k) that are structurally nonzero."""
+        return len(self._dense_lin) / self._mat_dim ** 2
 
     def _weighted_k(self, k: np.ndarray) -> np.ndarray:
         """Phase-weighted entries at one fractional k-point, in stored (destination-sorted) order."""
@@ -220,4 +233,6 @@ class SparseAOMatrixObj(AOMatrixObj):
         from different R vectors landing on the same (row, col) are summed,
         exactly as in ``_dense_k``.
         """
-        return self._coo_k(k).tocsr()
+        weighted = self._weighted_k(k)
+        data = np.add.reduceat(weighted, self._dense_starts) if len(weighted) else weighted
+        return csr_matrix((data, self._csr_indices, self._csr_indptr), shape=(self._mat_dim, self._mat_dim))
