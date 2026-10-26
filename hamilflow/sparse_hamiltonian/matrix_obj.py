@@ -27,7 +27,14 @@ class SparseAOMatrixObj(AOMatrixObj):
     is reused unchanged from ``AOMatrixObj`` since none of it touches ``mats``.
     """
 
-    def __init__(self, info_dir_path, matrix_file_path=None, matrix_type="hamiltonian", load_matrix: bool = True):
+    def __init__(
+        self,
+        info_dir_path,
+        matrix_file_path=None,
+        matrix_type="hamiltonian",
+        load_matrix: bool = True,
+        layout_from: SparseAOMatrixObj | None = None,
+    ):
         """
         ``load_matrix=False`` skips reading and scattering ``entries`` (the
         actual matrix values -- the largest dataset in the file) entirely,
@@ -36,6 +43,13 @@ class SparseAOMatrixObj(AOMatrixObj):
         overlap-only run against ``hamiltonian.h5`` without ever needing the
         Hamiltonian's values). ``_dense_k`` is unavailable on such an
         instance and raises if called.
+
+        ``layout_from``: an already loaded object of the same structure (e.g.
+        another ensemble member). If its blocks have the same layout
+        (``atom_pairs``, chunk boundaries and shapes, matrix type), its
+        destination arrays are shared instead of rebuilt -- building them is
+        most of the loading time -- and only this file's entries are
+        permuted into place. Otherwise it is ignored.
         """
         self._get_necessary_data_path(info_dir_path, matrix_file_path, matrix_type)
         self.mats = None
@@ -43,10 +57,13 @@ class SparseAOMatrixObj(AOMatrixObj):
         self._parse_info()
         self._parse_poscar()
         self._parse_orbit_types()
-        self._load_sparse(matrix_type, load_matrix)
+        self._load_sparse(matrix_type, load_matrix, layout_from)
 
-    def _load_sparse(self, matrix_type: str, load_matrix: bool = True) -> None:
+    def _load_sparse(
+        self, matrix_type: str, load_matrix: bool = True, layout_from: SparseAOMatrixObj | None = None
+    ) -> None:
         is_overlap = matrix_type == "overlap"
+        self._is_overlap = is_overlap
         dtype = np.complex128 if (not is_overlap and self.spinful) else np.float64
 
         if load_matrix:
@@ -57,6 +74,10 @@ class SparseAOMatrixObj(AOMatrixObj):
         self.atom_pairs = atom_pairs
         self.bounds = bounds
         self.shapes = shapes
+
+        if load_matrix and layout_from is not None and self._same_layout(layout_from):
+            self._share_layout(layout_from, entries)
+            return
 
         r_to_idx: dict[tuple[int, int, int], int] = {}
         for ap in atom_pairs:
@@ -78,6 +99,7 @@ class SparseAOMatrixObj(AOMatrixObj):
             self._dense_starts = None
             self._csr_indices = None
             self._csr_indptr = None
+            self._entry_order = None
             self._mat_dim = int(self.orbits_quantity * (2 if self.spinful else 1))
             return
 
@@ -187,6 +209,8 @@ class SparseAOMatrixObj(AOMatrixObj):
         self._entry_col = entry_col[order].astype(np.int32)
         self._entry_r_index = entry_r_index[order]
         self._entries_expanded = entries_expanded[order]
+        # kept to place another file's entries of the same layout (see `_share_layout`)
+        self._entry_order = order.astype(np.int32) if len(order) < np.iinfo(np.int32).max else order
         self._dense_lin = lin[starts]
         self._dense_starts = starts
         # The summed segments are in row-major (row, col) order, i.e. already a
@@ -195,6 +219,32 @@ class SparseAOMatrixObj(AOMatrixObj):
         idx_dtype = np.int32 if len(starts) < np.iinfo(np.int32).max else np.int64
         self._csr_indices = (self._dense_lin % dim).astype(idx_dtype)
         self._csr_indptr = np.searchsorted(self._dense_lin // dim, np.arange(dim + 1)).astype(idx_dtype)
+
+    _SHARED_LAYOUT = (
+        "Rijk_list", "_mat_dim", "_entry_row", "_entry_col", "_entry_r_index", "_entry_order",
+        "_dense_lin", "_dense_starts", "_csr_indices", "_csr_indptr",
+    )
+
+    def _same_layout(self, other: SparseAOMatrixObj) -> bool:
+        """Whether `other`'s destination arrays are valid for this object's entries."""
+        return (
+            getattr(other, "_entries_expanded", None) is not None
+            and other._is_overlap == self._is_overlap
+            and other.spinful == self.spinful
+            and np.array_equal(other.atom_num_orbits_cumsum, self.atom_num_orbits_cumsum)
+            and np.array_equal(other.atom_pairs, self.atom_pairs)
+            and np.array_equal(other.bounds, self.bounds)
+            and np.array_equal(other.shapes, self.shapes)
+        )
+
+    def _share_layout(self, other: SparseAOMatrixObj, entries: np.ndarray) -> None:
+        """Take `other`'s (read-only) destination arrays and sort this file's entries like it."""
+        for name in self._SHARED_LAYOUT:
+            setattr(self, name, getattr(other, name))
+        if self._is_overlap and self.spinful:
+            # same block_diag(S, S) expansion as `_build_scatter_arrays`
+            entries = np.concatenate([entries, entries])
+        self._entries_expanded = entries[self._entry_order]
 
     @property
     def fill_fraction(self) -> float:

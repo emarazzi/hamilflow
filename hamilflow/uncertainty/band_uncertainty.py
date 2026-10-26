@@ -265,17 +265,20 @@ class BandUncertaintyCalculator:
         structure_name: str,
         model_dirs: list[Path],
         average_hamiltonian_dir: Path,
+        share_from: SparseHamiltonianObj | None = None,
     ) -> SparseHamiltonianObj:
         """The models' averaged Hamiltonian as a `SparseHamiltonianObj`.
 
         The averaged real-space Hamiltonian (see `hamiltonian_io.average_predicted_hamiltonians`)
         is read from `average_hamiltonian_dir` if already there, otherwise computed and written
         there. `info.json`/`overlap.h5` are read from the first model dir, since those are
-        structure-level (not per-model) and identical across the ensemble.
+        structure-level (not per-model) and identical across the ensemble. `share_from` (an
+        already loaded Hamiltonian of the structure) is passed on to `SparseHamiltonianObj`.
         """
         model_paths = [Path(d) / structure_name / self.hamiltonian_name for d in model_dirs]
         avg_path = self._resolve_average_hamiltonian_path(structure_name, model_paths, average_hamiltonian_dir)
-        return SparseHamiltonianObj(Path(model_dirs[0]) / structure_name, H_file_path=avg_path)
+        return SparseHamiltonianObj(Path(model_dirs[0]) / structure_name, H_file_path=avg_path,
+                                    share_from=share_from)
 
     def _fit_and_save(self, h_paths, ref_path, overlap_dir, labels, structure_name, aligned_to):
         """Rigid shifts of `h_paths` relative to `ref_path` (overlap from `overlap_dir`); with
@@ -360,7 +363,8 @@ class BandUncertaintyCalculator:
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ref_obj, mesh, self.symprec)
         ill_handler = self.make_ill_handler(ref_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
 
-        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir)
+        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir,
+                                            share_from=ref_obj)
         eigs = self._map_k(lambda i_k: self._eig_with_vecs(avg_obj, ks[i_k], ill_handler),
                            len(ks), n_jobs, parallel_k)
         n_bands = min(len(vals) for vals, _ in eigs)
@@ -388,7 +392,8 @@ class BandUncertaintyCalculator:
         deviations = []
         for i_model, model in enumerate(model_dirs):
             t_model = time.monotonic()
-            h_obj = SparseHamiltonianObj(model / structure_name)
+            # member 0 is the reference; the others share its block layout and overlap
+            h_obj = ref_obj if i_model == 0 else SparseHamiltonianObj(model / structure_name, share_from=ref_obj)
             c_m = rigid[i_model]["c_eV"]
             # the sparse C^dag H product beats dense GEMM only for a sparse enough H(k)
             build_k = h_obj._sparse_k if h_obj.fill_fraction < SPARSE_PRODUCT_MAX_FILL else h_obj._dense_k
@@ -476,14 +481,18 @@ class BandUncertaintyCalculator:
         raws = []
         for i_model, model in enumerate(model_dirs):
             t_model = time.monotonic()
-            raws.append(SparseHamiltonianObj(model / structure_name).diag(ks, **diag_kwargs))
+            # member 0 is the reference; the others share its block layout and overlap
+            h_obj = ref_obj if i_model == 0 else SparseHamiltonianObj(model / structure_name, share_from=ref_obj)
+            raws.append(h_obj.diag(ks, **diag_kwargs))
+            del h_obj
             if log_models:
                 print(
                     f"[{structure_name}] model {i_model + 1}/{len(model_dirs)} done "
                     f"in {time.monotonic() - t_model:.1f}s",
                     flush=True,
                 )
-        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir)
+        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir,
+                                            share_from=ref_obj)
         avg_raw = avg_obj.diag(ks, **diag_kwargs)
         *raws, avg_raw = self.common_bands(*raws, avg_raw)
 
@@ -746,7 +755,8 @@ class BandUncertaintyCalculator:
         ill_handler = self.make_ill_handler(dft_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
         diag_kwargs = dict(bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k, ill_handler=ill_handler)
 
-        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir)
+        avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir,
+                                            share_from=dft_obj)
         avg_raw, dft_raw = self.common_bands(avg_obj.diag(ks, **diag_kwargs), dft_obj.diag(ks, **diag_kwargs))
         dft_aligned, dft_shift = self.align_to_midgap(dft_raw, dft_obj, anchor_k_idx)
         rigid = None

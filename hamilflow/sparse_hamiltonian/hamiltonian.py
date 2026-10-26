@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
 import threadpoolctl
+from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from scipy.sparse.linalg import eigsh
 
 from .eigensolver import eigh_generalized
@@ -30,7 +32,13 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
     separately as ``self._s_obj``.
     """
 
-    def __init__(self, data_path, H_file_path=None, load_hamiltonian: bool = True):
+    def __init__(
+        self,
+        data_path,
+        H_file_path=None,
+        load_hamiltonian: bool = True,
+        share_from: SparseHamiltonianObj | None = None,
+    ):
         """
         ``load_hamiltonian=False`` skips reading the Hamiltonian's (large)
         matrix values -- only its structure (``Rijk_list``/``atom_pairs``,
@@ -39,9 +47,22 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         overlap-only workflows, where the Hamiltonian's values are never
         touched. ``Sk_and_Hk``/``diag`` are unavailable in that case (use
         ``get_Sk`` instead, which never needs the Hamiltonian at all).
+
+        ``share_from``: an already loaded Hamiltonian of the same structure (e.g.
+        another ensemble member, or the ensemble average). Its block layout is
+        reused if it matches (see ``SparseAOMatrixObj``), and its overlap object
+        is reused as is if ``overlap.h5`` resolves to the same file (members'
+        overlaps are links to the same inference input); otherwise the overlap
+        is loaded, again reusing the layout if it matches.
         """
-        super().__init__(data_path, H_file_path, matrix_type="hamiltonian", load_matrix=load_hamiltonian)
-        s_obj = SparseAOMatrixObj(data_path, matrix_type="overlap")
+        super().__init__(data_path, H_file_path, matrix_type="hamiltonian", load_matrix=load_hamiltonian,
+                         layout_from=share_from)
+        s_path = Path(data_path) / DEEPX_OVERLAP_FILENAME
+        if share_from is not None and s_path.resolve() == Path(share_from._s_obj.matrix_path).resolve():
+            s_obj = share_from._s_obj
+        else:
+            s_obj = SparseAOMatrixObj(data_path, matrix_type="overlap",
+                                      layout_from=None if share_from is None else share_from._s_obj)
         self.assert_compatible(s_obj)
         self._s_obj = s_obj
 
