@@ -47,16 +47,18 @@ SPARSE_PRODUCT_MAX_FILL = 0.1
 
 # Memory model of the parallel drivers' scheduling (`_memory_estimate`). Peak memory of one
 # structure in a worker, in complex n x n matrices (n the Hamiltonian dimension), as
-# a * n_k + b with n_k the irreducible k-points. Host: fitted to profiles of the projected
-# method (1856-7076 orbitals, with and without GPU); GPU: fitted to the measured peaks of
-# 1508-14732 orbitals on an A100 (orbital removal keeps S(k) and its Cholesky factor for every
-# k-point, plus CuPy's Cholesky and eigh copies and workspaces).
-HOST_MATRICES = (2, 11)
-GPU_MATRICES = (2, 6)
+# a * n_k + b with n_k the irreducible k-points, fitted to the peaks measured on an A100 node
+# for 800-14732 orbitals (n_k = 1 above ~4000, 4-5 below), rounded up to cover them all. Host:
+# the projected method keeps the averaged Hamiltonian's eigenvectors (measured 10.4-11.5 at
+# n_k = 1); the exact method and the comparison to DFT only eigenvalues (7.4-9.3, the exact
+# method assumed alike). GPU: orbital removal keeps S(k) and its Cholesky factor for every
+# k-point, plus CuPy's Cholesky and eigh copies and workspaces (7.2-8.8, both methods).
+HOST_MATRICES = {"eigenvectors": (2, 10), "eigenvalues": (2, 7)}
+GPU_MATRICES = (2, 7)
 # Fixed memory of each structure's process: host (interpreter and libraries; CuPy and CUDA add
-# ~1.5 GB) and device (CUDA context).
+# ~2 GB) and device (CUDA context).
 WORKER_HOST_GB = 1.0
-WORKER_HOST_GPU_GB = 2.5
+WORKER_HOST_GPU_GB = 3.0
 WORKER_GPU_GB = 0.6
 # Share of the job's (or GPU's) memory the workers may plan to use; the rest is slack for the
 # main process, the file cache and the model's error.
@@ -729,17 +731,17 @@ class BandUncertaintyCalculator:
         parts = ([f"host {host / 2**30:.1f} GB"] if host else []) + ([f"GPU {gpu / 2**30:.1f} GB"] if gpu else [])
         return f" (peak memory: {', '.join(parts)})" if parts else ""
 
-    def _memory_estimate(self, structure_dir: Path, on_gpu: bool) -> tuple[float, float]:
+    def _memory_estimate(self, structure_dir: Path, on_gpu: bool, eigenvectors: bool) -> tuple[float, float]:
         """Estimated peak (host, GPU) bytes of one structure in a worker, beyond the worker's
-        fixed memory: see HOST_MATRICES / GPU_MATRICES. Reads only the cell, the dimension and
-        the k-grid (POSCAR, info.json and the block layout of hamiltonian.h5), and is the same
-        for every method: the exact one and the comparison to DFT need less than the projected
-        one it was fitted to."""
+        fixed memory: see HOST_MATRICES / GPU_MATRICES (`eigenvectors`: the projected method,
+        which keeps them). Reads only the cell, the dimension and the k-grid (POSCAR, info.json
+        and the block layout of hamiltonian.h5)."""
         meta = SparseAOMatrixObj(structure_dir, matrix_file_path=Path(structure_dir) / self.hamiltonian_name,
                                  load_matrix=False)
         n_k = len(self.build_irreducible_kpoints(meta, self.resolve_mesh(meta), self.symprec)[0])
         matrix = 16.0 * meta._mat_dim ** 2
-        host = (HOST_MATRICES[0] * n_k + HOST_MATRICES[1]) * matrix
+        a, b = HOST_MATRICES["eigenvectors" if eigenvectors else "eigenvalues"]
+        host = (a * n_k + b) * matrix
         gpu = (GPU_MATRICES[0] * n_k + GPU_MATRICES[1]) * matrix if on_gpu and meta._mat_dim >= GPU_MIN_DIM else 0.0
         return host, gpu
 
@@ -753,6 +755,7 @@ class BandUncertaintyCalculator:
         output_path: Path | None,
         memory_gb: float | None,
         gpu_memory_gb: float | None,
+        eigenvectors: bool,
     ) -> None:
         """Run `run_structure(structure)` (returning `(name, result)`) for every structure, each in
         its own process forked for it, at most `max_workers` at a time, starting a structure
@@ -786,7 +789,7 @@ class BandUncertaintyCalculator:
             gpu_budget = math.inf
         need = {}
         for s, d in zip(structures, structure_dirs):
-            host, gpu = self._memory_estimate(d, on_gpu)
+            host, gpu = self._memory_estimate(d, on_gpu, eigenvectors)
             need[s] = (host + (WORKER_HOST_GPU_GB if on_gpu else WORKER_HOST_GB) * gb,
                        gpu + WORKER_GPU_GB * gb if gpu else 0.0)  # a CUDA context only if it uses the GPU
         too_big = sorted((s for s in structures if need[s][0] > host_budget or need[s][1] > gpu_budget),
@@ -915,7 +918,7 @@ class BandUncertaintyCalculator:
         self._run_parallel(
             lambda s: self._compute_structure(s, model_dirs, average_hamiltonian_dir, blas_threads_per_worker),
             structures, [model_dirs[0] / s for s in structures], max_workers, output, output_path,
-            memory_gb, gpu_memory_gb,
+            memory_gb, gpu_memory_gb, eigenvectors=self.method == "projected",
         )
         return output
 
@@ -1083,7 +1086,7 @@ class BandUncertaintyCalculator:
             lambda s: self._compare_structure(s, model_dirs, average_hamiltonian_dir, dft_root,
                                               blas_threads_per_worker, False),
             structures, [dft_root / s for s in structures], max_workers, output, output_path,
-            memory_gb, gpu_memory_gb,
+            memory_gb, gpu_memory_gb, eigenvectors=False,
         )
         return output
 
