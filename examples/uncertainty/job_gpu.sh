@@ -1,10 +1,11 @@
 #!/bin/bash
 # SLURM job for ensemble_band_uncertainty.py (or ensemble_error_vs_dft.py) on one GPU.
 #
-# The orbital removal and the dense diagonalizations run on the GPU, shared by one worker
-# process per allocated CPU; the CPUs load the Hamiltonians and do the projection. A few CPUs
-# per GPU (e.g. 8) keep it busy. Needs CuPy in the environment: `pip install -e .[gpu]`
-# installs cupy-cuda12x; on CUDA 11 use cupy-cuda11x instead (see the README).
+# The orbital removal and the dense diagonalizations run on the GPU, shared by the structures
+# computed at once (one per allocated CPU); the CPUs load the Hamiltonians and do the projection.
+# A few CPUs per GPU keep it busy: on an A100, up to 4 for ~800-orbital structures, 2 for larger
+# ones. Needs CuPy in the environment: `pip install -e .[gpu]` installs cupy-cuda12x; on CUDA 11
+# use cupy-cuda11x instead (see the README).
 #
 # Adapt the partition, account, time, memory, GPU type and environment to your cluster.
 
@@ -16,8 +17,8 @@
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8        # = number of worker processes sharing the GPU
-#SBATCH --mem=60G                # host memory: every worker holds one structure's dense matrices
+#SBATCH --cpus-per-task=4        # = number of structures computed at once on the GPU
+#SBATCH --mem=60G                # host memory: structures start only while their estimate fits
 #SBATCH --gres=gpu:1             # e.g. gpu:A100:1 to ask for a GPU type
 
 source /path/to/venv/bin/activate

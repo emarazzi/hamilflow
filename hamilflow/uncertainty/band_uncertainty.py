@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 import concurrent.futures
 import json
 import math
+import multiprocessing
+import multiprocessing.connection
 import os
 import time
 
@@ -25,6 +27,19 @@ from .hamiltonian_io import average_predicted_hamiltonians
 
 import spglib
 
+
+def _run_in_child(sender, run_structure, structure_name) -> None:
+    """Body of the process `_run_parallel` forks for one structure: sends back
+    ("ok", run_structure(structure_name)) or ("error", traceback)."""
+    import traceback
+
+    try:
+        sender.send(("ok", run_structure(structure_name)))
+    except BaseException:
+        sender.send(("error", traceback.format_exc()))
+    finally:
+        sender.close()
+
 # Largest structural fill of H(k) for which method="projected" forms C_W^dag H_m(k) as a
 # sparse-dense product (O(nnz n_w)) instead of a dense GEMM (O(n^2 n_w)). Measured
 # crossover: sparse ~1.5x faster at 10% fill, slower above ~15%, independent of n.
@@ -33,12 +48,13 @@ SPARSE_PRODUCT_MAX_FILL = 0.1
 # Memory model of the parallel drivers' scheduling (`_memory_estimate`). Peak memory of one
 # structure in a worker, in complex n x n matrices (n the Hamiltonian dimension), as
 # a * n_k + b with n_k the irreducible k-points. Host: fitted to profiles of the projected
-# method (1856-7076 orbitals, with and without GPU); GPU: what the device code holds at once
-# (orbital removal keeps S(k) and its Cholesky factor for every k-point, plus work arrays).
+# method (1856-7076 orbitals, with and without GPU); GPU: fitted to the measured peaks of
+# 1508-14732 orbitals on an A100 (orbital removal keeps S(k) and its Cholesky factor for every
+# k-point, plus CuPy's Cholesky and eigh copies and workspaces).
 HOST_MATRICES = (2, 11)
-GPU_MATRICES = (2, 3)
-# Fixed memory of each worker process, reserved for all workers up front: host (interpreter and
-# libraries; CuPy and CUDA add ~1.5 GB) and device (CUDA context).
+GPU_MATRICES = (2, 6)
+# Fixed memory of each structure's process: host (interpreter and libraries; CuPy and CUDA add
+# ~1.5 GB) and device (CUDA context).
 WORKER_HOST_GB = 1.0
 WORKER_HOST_GPU_GB = 2.5
 WORKER_GPU_GB = 0.6
@@ -729,7 +745,7 @@ class BandUncertaintyCalculator:
 
     def _run_parallel(
         self,
-        submit,
+        run_structure,
         structures: list[str],
         structure_dirs: list[Path],
         max_workers: int,
@@ -738,31 +754,41 @@ class BandUncertaintyCalculator:
         memory_gb: float | None,
         gpu_memory_gb: float | None,
     ) -> None:
-        """Run `submit(executor, structure)` (returning a future of `(name, result)`) for every
-        structure on `max_workers` processes, starting a structure only while the estimated peak
-        memory of the running ones (`_memory_estimate`) fits the host and GPU budgets, the
-        largest structures first and smaller ones filling the gaps. Results are stored in
-        `output` (and written to `output_path`) as they come.
+        """Run `run_structure(structure)` (returning `(name, result)`) for every structure, each in
+        its own process forked for it, at most `max_workers` at a time, starting a structure
+        only while the estimated peak memory of the running ones (`_memory_estimate`, plus each
+        process's fixed memory) fits the host and GPU budgets, the largest structures first and
+        smaller ones filling the gaps. Results are stored in `output` (and written to
+        `output_path`) as they come.
+
+        A process per structure, rather than a pool of long-lived workers, hands all its host and
+        GPU memory back when the structure is done, as the budgets assume: a long-lived worker
+        keeps memory it has freed (CuPy's pool and the C heap only release whole blocks), which
+        ran a GPU shared by 8 workers out of memory. It costs the CUDA start-up (~1 s) per
+        structure. A structure that fails, even killed for lack of memory, does not stop the
+        others; the failures are raised together at the end.
 
         The budgets are `memory_gb` and `gpu_memory_gb`, by default MEMORY_USE_FRACTION of the
-        job's memory (`hamilflow.cpus.available_memory_bytes`) and of the GPU's, less every
-        worker's fixed memory. `float("inf")` switches a budget off. Structures over budget on
-        their own run last, one at a time and smallest first, with a warning: if one runs out of
-        memory, all the others are already done and written.
+        job's memory (`hamilflow.cpus.available_memory_bytes`) and of the GPU's. `float("inf")`
+        switches a budget off. Structures over budget on their own run last, one at a time and
+        smallest first, with a warning: if one runs out of memory, all the others are already
+        done and written.
         """
         gb = 2**30
         gpu_total = workers_gpu_memory()
         on_gpu = gpu_total is not None
-        worker_host = (WORKER_HOST_GPU_GB if on_gpu else WORKER_HOST_GB) * gb
-        host_budget = (memory_gb * gb if memory_gb is not None
-                       else MEMORY_USE_FRACTION * available_memory_bytes() - max_workers * worker_host)
+        host_budget = memory_gb * gb if memory_gb is not None else MEMORY_USE_FRACTION * available_memory_bytes()
         if gpu_memory_gb is not None:
             gpu_budget = gpu_memory_gb * gb
         elif on_gpu:
-            gpu_budget = MEMORY_USE_FRACTION * gpu_total - max_workers * WORKER_GPU_GB * gb
+            gpu_budget = MEMORY_USE_FRACTION * gpu_total
         else:
             gpu_budget = math.inf
-        need = {s: self._memory_estimate(d, on_gpu) for s, d in zip(structures, structure_dirs)}
+        need = {}
+        for s, d in zip(structures, structure_dirs):
+            host, gpu = self._memory_estimate(d, on_gpu)
+            need[s] = (host + (WORKER_HOST_GPU_GB if on_gpu else WORKER_HOST_GB) * gb,
+                       gpu + WORKER_GPU_GB * gb if gpu else 0.0)  # a CUDA context only if it uses the GPU
         too_big = sorted((s for s in structures if need[s][0] > host_budget or need[s][1] > gpu_budget),
                          key=lambda s: need[s])
         pending = sorted(set(structures) - set(too_big), key=lambda s: need[s], reverse=True)
@@ -780,9 +806,14 @@ class BandUncertaintyCalculator:
             flush=True,
         )
 
+        # fork: the child runs `run_structure` as is (nothing to pickle, and the calling script is
+        # not re-run as with spawn); this process must not have initialized CUDA, which it never
+        # does here (`workers_gpu_memory` asks nvidia-smi)
+        ctx = multiprocessing.get_context("fork")
         free_host, free_gpu = host_budget, gpu_budget
-        running = {}  # future -> structure
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+        running = {}  # receiving end of the child's pipe -> (structure, process)
+        failed = {}
+        try:
             while pending or running:
                 for s in list(pending):
                     if len(running) >= max_workers:
@@ -795,20 +826,40 @@ class BandUncertaintyCalculator:
                               "exceeds the budget; running it alone", flush=True)
                     print(f"[{s}] scheduled: estimated memory host {host / gb:.1f} GB"
                           + (f", GPU {gpu / gb:.1f} GB" if on_gpu else ""), flush=True)
-                    running[submit(ex, s)] = s
+                    receiver, sender = ctx.Pipe(duplex=False)
+                    proc = ctx.Process(target=_run_in_child, args=(sender, run_structure, s))
+                    proc.start()
+                    sender.close()  # only the child writes: its exit then shows as EOF here
+                    running[receiver] = (s, proc)
                     free_host -= host
                     free_gpu -= gpu
                     pending.remove(s)
-                done, _ = concurrent.futures.wait(running, return_when=concurrent.futures.FIRST_COMPLETED)
-                for fut in done:
-                    s = running.pop(fut)
+                for receiver in multiprocessing.connection.wait(list(running)):
+                    s, proc = running.pop(receiver)
+                    try:
+                        status, payload = receiver.recv()
+                    except EOFError:  # died without a word, e.g. killed for lack of memory
+                        status, payload = "error", None
+                    receiver.close()
+                    proc.join()
                     free_host += need[s][0]
                     free_gpu += need[s][1]
-                    name, res = fut.result()
-                    output[name] = res
-                    if output_path is not None:
-                        self._write_output_atomic(output, output_path)
-                        print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
+                    if status == "ok":
+                        name, res = payload
+                        output[name] = res
+                        if output_path is not None:
+                            self._write_output_atomic(output, output_path)
+                            print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
+                    else:
+                        failed[s] = payload or f"process exited with code {proc.exitcode}"
+                        print(f"[{s}] FAILED: {failed[s]}", flush=True)
+        finally:
+            for _, proc in running.values():
+                proc.kill()
+                proc.join()
+        if failed:
+            raise RuntimeError(f"{len(failed)} of {len(structures)} structures failed (the others are in the "
+                               f"output): {sorted(failed)}")
 
     def compute_parallel(
         self,
@@ -824,10 +875,11 @@ class BandUncertaintyCalculator:
     ):
         """Parallelized version of `compute` that runs per-structure work in separate processes.
 
-        - `max_workers`: number of worker processes (defaults to number of CPU cores). The
-          dense eigensolvers run on a GPU when one is visible (see
-          `sparse_hamiltonian.dense_backend`), shared by all workers: e.g. on a job with one
-          GPU and 8 CPUs, `max_workers=8` keeps the GPU busy while the workers do the rest.
+        - `max_workers`: structures computed at once, each in its own process (defaults to number
+          of CPU cores). The dense eigensolvers run on a GPU when one is visible (see
+          `sparse_hamiltonian.dense_backend`), shared by all of them. On an A100, small structures
+          (~800 orbitals) gained up to 4 workers per GPU, large ones (1500-15000) none beyond 2:
+          the GPU is then busy all the time.
         - `output_path`: if given, the accumulated result dict is written to this path
           (atomically) after every structure completes, so a killed/timed-out job still
           leaves the results computed so far on disk.
@@ -861,9 +913,7 @@ class BandUncertaintyCalculator:
         blas_threads_per_worker = max(1, available_cpu_count() // max_workers)
 
         self._run_parallel(
-            lambda ex, s: ex.submit(
-                self._compute_structure, s, model_dirs, average_hamiltonian_dir, blas_threads_per_worker
-            ),
+            lambda s: self._compute_structure(s, model_dirs, average_hamiltonian_dir, blas_threads_per_worker),
             structures, [model_dirs[0] / s for s in structures], max_workers, output, output_path,
             memory_gb, gpu_memory_gb,
         )
@@ -1030,10 +1080,8 @@ class BandUncertaintyCalculator:
         blas_threads_per_worker = max(1, available_cpu_count() // max_workers)
 
         self._run_parallel(
-            lambda ex, s: ex.submit(
-                self._compare_structure, s, model_dirs, average_hamiltonian_dir, dft_root,
-                blas_threads_per_worker, False,
-            ),
+            lambda s: self._compare_structure(s, model_dirs, average_hamiltonian_dir, dft_root,
+                                              blas_threads_per_worker, False),
             structures, [dft_root / s for s in structures], max_workers, output, output_path,
             memory_gb, gpu_memory_gb,
         )

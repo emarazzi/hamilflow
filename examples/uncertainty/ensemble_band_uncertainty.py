@@ -49,11 +49,13 @@ The output JSON is updated after every structure; rerunning skips structures
 already in it. Summarize it with
 ``hamilflow.uncertainty.band_postprocess.BandUncertaintyPostProcessor``.
 
-One worker process runs per allocated CPU. With CuPy installed (``pip install -e .[gpu]``,
-or the cupy-cudaXXx wheel matching your CUDA) the orbital removal and the diagonalizations run
-on the GPU, shared by all workers: request one GPU and a few CPUs (e.g. 8) per job, which then
-do the rest (loading, projection). Set HAMILFLOW_GPU=1 to stop with an error rather than
-silently falling back to the CPU if the GPU cannot be used, HAMILFLOW_GPU=0 to stay on the CPU.
+One structure is computed per allocated CPU at a time, as long as their estimated memory fits
+the job's (see ``compute_parallel``). With CuPy installed (``pip install -e .[gpu]``, or the
+cupy-cudaXXx wheel matching your CUDA) the orbital removal and the diagonalizations run on the
+GPU, shared by all of them: request one GPU and a few CPUs (2-4) per job, which then do the
+rest (loading, projection); large structures keep the GPU busy with 2. Set HAMILFLOW_GPU=1 to
+stop with an error rather than silently falling back to the CPU if the GPU cannot be used,
+HAMILFLOW_GPU=0 to stay on the CPU.
 ``job_gpu.sh`` is a SLURM job script for this setup.
 
 Run with:  python ensemble_band_uncertainty.py   (e.g. inside a SLURM job)
