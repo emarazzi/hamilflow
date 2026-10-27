@@ -21,7 +21,8 @@ wider than e_cut plus a few tau, and without ``bands`` / ``vbm_fraction``,
 whose band indices refer to different band lists in the two files.
 
 One worker process runs per allocated CPU; the diagonalizations use the GPU when available
-(one GPU and a few CPUs per job, HAMILFLOW_GPU as in ``ensemble_band_uncertainty.py``).
+(one GPU and a few CPUs per job, HAMILFLOW_GPU as in ``ensemble_band_uncertainty.py``;
+SLURM job script: ``job_gpu.sh``, running this script instead).
 
 Run with:  python ensemble_error_vs_dft.py   (e.g. inside a SLURM job)
 """

@@ -54,6 +54,7 @@ or the cupy-cudaXXx wheel matching your CUDA) the orbital removal and the diagon
 on the GPU, shared by all workers: request one GPU and a few CPUs (e.g. 8) per job, which then
 do the rest (loading, projection). Set HAMILFLOW_GPU=1 to stop with an error rather than
 silently falling back to the CPU if the GPU cannot be used, HAMILFLOW_GPU=0 to stay on the CPU.
+``job_gpu.sh`` is a SLURM job script for this setup.
 
 Run with:  python ensemble_band_uncertainty.py   (e.g. inside a SLURM job)
 """
