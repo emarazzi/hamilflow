@@ -8,6 +8,7 @@ import tempfile
 import numpy as np
 from dataclasses import dataclass
 
+from ..cpus import available_cpu_count
 from .alignment import SparseStream, fit_rigid_shifts, pair_distances, write_aligned_hamiltonian
 from .band_postprocess import BandUncertaintyPostProcessor
 from .hamiltonian_io import average_predicted_hamiltonians
@@ -297,12 +298,12 @@ class MatrixUncertaintyCalculator:
         structures = self._discover_structures(model_dirs, structure_pattern, exclude_structures)
 
         if max_workers is None:
-            max_workers = min(len(structures), os.cpu_count() or 1)
+            max_workers = min(len(structures), available_cpu_count())
 
         # Split the machine's cores evenly across worker processes so each
         # process's model-reads within a structure can still use more than
         # one thread when there are fewer workers than cores.
-        read_threads_per_worker = max(1, (os.cpu_count() or 1) // max_workers)
+        read_threads_per_worker = max(1, available_cpu_count() // max_workers)
 
         if output_path is not None:
             output_path = Path(output_path)

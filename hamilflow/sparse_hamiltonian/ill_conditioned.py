@@ -20,13 +20,13 @@ docstring). It runs on a GPU when one is available (see ``dense_backend``).
 from __future__ import annotations
 
 import concurrent.futures
-import os
 from typing import List, Optional, Tuple
 
 import numpy as np
 import threadpoolctl
 from scipy.linalg import LinAlgError, eigh
 
+from ..cpus import available_cpu_count
 from .dense_backend import get_backend
 from .eigensolver import eigh_generalized
 
@@ -96,7 +96,7 @@ def _map_threads(fn, items: list, n_jobs: int = -1, parallel_k: bool = True) -> 
     """`[fn(x) for x in items]`, spread over threads with the leftover CPU budget given to
     each thread's BLAS (as `SparseHamiltonianObj.diag`)."""
     if n_jobs < 0:
-        n_jobs = os.cpu_count() or 1
+        n_jobs = available_cpu_count()
     n_workers = max(1, min(n_jobs, len(items))) if parallel_k else 1
     n_blas_threads = max(1, n_jobs // n_workers)
     with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):

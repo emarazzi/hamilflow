@@ -8,6 +8,7 @@ import os
 import time
 
 import threadpoolctl
+from hamilflow.cpus import available_cpu_count
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 from hamilflow.sparse_hamiltonian.dense_backend import release_gpu_memory
 from hamilflow.sparse_hamiltonian.eigensolver import eigh_generalized
@@ -301,7 +302,7 @@ class BandUncertaintyCalculator:
         """`[fn(i_k) for i_k in range(n_k)]`, with the thread/BLAS split of
         `SparseHamiltonianObj.diag`."""
         if n_jobs < 0:
-            n_jobs = os.cpu_count() or 1
+            n_jobs = available_cpu_count()
         n_workers = max(1, min(n_jobs, n_k)) if parallel_k else 1
         n_blas_threads = max(1, n_jobs // n_workers)
         with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
@@ -702,13 +703,13 @@ class BandUncertaintyCalculator:
             return output
 
         if max_workers is None:
-            max_workers = min(len(structures), os.cpu_count() or 1)
+            max_workers = min(len(structures), available_cpu_count())
 
         # Split the machine's cores evenly across worker processes so each
         # process's (sequential, parallel_k=False) diagonalizations still use
         # more than one BLAS thread when there are fewer workers than cores
         # (e.g. few structures, or large structures relative to core count).
-        blas_threads_per_worker = max(1, (os.cpu_count() or 1) // max_workers)
+        blas_threads_per_worker = max(1, available_cpu_count() // max_workers)
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = {
@@ -879,11 +880,11 @@ class BandUncertaintyCalculator:
             return output
 
         if max_workers is None:
-            max_workers = min(len(structures), os.cpu_count() or 1)
+            max_workers = min(len(structures), available_cpu_count())
 
         # See compute_parallel: k-point threading off inside workers, cores split evenly
         # across processes for BLAS.
-        blas_threads_per_worker = max(1, (os.cpu_count() or 1) // max_workers)
+        blas_threads_per_worker = max(1, available_cpu_count() // max_workers)
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = {

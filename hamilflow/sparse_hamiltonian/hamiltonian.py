@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
@@ -10,6 +9,7 @@ import threadpoolctl
 from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from scipy.sparse.linalg import eigsh
 
+from ..cpus import available_cpu_count
 from .eigensolver import eigh_generalized
 from .ill_conditioned import eig_with_orbital_mask
 from .matrix_obj import SparseAOMatrixObj
@@ -128,7 +128,7 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         one k-point at a time, so this never materializes a dense ``SR``.
         """
         if n_jobs < 0:
-            n_jobs = os.cpu_count() or 1
+            n_jobs = available_cpu_count()
 
         n_blas_threads = 1 if parallel_k else n_jobs
         n_workers = n_jobs if parallel_k else 1
@@ -169,7 +169,7 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         shift-invert factorization is a sparse LU of ``Hk - sigma*Sk``.
         """
         if n_jobs < 0:
-            n_jobs = os.cpu_count() or 1
+            n_jobs = available_cpu_count()
 
         def process_k(k):
             if sparse_calc and ill_handler is None and kept_orbitals is None:
