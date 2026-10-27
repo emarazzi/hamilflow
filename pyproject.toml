@@ -32,6 +32,11 @@ dependencies = [
   "tomli-w",
 ]
 
+[project.optional-dependencies]
+# GPU eigensolvers (sparse_hamiltonian.dense_backend). cupy-cuda12x is built for CUDA 12: on a
+# machine with another CUDA major version, install the matching wheel instead (e.g. cupy-cuda11x).
+gpu = ["cupy-cuda12x"]
+
 [project.urls]
 Repository = "https://github.com/emarazzi/hamilflow"
 

@@ -9,6 +9,7 @@ import time
 
 import threadpoolctl
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
+from hamilflow.sparse_hamiltonian.dense_backend import release_gpu_memory
 from hamilflow.sparse_hamiltonian.eigensolver import eigh_generalized
 
 from .alignment import fit_rigid_shifts, write_aligned_hamiltonian
@@ -661,6 +662,8 @@ class BandUncertaintyCalculator:
             structure_name, model_dirs, average_hamiltonian_dir,
             n_jobs=blas_threads_per_worker, parallel_k=False, log_models=True,
         )
+        # the worker processes may share one GPU: hand back what this structure cached
+        release_gpu_memory()
         print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
         return structure_name, result
 
@@ -676,7 +679,10 @@ class BandUncertaintyCalculator:
     ):
         """Parallelized version of `compute` that runs per-structure work in separate processes.
 
-        - `max_workers`: number of worker processes (defaults to number of CPU cores).
+        - `max_workers`: number of worker processes (defaults to number of CPU cores). The
+          dense eigensolvers run on a GPU when one is visible (see
+          `sparse_hamiltonian.dense_backend`), shared by all workers: e.g. on a job with one
+          GPU and 8 CPUs, `max_workers=8` keeps the GPU busy while the workers do the rest.
         - `output_path`: if given, the accumulated result dict is written to this path
           (atomically) after every structure completes, so a killed/timed-out job still
           leaves the results computed so far on disk.

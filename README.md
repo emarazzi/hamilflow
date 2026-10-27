@@ -10,6 +10,25 @@ pip install -e .
 
 Requires Python ≥ 3.12. `deepx-dock` is installed from its GitHub repository.
 
+The dense eigensolvers (band structures, band uncertainty, orbital removal) run on a GPU when
+CuPy is installed and a CUDA device is visible:
+
+```bash
+pip install -e .[gpu]
+```
+
+**This installs `cupy-cuda12x`, built for CUDA 12.** If the CUDA of your machine or cluster
+module is another major version, replace it with the matching wheel, e.g. for CUDA 11:
+
+```bash
+pip uninstall cupy-cuda12x && pip install cupy-cuda11x
+```
+
+Check with `python -c "import cupy; cupy.show_config()"`; hamilflow also warns at the first
+diagonalization if CuPy is installed but cannot use the GPU, and then runs on the CPU. Set
+`HAMILFLOW_GPU=0` to always use the CPU, or `HAMILFLOW_GPU=1` to fail instead of falling back
+(see `hamilflow/sparse_hamiltonian/dense_backend.py`).
+
 ## Components
 
 ### Candidate selection — `hamilflow.candidate_selection`

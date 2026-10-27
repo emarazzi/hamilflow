@@ -14,7 +14,7 @@ version, at a fraction of the cost: it computes only the lowest eigenpair of
 S(k), by a warm-started block subspace iteration instead of a full dense
 diagonalization, factorizes each S(k) only once, runs the k-points in threads,
 and stops tracking a k-point once its S(k) is well conditioned (see its
-docstring).
+docstring). It runs on a GPU when one is available (see ``dense_backend``).
 """
 
 from __future__ import annotations
@@ -25,8 +25,9 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import threadpoolctl
-from scipy.linalg import LinAlgError, cho_solve, cholesky, eigh
+from scipy.linalg import LinAlgError, eigh
 
+from .dense_backend import get_backend
 from .eigensolver import eigh_generalized
 
 
@@ -114,7 +115,8 @@ _SUBSPACE_MAX_ITER = 100
 
 class _KPointState:
     """S(k) of one k-point during `global_orbital_truncation`, never copied or shrunk: the
-    current S(k) is its principal submatrix on the kept orbitals.
+    current S(k) is its principal submatrix on the kept orbitals. Arrays live on the device of
+    `be` (see `dense_backend`).
 
     - `L`: lower Cholesky factor of the full S(k) (None until needed, or if S(k) is not
       positive definite, in which case the k-point uses LAPACK on the submatrix).
@@ -122,24 +124,31 @@ class _KPointState:
     - `block`: subspace-iteration block on the kept orbitals, warm-starting the next iteration.
     """
 
-    def __init__(self, S: np.ndarray):
-        self.S = S
-        self.L: Optional[np.ndarray] = None
-        self.W = np.zeros((len(S), 0), dtype=S.dtype)
-        self.block: Optional[np.ndarray] = None
+    def __init__(self, S, be):
+        self.be = be
+        self.S = be.to_device(S)
+        self.L = None
+        self.W = be.xp.zeros((len(S), 0), dtype=self.S.dtype)
+        self.block = None
 
-    def submatrix(self, kept: np.ndarray) -> np.ndarray:
-        return self.S if len(kept) == len(self.S) else self.S[np.ix_(kept, kept)]
+    def submatrix(self, kept: np.ndarray):
+        if len(kept) == len(self.S):
+            return self.S
+        k = self.be.xp.asarray(kept)
+        return self.S[self.be.xp.ix_(k, k)]
 
     def remove(self, orbital: int, local_idx: int) -> None:
         """Account for removing `orbital` (index in the full S(k), at position `local_idx`
         among the kept orbitals)."""
+        xp = self.be.xp
         if self.L is not None:
-            e = np.zeros((len(self.S), 1), dtype=self.S.dtype)
+            e = xp.zeros((len(self.S), 1), dtype=self.S.dtype)
             e[orbital] = 1.0
-            self.W = np.hstack([self.W, cho_solve((self.L, True), e, check_finite=False)])
+            self.W = xp.hstack([self.W, self.be.cho_solve(self.L, e)])
         if self.block is not None:
-            self.block = np.delete(self.block, local_idx, axis=0)
+            keep = np.ones(len(self.block), dtype=bool)
+            keep[local_idx] = False
+            self.block = self.block[xp.asarray(keep)]
 
 
 def _lowest_eigpair_subspace(
@@ -158,45 +167,51 @@ def _lowest_eigpair_subspace(
     same largest-amplitude orbital as an exact solver: the Davis-Kahan bound `|r| / gap` on its
     error must stay well below the gap between its two largest amplitudes. The residual r is
     computed with S_KK itself, so the accuracy of the solves only affects the convergence.
+    The vector is a NumPy array.
     """
+    be = state.be
+    xp = be.xp
     S, L, W = state.S, state.L, state.W
     n_full, n = len(S), len(kept)
+    kept_d, removed_d = xp.asarray(kept), xp.asarray(removed)
     b = min(_SUBSPACE_BLOCK, n // 4)
     x = state.block
     if x is None or x.shape != (n, b):
         rng = np.random.default_rng(0)
-        x = rng.standard_normal((n, b)) + 1j * rng.standard_normal((n, b))
+        x = be.to_device(rng.standard_normal((n, b)) + 1j * rng.standard_normal((n, b)))
     x = x.astype(S.dtype, copy=False)
     try:
-        c_rr = (cholesky(W[removed], lower=True, check_finite=False), True) if len(removed) else None
+        c_rr = be.cholesky(W[removed_d]) if len(removed) else None
     except LinAlgError:
         return np.nan, None
-    w_k = W[kept]
+    w_k = W[kept_d]
 
     def padded(y):
-        full = np.zeros((n_full, y.shape[1]), dtype=S.dtype)
-        full[kept] = y
+        full = xp.zeros((n_full, y.shape[1]), dtype=S.dtype)
+        full[kept_d] = y
         return full
 
     def solve(y):  # (S_KK)^-1 y
-        z = cho_solve((L, True), padded(y), check_finite=False)
+        z = be.cho_solve(L, padded(y))
         if c_rr is None:
-            return z[kept]
-        return z[kept] - w_k @ cho_solve(c_rr, z[removed], check_finite=False)
+            return z[kept_d]
+        return z[kept_d] - w_k @ be.cho_solve(c_rr, z[removed_d])
 
-    s_norm = np.linalg.norm(S, ord=1)
+    s_norm = float(xp.abs(S).sum(axis=0).max())  # 1-norm
     for _ in range(_SUBSPACE_MAX_ITER):
-        q, _ = np.linalg.qr(solve(x))
-        sq = (S @ padded(q))[kept]
+        q, _ = xp.linalg.qr(solve(x))
+        sq = (S @ padded(q))[kept_d]
         t = q.conj().T @ sq
-        w, u = np.linalg.eigh(0.5 * (t + t.conj().T))
+        w, u = xp.linalg.eigh(0.5 * (t + t.conj().T))
         x = q @ u
-        r = np.linalg.norm(sq @ u[:, :2] - x[:, :2] * w[:2], axis=0)
-        gap = w[1] - w[0] - r[1]
-        amp = np.sort(np.abs(x[:, 0]))
+        r = be.to_host(xp.linalg.norm(sq @ u[:, :2] - x[:, :2] * w[:2], axis=0))
+        w2 = be.to_host(w[:2])
+        gap = w2[1] - w2[0] - r[1]
+        x0 = be.to_host(x[:, 0])
+        amp = np.sort(np.abs(x0))
         if gap > 0 and r[0] / gap < 0.1 * (amp[-1] - amp[-2]):
             state.block = x
-            return float(w[0]), x[:, 0]
+            return float(w2[0]), x0
         if r[0] < 1e-13 * s_norm:  # converged, but too close to a tie to be sure
             break
     state.block = x
@@ -206,8 +221,8 @@ def _lowest_eigpair_subspace(
 def _lowest_eigpair(
     state: _KPointState, kept: np.ndarray, removed: np.ndarray, ill_threshold: float
 ) -> Tuple[float, Optional[np.ndarray]]:
-    """Lowest eigenvalue and eigenvector of the kept-orbital S(k), or (inf, None) if all its
-    eigenvalues are above `ill_threshold` (checked with a Cholesky factorization of
+    """Lowest eigenvalue and eigenvector (NumPy) of the kept-orbital S(k), or (inf, None) if all
+    its eigenvalues are above `ill_threshold` (checked with a Cholesky factorization of
     S_KK - ill_threshold * 1).
 
     A Ritz value is an upper bound on the lowest eigenvalue, so a subspace-iteration value at or
@@ -215,11 +230,12 @@ def _lowest_eigpair(
     From the second visit on (S(k) was ill-conditioned at the previous iteration and likely still
     is) the subspace iteration runs first; on the first visit the Cholesky test does, and the
     factor of the full S(k) is computed if S(k) is ill-conditioned."""
+    be = state.be
 
     def well_conditioned() -> bool:
         S_kk = state.submatrix(kept)
         try:
-            cholesky(S_kk - ill_threshold * np.eye(len(S_kk)), lower=True, check_finite=False)
+            be.cholesky(S_kk - ill_threshold * be.xp.eye(len(S_kk)))
             return True
         except LinAlgError:
             return False
@@ -230,7 +246,7 @@ def _lowest_eigpair(
         return np.inf, None
     if use_subspace and first_visit and state.L is None and not len(removed):
         try:
-            state.L = cholesky(state.S, lower=True, check_finite=False)
+            state.L = be.cholesky(state.S)
         except LinAlgError:
             pass
     if use_subspace and state.L is not None:
@@ -241,10 +257,11 @@ def _lowest_eigpair(
             # above the threshold, not yet a proof (or Cholesky failed by round-off only)
             if first_visit or well_conditioned():
                 return np.inf, None
-    vals, vecs = eigh(state.submatrix(kept), subset_by_index=[0, 0], check_finite=False)
-    if vals[0] > ill_threshold:  # Cholesky failed by round-off only
+    vals, vecs = be.lowest_eigh(state.submatrix(kept))
+    val = float(vals[0])
+    if val > ill_threshold:  # Cholesky failed by round-off only
         return np.inf, None
-    return float(vals[0]), vecs[:, 0]
+    return val, be.to_host(vecs[:, 0])
 
 
 def global_orbital_truncation(
@@ -272,14 +289,19 @@ def global_orbital_truncation(
     iteration works with the full S(k) and its Cholesky factor, computed once: the removed
     orbitals enter through a low-rank correction, so S(k) is never copied or refactorized.
 
+    On a GPU (see `dense_backend`) every S(k) is kept on the device and the k-points run one
+    after the other (`n_jobs` and `parallel_k` then only set the CPU threads).
+
     Returns the kept orbital indices (in the original numbering).
     """
     norb = Sk_list[0].shape[0]
     kept = np.arange(norb)
     removed = np.zeros(0, dtype=int)
+    be = get_backend(norb)
+    parallel_k = parallel_k and be.name == "cpu"
 
     # k-points that can still be (or become) the worst one; the others are never touched again
-    states = {ik: _KPointState(Sk) for ik, Sk in enumerate(Sk_list)}
+    states = {ik: _KPointState(Sk, be) for ik, Sk in enumerate(Sk_list)}
     active = list(states)
 
     iteration = 0
