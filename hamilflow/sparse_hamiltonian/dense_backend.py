@@ -31,8 +31,8 @@ _CPU = SimpleNamespace(
     name="cpu",
     xp=np,
     cholesky=lambda a: sla.cholesky(a, lower=True, check_finite=False),
-    solve_triangular=lambda a, b, trans=0: sla.solve_triangular(a, b, lower=True, trans=trans,
-                                                                check_finite=False),
+    solve_triangular=lambda a, b, trans=0, overwrite_b=False: sla.solve_triangular(
+        a, b, lower=True, trans=trans, overwrite_b=overwrite_b, check_finite=False),
     cho_solve=lambda L, b: sla.cho_solve((L, True), b, check_finite=False),
     # MRRR (see `eigensolver.eigh_generalized`)
     eigh=lambda a: sla.eigh(a, driver="evr", check_finite=False),
@@ -78,8 +78,9 @@ def _make_gpu() -> SimpleNamespace | None:
         with cupyx.errstate(linalg="raise"):
             return cp.linalg.cholesky(a)
 
-    def solve_triangular(a, b, trans=0):
-        return csla.solve_triangular(a, b, lower=True, trans=trans)
+    def solve_triangular(a, b, trans=0, overwrite_b=False):
+        # in place only if b is Fortran-ordered and a is too (else cuBLAS gets copies)
+        return csla.solve_triangular(a, b, lower=True, trans=trans, overwrite_b=overwrite_b)
 
     def lowest_eigh(a):  # cuSOLVER has no cheap single-eigenpair driver
         w, v = cp.linalg.eigh(a)
@@ -116,11 +117,39 @@ def get_backend(n: int) -> SimpleNamespace:
     return _CPU
 
 
-def release_gpu_memory() -> None:
+def release_gpu_memory() -> int | None:
     """Return the GPU memory cached by CuPy's pool to the device, so that the other processes
-    sharing the GPU can use it (no-op without a GPU backend in this process)."""
-    if _gpu_cache.get(os.getpid()) is not None:
-        import cupy as cp
+    sharing the GPU can use it. Returns the bytes the pool held until then -- since it is only
+    emptied here, the peak device memory of the work since the last call (CUDA context not
+    included) -- or None without a GPU backend in this process."""
+    if _gpu_cache.get(os.getpid()) is None:
+        return None
+    import cupy as cp
 
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
+    pool = cp.get_default_memory_pool()
+    held = int(pool.total_bytes())
+    pool.free_all_blocks()
+    cp.get_default_pinned_memory_pool().free_all_blocks()
+    return held
+
+
+def workers_gpu_memory() -> int | None:
+    """Total memory (bytes) of the GPU that worker processes started from this one would use, or
+    None if they would not use a GPU (see `gpu_backend`). Asks nvidia-smi instead of CUDA, so
+    that this process does not initialize CUDA, which forked workers could then not use."""
+    import importlib.util
+    import subprocess
+
+    if os.environ.get("HAMILFLOW_GPU", "auto").strip().lower() in ("0", "off", "false", "no", "none"):
+        return None
+    if importlib.util.find_spec("cupy") is None:
+        return None
+    device = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0].strip()
+    if not device or device == "-1":
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits",
+                              "-i", device], capture_output=True, text=True, check=True, timeout=30).stdout
+        return int(float(out.split()[0]) * 2**20)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None

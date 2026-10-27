@@ -4,13 +4,20 @@ import numpy as np
 from dataclasses import dataclass, field
 import concurrent.futures
 import json
+import math
 import os
 import time
 
 import threadpoolctl
-from hamilflow.cpus import available_cpu_count
+from hamilflow.cpus import available_cpu_count, available_memory_bytes, peak_rss_bytes, reset_peak_rss
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
-from hamilflow.sparse_hamiltonian.dense_backend import get_backend, release_gpu_memory
+from hamilflow.sparse_hamiltonian.dense_backend import (
+    GPU_MIN_DIM,
+    get_backend,
+    release_gpu_memory,
+    workers_gpu_memory,
+)
+from hamilflow.sparse_hamiltonian.matrix_obj import SparseAOMatrixObj
 from hamilflow.sparse_hamiltonian.eigensolver import eigh_generalized
 
 from .alignment import fit_rigid_shifts, write_aligned_hamiltonian
@@ -22,6 +29,22 @@ import spglib
 # sparse-dense product (O(nnz n_w)) instead of a dense GEMM (O(n^2 n_w)). Measured
 # crossover: sparse ~1.5x faster at 10% fill, slower above ~15%, independent of n.
 SPARSE_PRODUCT_MAX_FILL = 0.1
+
+# Memory model of the parallel drivers' scheduling (`_memory_estimate`). Peak memory of one
+# structure in a worker, in complex n x n matrices (n the Hamiltonian dimension), as
+# a * n_k + b with n_k the irreducible k-points. Host: fitted to profiles of the projected
+# method (1856-7076 orbitals, with and without GPU); GPU: what the device code holds at once
+# (orbital removal keeps S(k) and its Cholesky factor for every k-point, plus work arrays).
+HOST_MATRICES = (2, 11)
+GPU_MATRICES = (2, 3)
+# Fixed memory of each worker process, reserved for all workers up front: host (interpreter and
+# libraries; CuPy and CUDA add ~1.5 GB) and device (CUDA context).
+WORKER_HOST_GB = 1.0
+WORKER_HOST_GPU_GB = 2.5
+WORKER_GPU_GB = 0.6
+# Share of the job's (or GPU's) memory the workers may plan to use; the rest is slack for the
+# main process, the file cache and the model's error.
+MEMORY_USE_FRACTION = 0.9
 
 @dataclass
 class BandUncertaintyCalculator:
@@ -663,6 +686,7 @@ class BandUncertaintyCalculator:
     ):
         """Compute uncertainty for a single structure (helper for parallel runs)."""
         t_start = time.monotonic()
+        reset_peak_rss()
         print(f"[{structure_name}] starting ({len(model_dirs)} models, pid={os.getpid()})", flush=True)
 
         # compute_parallel already parallelizes over structures at the process
@@ -677,10 +701,106 @@ class BandUncertaintyCalculator:
             structure_name, model_dirs, average_hamiltonian_dir,
             n_jobs=blas_threads_per_worker, parallel_k=False, log_models=True,
         )
-        # the worker processes may share one GPU: hand back what this structure cached
-        release_gpu_memory()
-        print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
+        print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s{self._peak_memory()}", flush=True)
         return structure_name, result
+
+    @staticmethod
+    def _peak_memory() -> str:
+        """Peak host and GPU memory of the structure just computed in this worker, as a note for
+        its log line (to check `_memory_estimate`), and the GPU memory it cached handed back to
+        the other workers sharing the GPU. Pairs with `reset_peak_rss` at the start."""
+        gpu, host = release_gpu_memory(), peak_rss_bytes()
+        parts = ([f"host {host / 2**30:.1f} GB"] if host else []) + ([f"GPU {gpu / 2**30:.1f} GB"] if gpu else [])
+        return f" (peak memory: {', '.join(parts)})" if parts else ""
+
+    def _memory_estimate(self, structure_dir: Path, on_gpu: bool) -> tuple[float, float]:
+        """Estimated peak (host, GPU) bytes of one structure in a worker, beyond the worker's
+        fixed memory: see HOST_MATRICES / GPU_MATRICES. Reads only the cell, the dimension and
+        the k-grid (POSCAR, info.json and the block layout of hamiltonian.h5), and is the same
+        for every method: the exact one and the comparison to DFT need less than the projected
+        one it was fitted to."""
+        meta = SparseAOMatrixObj(structure_dir, matrix_file_path=Path(structure_dir) / self.hamiltonian_name,
+                                 load_matrix=False)
+        n_k = len(self.build_irreducible_kpoints(meta, self.resolve_mesh(meta), self.symprec)[0])
+        matrix = 16.0 * meta._mat_dim ** 2
+        host = (HOST_MATRICES[0] * n_k + HOST_MATRICES[1]) * matrix
+        gpu = (GPU_MATRICES[0] * n_k + GPU_MATRICES[1]) * matrix if on_gpu and meta._mat_dim >= GPU_MIN_DIM else 0.0
+        return host, gpu
+
+    def _run_parallel(
+        self,
+        submit,
+        structures: list[str],
+        structure_dirs: list[Path],
+        max_workers: int,
+        output: dict,
+        output_path: Path | None,
+        memory_gb: float | None,
+        gpu_memory_gb: float | None,
+    ) -> None:
+        """Run `submit(executor, structure)` (returning a future of `(name, result)`) for every
+        structure on `max_workers` processes, starting a structure only while the estimated peak
+        memory of the running ones (`_memory_estimate`) fits the host and GPU budgets, the
+        largest structures first and smaller ones filling the gaps. Results are stored in
+        `output` (and written to `output_path`) as they come.
+
+        The budgets are `memory_gb` and `gpu_memory_gb`, by default MEMORY_USE_FRACTION of the
+        job's memory (`hamilflow.cpus.available_memory_bytes`) and of the GPU's, less every
+        worker's fixed memory. A structure over budget on its own runs alone, with a warning.
+        `float("inf")` switches a budget off.
+        """
+        gb = 2**30
+        gpu_total = workers_gpu_memory()
+        on_gpu = gpu_total is not None
+        worker_host = (WORKER_HOST_GPU_GB if on_gpu else WORKER_HOST_GB) * gb
+        host_budget = (memory_gb * gb if memory_gb is not None
+                       else MEMORY_USE_FRACTION * available_memory_bytes() - max_workers * worker_host)
+        if gpu_memory_gb is not None:
+            gpu_budget = gpu_memory_gb * gb
+        elif on_gpu:
+            gpu_budget = MEMORY_USE_FRACTION * gpu_total - max_workers * WORKER_GPU_GB * gb
+        else:
+            gpu_budget = math.inf
+        need = {s: self._memory_estimate(d, on_gpu) for s, d in zip(structures, structure_dirs)}
+        pending = sorted(structures, key=lambda s: need[s], reverse=True)
+        print(
+            f"{len(structures)} structures on {max_workers} workers{' sharing a GPU' if on_gpu else ''}; "
+            f"memory budget: host {host_budget / gb:.1f} GB"
+            + (f", GPU {gpu_budget / gb:.1f} GB" if on_gpu else "")
+            + f"; largest estimate: host {need[pending[0]][0] / gb:.1f} GB"
+            + (f", GPU {need[pending[0]][1] / gb:.1f} GB" if on_gpu else ""),
+            flush=True,
+        )
+
+        free_host, free_gpu = host_budget, gpu_budget
+        running = {}  # future -> structure
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+            while pending or running:
+                for s in list(pending):
+                    if len(running) >= max_workers:
+                        break
+                    host, gpu = need[s]
+                    if host > free_host or gpu > free_gpu:
+                        if running:
+                            continue
+                        print(f"[{s}] WARNING: estimated memory (host {host / gb:.1f} GB, GPU {gpu / gb:.1f} GB) "
+                              "exceeds the budget; running it alone", flush=True)
+                    print(f"[{s}] scheduled: estimated memory host {host / gb:.1f} GB"
+                          + (f", GPU {gpu / gb:.1f} GB" if on_gpu else ""), flush=True)
+                    running[submit(ex, s)] = s
+                    free_host -= host
+                    free_gpu -= gpu
+                    pending.remove(s)
+                done, _ = concurrent.futures.wait(running, return_when=concurrent.futures.FIRST_COMPLETED)
+                for fut in done:
+                    s = running.pop(fut)
+                    free_host += need[s][0]
+                    free_gpu += need[s][1]
+                    name, res = fut.result()
+                    output[name] = res
+                    if output_path is not None:
+                        self._write_output_atomic(output, output_path)
+                        print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
 
     def compute_parallel(
         self,
@@ -691,6 +811,8 @@ class BandUncertaintyCalculator:
         output_path: Path | str | None = None,
         exclude_structures: Iterable[str] | None = None,
         skip_existing: bool = True,
+        memory_gb: float | None = None,
+        gpu_memory_gb: float | None = None,
     ):
         """Parallelized version of `compute` that runs per-structure work in separate processes.
 
@@ -704,6 +826,11 @@ class BandUncertaintyCalculator:
         - `exclude_structures`: structure names to skip.
         - `skip_existing`: see `compute`.
         - `average_hamiltonian_dir`: see `compute`.
+        - `memory_gb`, `gpu_memory_gb`: host and GPU memory the workers may use together (default:
+          most of the job's allocation and of the GPU). A structure starts only when its
+          estimated peak memory fits next to the running ones, largest structures first, so
+          large and small structures can share a node or a GPU without running out of memory
+          (see `_run_parallel`). Each worker logs the measured peaks of every structure.
         """
         model_dirs = [Path(p) for p in model_dirs]
         average_hamiltonian_dir = Path(average_hamiltonian_dir)
@@ -725,20 +852,13 @@ class BandUncertaintyCalculator:
         # (e.g. few structures, or large structures relative to core count).
         blas_threads_per_worker = max(1, available_cpu_count() // max_workers)
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = {
-                ex.submit(
-                    self._compute_structure, s, model_dirs, average_hamiltonian_dir, blas_threads_per_worker
-                ): s
-                for s in structures
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                name, res = fut.result()
-                output[name] = res
-                if output_path is not None:
-                    self._write_output_atomic(output, output_path)
-                    print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
-
+        self._run_parallel(
+            lambda ex, s: ex.submit(
+                self._compute_structure, s, model_dirs, average_hamiltonian_dir, blas_threads_per_worker
+            ),
+            structures, [model_dirs[0] / s for s in structures], max_workers, output, output_path,
+            memory_gb, gpu_memory_gb,
+        )
         return output
 
     @staticmethod
@@ -767,6 +887,7 @@ class BandUncertaintyCalculator:
     ):
         """Compare the models' averaged Hamiltonian to DFT for a single structure."""
         t_start = time.monotonic()
+        reset_peak_rss()
         print(f"[{structure_name}] starting comparison to DFT (pid={os.getpid()})", flush=True)
 
         dft_obj = SparseHamiltonianObj(dft_root / structure_name)
@@ -805,9 +926,7 @@ class BandUncertaintyCalculator:
 
         overall_mae = float(np.mean(mae_values))
 
-        # see _compute_structure
-        release_gpu_memory()
-        print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
+        print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s{self._peak_memory()}", flush=True)
         return structure_name, {
             **self.settings(),
             "grid_mesh": list(mesh),
@@ -877,6 +996,8 @@ class BandUncertaintyCalculator:
         output_path: Path | str | None = None,
         exclude_structures: Iterable[str] | None = None,
         skip_existing: bool = True,
+        memory_gb: float | None = None,
+        gpu_memory_gb: float | None = None,
     ):
         """Parallelized version of `compare_averaged_to_dft` that runs per-structure work in
         separate processes. Arguments as in `compare_averaged_to_dft` / `compute_parallel`.
@@ -900,21 +1021,14 @@ class BandUncertaintyCalculator:
         # across processes for BLAS.
         blas_threads_per_worker = max(1, available_cpu_count() // max_workers)
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = {
-                ex.submit(
-                    self._compare_structure, s, model_dirs, average_hamiltonian_dir, dft_root,
-                    blas_threads_per_worker, False,
-                ): s
-                for s in structures
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                name, res = fut.result()
-                output[name] = res
-                if output_path is not None:
-                    self._write_output_atomic(output, output_path)
-                    print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
-
+        self._run_parallel(
+            lambda ex, s: ex.submit(
+                self._compare_structure, s, model_dirs, average_hamiltonian_dir, dft_root,
+                blas_threads_per_worker, False,
+            ),
+            structures, [dft_root / s for s in structures], max_workers, output, output_path,
+            memory_gb, gpu_memory_gb,
+        )
         return output
 
 __all__ = ["BandUncertaintyCalculator"]

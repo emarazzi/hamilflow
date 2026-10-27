@@ -233,9 +233,13 @@ def _lowest_eigpair(
     be = state.be
 
     def well_conditioned() -> bool:
+        # S_kk - ill_threshold * 1, built in one copy (no identity matrix or second copy)
         S_kk = state.submatrix(kept)
+        S_kk = S_kk.copy() if S_kk is state.S else S_kk
+        diag = be.xp.arange(len(S_kk))
+        S_kk[diag, diag] -= ill_threshold
         try:
-            be.cholesky(S_kk - ill_threshold * be.xp.eye(len(S_kk)))
+            be.cholesky(S_kk)
             return True
         except LinAlgError:
             return False

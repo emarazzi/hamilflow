@@ -19,16 +19,42 @@ def eigh_generalized(H: np.ndarray, S: np.ndarray, eigvals_only: bool = False):
     not positive definite, as ``scipy.linalg.eigh`` does.
 
     On a GPU (see `dense_backend`) the same reduction runs with cuSOLVER (``heevd``, divide and
-    conquer); inputs and outputs are NumPy arrays either way.
+    conquer) in `_eigh_generalized_gpu`; inputs and outputs are NumPy arrays either way.
     """
     be = get_backend(len(H))
-    H, S = be.to_device(H), be.to_device(S)
+    if be.name == "gpu":
+        return _eigh_generalized_gpu(be, H, S, eigvals_only)
     L = be.cholesky(S)
     # L^-1 H, then L^-1 (L^-1 H)^dag = L^-1 H L^-dag (H Hermitian)
     A = be.solve_triangular(L, H)
     A = be.solve_triangular(L, A.conj().T)
     A = 0.5 * (A + A.conj().T)
     if eigvals_only:
-        return be.to_host(be.eigvalsh(A))
+        return be.eigvalsh(A)
     w, v = be.eigh(A)
-    return be.to_host(w), be.to_host(be.solve_triangular(L, v, trans="C"))
+    return w, be.solve_triangular(L, v, trans="C")
+
+
+def _eigh_generalized_gpu(be, H: np.ndarray, S: np.ndarray, eigvals_only: bool):
+    """`eigh_generalized` with at most four n x n matrices on the device at once (L, the reduced
+    matrix and its copy, eigh's output and workspace), so that large problems, or several
+    processes sharing a GPU, fit in its memory: the triangular solves overwrite their right-hand
+    side, which is kept in Fortran order (cuBLAS's) so that it is never copied, and the reduced
+    matrix is not symmetrized, since heevd only reads its lower triangle."""
+    xp = be.xp
+    L = be.cholesky(be.to_device(S))
+    L = xp.asfortranarray(L)
+    # H Hermitian: the C-ordered copy of H, transposed, is conj(H) in Fortran order
+    A = be.to_device(H).T
+    xp.conj(A, out=A)
+    A = be.solve_triangular(L, A, overwrite_b=True)  # L^-1 H
+    B = xp.empty(A.shape, dtype=A.dtype, order="F")
+    xp.conj(A.T, out=B)  # (L^-1 H)^dag, without a temporary
+    del A
+    B = be.solve_triangular(L, B, overwrite_b=True)  # L^-1 H L^-dag
+    if eigvals_only:
+        return be.to_host(be.eigvalsh(B))
+    w, v = be.eigh(B)
+    del B
+    v = be.solve_triangular(L, v, trans="C", overwrite_b=True)
+    return be.to_host(w), be.to_host(v)
