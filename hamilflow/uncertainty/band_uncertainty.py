@@ -790,6 +790,8 @@ class BandUncertaintyCalculator:
 
         overall_mae = float(np.mean(mae_values))
 
+        # see _compute_structure
+        release_gpu_memory()
         print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s", flush=True)
         return structure_name, {
             **self.settings(),
