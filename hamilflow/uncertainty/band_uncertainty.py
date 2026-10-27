@@ -10,7 +10,7 @@ import time
 import threadpoolctl
 from hamilflow.cpus import available_cpu_count
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
-from hamilflow.sparse_hamiltonian.dense_backend import release_gpu_memory
+from hamilflow.sparse_hamiltonian.dense_backend import get_backend, release_gpu_memory
 from hamilflow.sparse_hamiltonian.eigensolver import eigh_generalized
 
 from .alignment import fit_rigid_shifts, write_aligned_hamiltonian
@@ -382,6 +382,15 @@ class BandUncertaintyCalculator:
         # without downfolding only the window's eigenvectors are kept, not the full
         # (n_orb, n_orb) set per k-point
         del eigs
+        # The window products below run on the GPU if there is one (see `dense_backend`), with the
+        # eigenvectors moved there once for all members; on the CPU `to_device` does nothing.
+        be = get_backend(ref_obj._mat_dim)
+        e_win_host = e_win
+        c_win = [be.to_device(c) for c in c_win]
+        e_win = [be.to_device(e) for e in e_win]
+        if self.downfold:
+            c_out = [be.to_device(c) for c in c_out]
+            e_out = [be.to_device(e) for e in e_out]
         avg_ham_aligned, avg_ham_shift = self.align_to_midgap(avg_raw, ref_obj, anchor_k_idx)
 
         member_paths = [Path(d) / structure_name / self.hamiltonian_name for d in model_dirs]
@@ -397,8 +406,12 @@ class BandUncertaintyCalculator:
             # member 0 is the reference; the others share its block layout and overlap
             h_obj = ref_obj if i_model == 0 else SparseHamiltonianObj(model / structure_name, share_from=ref_obj)
             c_m = rigid[i_model]["c_eV"]
-            # the sparse C^dag H product beats dense GEMM only for a sparse enough H(k)
-            build_k = h_obj._sparse_k if h_obj.fill_fraction < SPARSE_PRODUCT_MAX_FILL else h_obj._dense_k
+            # the sparse C^dag H product beats dense GEMM only for a sparse enough H(k); on the
+            # GPU, dense GEMM always wins
+            if be.name == "gpu":
+                build_k = lambda k: be.to_device(h_obj._dense_k(k))  # noqa: E731
+            else:
+                build_k = h_obj._sparse_k if h_obj.fill_fraction < SPARSE_PRODUCT_MAX_FILL else h_obj._dense_k
 
             # C^dag S C = 1 and C^dag H_avg C = E, so C^dag (H_m - H_avg - c_m S) C = C^dag H_m C - E - c_m
             # on the window block and C_W^dag H_m C_o off it
@@ -407,10 +420,11 @@ class BandUncertaintyCalculator:
                 y = c.conj().T @ build_k(ks[i_k])
                 p = y @ c
                 p = 0.5 * (p + p.conj().T)
-                p[np.diag_indices(len(e))] -= e + c_m
+                p[be.xp.diag_indices(len(e))] -= e + c_m
                 if self.downfold:
                     p = p + self._downfold_correction(e, y @ c_out[i_k], e_out[i_k])
-                return np.linalg.eigvalsh(np.diag(e) + p) - e
+                e = e_win_host[i_k]
+                return np.linalg.eigvalsh(np.diag(e) + be.to_host(p)) - e
 
             deviations.append(np.stack(self._map_k(window_deviation, len(ks), n_jobs, parallel_k), axis=1))
             del h_obj
