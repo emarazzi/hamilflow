@@ -746,8 +746,9 @@ class BandUncertaintyCalculator:
 
         The budgets are `memory_gb` and `gpu_memory_gb`, by default MEMORY_USE_FRACTION of the
         job's memory (`hamilflow.cpus.available_memory_bytes`) and of the GPU's, less every
-        worker's fixed memory. A structure over budget on its own runs alone, with a warning.
-        `float("inf")` switches a budget off.
+        worker's fixed memory. `float("inf")` switches a budget off. Structures over budget on
+        their own run last, one at a time and smallest first, with a warning: if one runs out of
+        memory, all the others are already done and written.
         """
         gb = 2**30
         gpu_total = workers_gpu_memory()
@@ -762,13 +763,20 @@ class BandUncertaintyCalculator:
         else:
             gpu_budget = math.inf
         need = {s: self._memory_estimate(d, on_gpu) for s, d in zip(structures, structure_dirs)}
-        pending = sorted(structures, key=lambda s: need[s], reverse=True)
+        too_big = sorted((s for s in structures if need[s][0] > host_budget or need[s][1] > gpu_budget),
+                         key=lambda s: need[s])
+        pending = sorted(set(structures) - set(too_big), key=lambda s: need[s], reverse=True)
+        if too_big:
+            print(f"WARNING: {len(too_big)} structures exceed the memory budget on their own and run last, "
+                  f"one at a time: {too_big}", flush=True)
+        # every structure that fits is started before any of these, which then run alone
+        pending += too_big
         print(
             f"{len(structures)} structures on {max_workers} workers{' sharing a GPU' if on_gpu else ''}; "
             f"memory budget: host {host_budget / gb:.1f} GB"
             + (f", GPU {gpu_budget / gb:.1f} GB" if on_gpu else "")
-            + f"; largest estimate: host {need[pending[0]][0] / gb:.1f} GB"
-            + (f", GPU {need[pending[0]][1] / gb:.1f} GB" if on_gpu else ""),
+            + f"; largest estimate: host {max(h for h, _ in need.values()) / gb:.1f} GB"
+            + (f", GPU {max(g for _, g in need.values()) / gb:.1f} GB" if on_gpu else ""),
             flush=True,
         )
 
