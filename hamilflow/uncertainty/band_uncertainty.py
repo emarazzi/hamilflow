@@ -1,5 +1,6 @@
 import concurrent.futures
 import json
+import logging
 import math
 import multiprocessing
 import multiprocessing.connection
@@ -23,25 +24,35 @@ from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 from hamilflow.sparse_hamiltonian.dense_backend import (
     GPU_MIN_DIM,
     get_backend,
+    gpu_in_use,
+    gpu_use_reported,
     release_gpu_memory,
     workers_gpu_memory,
 )
 from hamilflow.sparse_hamiltonian.eigensolver import eigh_generalized
+from hamilflow.sparse_hamiltonian.ill_conditioned import (
+    _tracking_linalg_failures,
+    _warn_linalg_failures,
+)
 from hamilflow.sparse_hamiltonian.matrix_obj import SparseAOMatrixObj
 
 from .alignment import fit_rigid_shifts, write_aligned_hamiltonian
 from .hamiltonian_io import average_predicted_hamiltonians
 
+logger = logging.getLogger(__name__)
+
 
 def _run_in_child(sender, run_structure, structure_name) -> None:
     """Body of the process `_run_parallel` forks for one structure: sends back
-    ("ok", run_structure(structure_name)) or ("error", traceback)."""
+    ("ok", run_structure(structure_name), used_gpu) or ("error", (traceback, exception), used_gpu),
+    `exception` the type and message of the exception alone."""
     import traceback
 
     try:
-        sender.send(("ok", run_structure(structure_name)))
-    except BaseException:
-        sender.send(("error", traceback.format_exc()))
+        sender.send(("ok", run_structure(structure_name), gpu_in_use()))
+    except BaseException as err:
+        sender.send(("error", (traceback.format_exc(), "".join(traceback.format_exception_only(err)).strip()),
+                     gpu_in_use()))
     finally:
         sender.close()
 
@@ -306,6 +317,8 @@ class BandUncertaintyCalculator:
         avg_path = Path(average_hamiltonian_dir) / structure_name / self.hamiltonian_name
         if not avg_path.exists():
             average_predicted_hamiltonians(model_paths, avg_path)
+        else:
+            logger.info(f"[{structure_name}] using the existing averaged Hamiltonian {avg_path}")
         return avg_path
 
     def _avg_hamiltonian_obj(
@@ -413,8 +426,11 @@ class BandUncertaintyCalculator:
 
         avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir,
                                             share_from=ref_obj)
-        eigs = self._map_k(lambda i_k: self._eig_with_vecs(avg_obj, ks[i_k], ill_handler),
-                           len(ks), n_jobs, parallel_k)
+        # one warning for all the k-points whose ill-conditioning treatment hit a LinAlgError
+        failed = {}
+        eig_k = _tracking_linalg_failures(lambda k: self._eig_with_vecs(avg_obj, k, ill_handler), failed)
+        eigs = self._map_k(lambda i_k: eig_k(i_k, ks[i_k]), len(ks), n_jobs, parallel_k)
+        _warn_linalg_failures(failed, len(ks))
         n_bands = min(len(vals) for vals, _ in eigs)
         avg_raw = np.stack([vals[:n_bands] for vals, _ in eigs], axis=1)
         first, stop = self._band_window(avg_raw, ref_obj)
@@ -475,10 +491,9 @@ class BandUncertaintyCalculator:
             deviations.append(np.stack(self._map_k(window_deviation, len(ks), n_jobs, parallel_k), axis=1))
             del h_obj
             if log_models:
-                print(
+                logger.info(
                     f"[{structure_name}] model {i_model + 1}/{len(model_dirs)} projected "
-                    f"in {time.monotonic() - t_model:.1f}s",
-                    flush=True,
+                    f"in {time.monotonic() - t_model:.1f}s"
                 )
         deviations = np.stack(deviations, axis=0)
 
@@ -548,10 +563,9 @@ class BandUncertaintyCalculator:
             raws.append(h_obj.diag(ks, **diag_kwargs))
             del h_obj
             if log_models:
-                print(
+                logger.info(
                     f"[{structure_name}] model {i_model + 1}/{len(model_dirs)} done "
-                    f"in {time.monotonic() - t_model:.1f}s",
-                    flush=True,
+                    f"in {time.monotonic() - t_model:.1f}s"
                 )
         avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir,
                                             share_from=ref_obj)
@@ -621,7 +635,7 @@ class BandUncertaintyCalculator:
             return {}
         with open(output_path) as f:
             existing = json.load(f)
-        print(f"Loaded {len(existing)} finished structures from {output_path}", flush=True)
+        logger.info(f"Loaded {len(existing)} finished structures from {output_path}")
         return existing
 
     @classmethod
@@ -637,15 +651,14 @@ class BandUncertaintyCalculator:
     def _drop_done(self, structures: list[str], output: dict) -> list[str]:
         todo = [s for s in structures if s not in output]
         if len(todo) < len(structures):
-            print(f"Skipping {len(structures) - len(todo)} already-computed structures", flush=True)
+            logger.info(f"Skipping {len(structures) - len(todo)} already-computed structures")
         settings = self.settings()
         other = [s for s, res in output.items() if any(res.get(k) != v for k, v in settings.items())]
         if other:
-            print(
-                f"WARNING: {len(other)} stored structures were computed with settings other than "
+            logger.warning(
+                f"{len(other)} stored structures were computed with settings other than "
                 f"{settings} (or before settings were stored) and are kept as-is; "
-                "pass skip_existing=False to recompute them",
-                flush=True,
+                "pass skip_existing=False to recompute them"
             )
         return todo
 
@@ -696,7 +709,7 @@ class BandUncertaintyCalculator:
 
             if output_path is not None:
                 self._write_output_atomic(output, output_path)
-                print(f"[{structure_name}] wrote {len(output)} structures to {output_path}", flush=True)
+                logger.info(f"[{structure_name}] wrote {len(output)} structures to {output_path}")
 
         return output
 
@@ -710,7 +723,7 @@ class BandUncertaintyCalculator:
         """Compute uncertainty for a single structure (helper for parallel runs)."""
         t_start = time.monotonic()
         reset_peak_rss()
-        print(f"[{structure_name}] starting ({len(model_dirs)} models, pid={os.getpid()})", flush=True)
+        logger.info(f"[{structure_name}] starting ({len(model_dirs)} models, pid={os.getpid()})")
 
         # compute_parallel already parallelizes over structures at the process
         # level (one worker per structure, capped at max_workers), so k-point
@@ -724,7 +737,7 @@ class BandUncertaintyCalculator:
             structure_name, model_dirs, average_hamiltonian_dir,
             n_jobs=blas_threads_per_worker, parallel_k=False, log_models=True,
         )
-        print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s{self._peak_memory()}", flush=True)
+        logger.info(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s{self._peak_memory()}")
         return structure_name, result
 
     @staticmethod
@@ -801,17 +814,19 @@ class BandUncertaintyCalculator:
                          key=lambda s: need[s])
         pending = sorted(set(structures) - set(too_big), key=lambda s: need[s], reverse=True)
         if too_big:
-            print(f"WARNING: {len(too_big)} structures exceed the memory budget on their own and run last, "
-                  f"one at a time: {too_big}", flush=True)
+            logger.warning(f"{len(too_big)} structures exceed the memory budget on their own and run last, "
+                           f"one at a time: {too_big}")
         # every structure that fits is started before any of these, which then run alone
         pending += too_big
-        print(
-            f"{len(structures)} structures on {max_workers} workers{' sharing a GPU' if on_gpu else ''}; "
+        logger.info(
+            f"{len(structures)} structures on {max_workers} workers"
+            + (f" sharing the GPU (CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}) for dense "
+               f"linear algebra of size >= {GPU_MIN_DIM}" if on_gpu else "")
+            + "; "
             f"memory budget: host {host_budget / gb:.1f} GB"
             + (f", GPU {gpu_budget / gb:.1f} GB" if on_gpu else "")
             + f"; largest estimate: host {max(h for h, _ in need.values()) / gb:.1f} GB"
-            + (f", GPU {max(g for _, g in need.values()) / gb:.1f} GB" if on_gpu else ""),
-            flush=True,
+            + (f", GPU {max(g for _, g in need.values()) / gb:.1f} GB" if on_gpu else "")
         )
 
         # fork: the child runs `run_structure` as is (nothing to pickle, and the calling script is
@@ -821,53 +836,65 @@ class BandUncertaintyCalculator:
         free_host, free_gpu = host_budget, gpu_budget
         running = {}  # receiving end of the child's pipe -> (structure, process)
         failed = {}
-        try:
-            while pending or running:
-                for s in list(pending):
-                    if len(running) >= max_workers:
-                        break
-                    host, gpu = need[s]
-                    if host > free_host or gpu > free_gpu:
-                        if running:
-                            continue
-                        print(f"[{s}] WARNING: estimated memory (host {host / gb:.1f} GB, GPU {gpu / gb:.1f} GB) "
-                              "exceeds the budget; running it alone", flush=True)
-                    print(f"[{s}] scheduled: estimated memory host {host / gb:.1f} GB"
-                          + (f", GPU {gpu / gb:.1f} GB" if on_gpu else ""), flush=True)
-                    receiver, sender = ctx.Pipe(duplex=False)
-                    proc = ctx.Process(target=_run_in_child, args=(sender, run_structure, s))
-                    proc.start()
-                    sender.close()  # only the child writes: its exit then shows as EOF here
-                    running[receiver] = (s, proc)
-                    free_host -= host
-                    free_gpu -= gpu
-                    pending.remove(s)
-                for receiver in multiprocessing.connection.wait(list(running)):
-                    s, proc = running.pop(receiver)
-                    try:
-                        status, payload = receiver.recv()
-                    except EOFError:  # died without a word, e.g. killed for lack of memory
-                        status, payload = "error", None
-                    receiver.close()
+        # the children log their GPU set-up at DEBUG: their GPU use is reported here once, in the
+        # summary above, or (nvidia-smi not telling) by the first child that reports using it
+        gpu_reported = on_gpu
+        with gpu_use_reported():
+            try:
+                while pending or running:
+                    for s in list(pending):
+                        if len(running) >= max_workers:
+                            break
+                        host, gpu = need[s]
+                        if host > free_host or gpu > free_gpu:
+                            if running:
+                                continue
+                            logger.warning(f"[{s}] estimated memory (host {host / gb:.1f} GB, GPU {gpu / gb:.1f} GB) "
+                                           "exceeds the budget; running it alone")
+                        logger.info(f"[{s}] scheduled: estimated memory host {host / gb:.1f} GB"
+                                    + (f", GPU {gpu / gb:.1f} GB" if on_gpu else ""))
+                        receiver, sender = ctx.Pipe(duplex=False)
+                        proc = ctx.Process(target=_run_in_child, args=(sender, run_structure, s))
+                        proc.start()
+                        sender.close()  # only the child writes: its exit then shows as EOF here
+                        running[receiver] = (s, proc)
+                        free_host -= host
+                        free_gpu -= gpu
+                        pending.remove(s)
+                    for receiver in multiprocessing.connection.wait(list(running)):
+                        s, proc = running.pop(receiver)
+                        try:
+                            status, payload, used_gpu = receiver.recv()
+                        except EOFError:  # died without a word, e.g. killed for lack of memory
+                            status, payload, used_gpu = "error", None, False
+                        if used_gpu and not gpu_reported:
+                            gpu_reported = True
+                            logger.warning(
+                                f"The workers use the GPU (CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}) "
+                                f"for dense linear algebra of size >= {GPU_MIN_DIM}, but nvidia-smi did not report "
+                                "its memory: the scheduling has no GPU memory budget")
+                        receiver.close()
+                        proc.join()
+                        free_host += need[s][0]
+                        free_gpu += need[s][1]
+                        if status == "ok":
+                            name, res = payload
+                            output[name] = res
+                            if output_path is not None:
+                                self._write_output_atomic(output, output_path)
+                                logger.info(f"[{name}] wrote {len(output)} structures to {output_path}")
+                        else:
+                            full, failed[s] = payload or (f"process exited with code {proc.exitcode}",) * 2
+                            logger.error(f"[{s}] FAILED: {full}")
+            finally:
+                for _, proc in running.values():
+                    proc.kill()
                     proc.join()
-                    free_host += need[s][0]
-                    free_gpu += need[s][1]
-                    if status == "ok":
-                        name, res = payload
-                        output[name] = res
-                        if output_path is not None:
-                            self._write_output_atomic(output, output_path)
-                            print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
-                    else:
-                        failed[s] = payload or f"process exited with code {proc.exitcode}"
-                        print(f"[{s}] FAILED: {failed[s]}", flush=True)
-        finally:
-            for _, proc in running.values():
-                proc.kill()
-                proc.join()
         if failed:
+            # the exceptions alone: their tracebacks are in the FAILED log lines
+            details = "\n".join(f"[{k}] {v}" for k, v in sorted(failed.items()))
             raise RuntimeError(f"{len(failed)} of {len(structures)} structures failed (the others are in the "
-                               f"output): {sorted(failed)}")
+                               f"output): {sorted(failed)}\n{details}\n(full tracebacks in the log)")
 
     def compute_parallel(
         self,
@@ -940,6 +967,11 @@ class BandUncertaintyCalculator:
         if exclude_structures:
             excluded = set(exclude_structures)
             structures = [s for s in structures if s not in excluded]
+        if not structures:
+            applied = ([f"pattern {structure_pattern!r}"] if structure_pattern else []) + (
+                ["exclude_structures"] if exclude_structures else [])
+            logger.warning(f"No structures left in {root} after {' and '.join(applied)}" if applied
+                           else f"No structures found in {root}")
         return structures
 
     def _compare_structure(
@@ -954,7 +986,7 @@ class BandUncertaintyCalculator:
         """Compare the models' averaged Hamiltonian to DFT for a single structure."""
         t_start = time.monotonic()
         reset_peak_rss()
-        print(f"[{structure_name}] starting comparison to DFT (pid={os.getpid()})", flush=True)
+        logger.info(f"[{structure_name}] starting comparison to DFT (pid={os.getpid()})")
 
         dft_obj = SparseHamiltonianObj(dft_root / structure_name)
 
@@ -992,7 +1024,7 @@ class BandUncertaintyCalculator:
 
         overall_mae = float(np.mean(mae_values))
 
-        print(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s{self._peak_memory()}", flush=True)
+        logger.info(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s{self._peak_memory()}")
         return structure_name, {
             **self.settings(),
             "grid_mesh": list(mesh),
@@ -1048,7 +1080,7 @@ class BandUncertaintyCalculator:
             output[name] = res
             if output_path is not None:
                 self._write_output_atomic(output, output_path)
-                print(f"[{name}] wrote {len(output)} structures to {output_path}", flush=True)
+                logger.info(f"[{name}] wrote {len(output)} structures to {output_path}")
 
         return output
 

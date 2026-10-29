@@ -22,6 +22,7 @@ Outputs, in OUTPUT_DIR:
   * selection_state.npz    AMDs, distance matrix, labels and 2D MDS
                            coordinates, reused by ``uncertainty_map.py``
   * selection_map.html     interactive 2D MDS map of the selection
+  * select_candidates.log  hamilflow's progress messages and warnings
 
 The MDS embedding is slow for large datasets; it is computed once and read
 back from ``selection_state.npz`` on later runs over the same dataset.
@@ -29,6 +30,8 @@ back from ``selection_state.npz`` on later runs over the same dataset.
 Run with:  python select_candidates.py
 """
 
+import logging
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +51,14 @@ K_NEIGHBORS = 100  # length of the AMD vectors
 # -----------------------------------------------------------------------------
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+# Show hamilflow's progress messages on stdout and save them, with any
+# warnings, to OUTPUT_DIR/select_candidates.log.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(OUTPUT_DIR / "select_candidates.log")],
+)
+logging.captureWarnings(True)
 state_path = OUTPUT_DIR / "selection_state.npz"
 
 selector = CandidateSelector(k_neighbors=K_NEIGHBORS)

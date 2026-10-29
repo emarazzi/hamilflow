@@ -17,12 +17,17 @@ from and to NumPy.
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import numpy as np
 import scipy.linalg as sla
+
+logger = logging.getLogger(__name__)
 
 # Below this size the CPU is fast enough and the GPU's overhead dominates.
 GPU_MIN_DIM = 256
@@ -44,10 +49,38 @@ _CPU = SimpleNamespace(
 
 _gpu_cache: dict[int, SimpleNamespace | None] = {}  # pid -> GPU backend (None: no GPU)
 
+# Set while the processes started from this one have their GPU use reported by it (see
+# `gpu_use_reported`). An environment variable, not a module flag, so that it reaches workers
+# started by spawn as well as by fork. Not forkserver workers (the Linux default from Python
+# 3.14) if the server was started earlier: those keep its environment and log at INFO.
+_GPU_REPORTED_ENV = "HAMILFLOW_GPU_USE_REPORTED"
+
+
+@contextmanager
+def gpu_use_reported() -> Iterator[None]:
+    """For the duration, the processes started from this one (and this one) log their GPU set-up
+    at DEBUG instead of INFO: the caller reports the GPU use of the whole calculation itself, at
+    INFO once (e.g. `_run_parallel`'s scheduling summary) instead of once per worker process."""
+    previous = os.environ.get(_GPU_REPORTED_ENV)
+    os.environ[_GPU_REPORTED_ENV] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ[_GPU_REPORTED_ENV]
+        else:
+            os.environ[_GPU_REPORTED_ENV] = previous
+
+
+def gpu_in_use() -> bool:
+    """Whether this process has set up the GPU backend (without setting it up)."""
+    return _gpu_cache.get(os.getpid()) is not None
+
 
 def _make_gpu() -> SimpleNamespace | None:
     mode = os.environ.get("HAMILFLOW_GPU", "auto").strip().lower()
     if mode in ("0", "off", "false", "no", "none"):
+        logger.debug(f"HAMILFLOW_GPU={mode}: dense linear algebra on the CPU")
         return None
     try:
         import cupy as cp
@@ -71,7 +104,14 @@ def _make_gpu() -> SimpleNamespace | None:
         if not not_installed:  # installed but broken: say so instead of silently using the CPU
             warnings.warn(f"hamilflow: {msg}. Running on the CPU (HAMILFLOW_GPU=0 silences this).",
                           RuntimeWarning, stacklevel=2)
+        else:
+            logger.debug("CuPy is not installed: dense linear algebra on the CPU")
         return None
+
+    # once per process (the backend is cached), at INFO unless the caller reports it instead
+    level = logging.DEBUG if os.environ.get(_GPU_REPORTED_ENV) else logging.INFO
+    logger.log(level, f"Using the GPU (CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}) for dense "
+                      f"linear algebra of size >= {GPU_MIN_DIM} (pid={os.getpid()})")
 
     def cholesky(a):
         # raises numpy.linalg.LinAlgError (= scipy.linalg.LinAlgError) if a is not positive definite

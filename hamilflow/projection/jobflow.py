@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .._logging import job_logging
 from .core import run_projection
 from .models import ProjectionConfig, RemovalPlanLike
 
@@ -25,7 +26,8 @@ def make_run_projection_job() -> Any:
 
     @job
     def run_projection_job(config: ProjectionConfig, removal_plan: RemovalPlanLike) -> dict[str, object]:
-        result = run_projection(config=config, removal_plan=removal_plan)
-        return result.to_dict()
+        with job_logging():
+            result = run_projection(config=config, removal_plan=removal_plan)
+            return result.to_dict()
 
     return run_projection_job

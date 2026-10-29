@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
+import time
+import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +16,8 @@ if TYPE_CHECKING:
     import plotly.graph_objects as go
 
 from .plotting import fit_mds, plot_mds
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -109,14 +115,16 @@ class CandidateSelector:
         exclude_labels = set(exclude)
         missing = exclude_labels - set(frame_indices)
         if missing:
-            print(
-                f"Warning: {len(missing)} excluded label(s) not found in dataset: "
-                f"{sorted(missing)[:5]}{' ...' if len(missing) > 5 else ''}"
+            # attributed to the first caller outside this package (select() or a direct call)
+            warnings.warn(
+                f"{len(missing)} excluded label(s) not found in dataset: "
+                f"{sorted(missing)[:5]}{' ...' if len(missing) > 5 else ''}",
+                skip_file_prefixes=(os.path.dirname(__file__) + os.sep,),
             )
         keep_mask = np.array([frame_indices[i] not in exclude_labels for i in candidate_idx])
         n_before = len(candidate_idx)
         candidate_idx = candidate_idx[keep_mask]
-        print(
+        logger.info(
             f"Excluded {n_before - len(candidate_idx)} structure(s) from candidate pool "
             f"({len(candidate_idx)} remain)"
         )
@@ -169,6 +177,9 @@ class CandidateSelector:
                 continue  # empty cluster, can happen with n_init/degenerate data
             d = np.linalg.norm(X[cluster_idx] - km.cluster_centers_[c], axis=1)
             selected.append(int(cluster_idx[np.argmin(d)]))
+        if len(selected) < n_samples:
+            logger.warning(f"k-means left {n_samples - len(selected)} of {n_samples} clusters empty: "
+                           f"selecting {len(selected)} structures")
 
         return np.array(selected)
 
@@ -204,14 +215,17 @@ class CandidateSelector:
         if method != "pattern" and n is None:
             raise ValueError("n is required for method='fps'/'kmeans'")
         if method == "kmeans" and first_point is not None:
-            print("Warning: first_point is ignored when method='kmeans'")
+            warnings.warn("first_point is ignored when method='kmeans'", stacklevel=2)
         if method == "pattern" and exclude is not None:
-            print("Warning: exclude is ignored when method='pattern'")
+            warnings.warn("exclude is ignored when method='pattern'", stacklevel=2)
 
+        t_start = time.monotonic()
         traj, frame_indices = self.load_trajectory(input_file)
         amds = self.compute_amds(traj)
         dist_matrix = self.compute_distance_matrix(amds)
         n_frames = len(frame_indices)
+        logger.info(f"AMD distances of {n_frames} structures from {input_file} computed in "
+                    f"{time.monotonic() - t_start:.1f}s")
 
         if method == "pattern":
             sel_idx = self.pattern_selection(frame_indices, pattern)
@@ -219,7 +233,7 @@ class CandidateSelector:
         else:
             if pattern is not None:
                 candidate_idx = self.pattern_selection(frame_indices, pattern)
-                print(
+                logger.info(
                     f"Pattern '{pattern}' restricts candidates to "
                     f"{len(candidate_idx)} / {n_frames} structures"
                 )
@@ -252,6 +266,7 @@ class CandidateSelector:
 
             sel_idx = candidate_idx[local_sel]  # map back to global indices
 
+        logger.info(f"Selected {len(sel_idx)} of {len(candidate_idx)} candidate structures ({method})")
         return SelectionResult(
             method=method,
             frame_indices=frame_indices,

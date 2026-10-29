@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,6 +71,17 @@ def build_band_structure(paths: ExamplePaths):
 
 def main() -> None:
     paths = parse_args()
+    # hamilflow's messages and warnings on stdout and in <workdir>/band_structure.log
+    # (created at the first message)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(paths.workdir / "band_structure.log", delay=True),
+        ],
+    )
+    logging.captureWarnings(True)
     band_data = build_band_structure(paths)
 
     paths.output_path.parent.mkdir(parents=True, exist_ok=True)

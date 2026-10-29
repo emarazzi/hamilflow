@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -10,7 +11,11 @@ from scipy.sparse.linalg import eigsh
 
 from ..cpus import available_cpu_count
 from .eigensolver import eigh_generalized
-from .ill_conditioned import eig_with_orbital_mask
+from .ill_conditioned import (
+    _tracking_linalg_failures,
+    _warn_linalg_failures,
+    eig_with_orbital_mask,
+)
 from .matrix_obj import SparseAOMatrixObj
 
 
@@ -209,12 +214,16 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         else:
             n_workers = 1
             n_blas_threads = n_jobs
+        # one warning for all the k-points whose ill-conditioning treatment hit a LinAlgError
+        failed = {}
+        process_ik = _tracking_linalg_failures(process_k, failed)
         with threadpoolctl.threadpool_limits(limits=n_blas_threads, user_api="blas"):
             if n_workers <= 1:
-                results = [process_k(k) for k in ks]
+                results = [process_ik(i_k, k) for i_k, k in enumerate(ks)]
             else:
                 with ThreadPoolExecutor(max_workers=n_workers) as ex:
-                    results = list(ex.map(process_k, ks))
+                    results = list(ex.map(process_ik, itertools.count(), ks))
+        _warn_linalg_failures(failed, len(results))
 
         if bands_only:
             return np.stack(results, axis=1)

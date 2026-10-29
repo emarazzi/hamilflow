@@ -10,10 +10,13 @@ In later AL cycles the previous splits are frozen: only the newly added structur
 into the k groups, appended to each fold's validate set, and to every other fold's train set.
 """
 import json
+import logging
 import random
 from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def parent_of(name: str) -> str:
@@ -123,4 +126,11 @@ def write_kfold_splits(
         with open(path, "w", encoding="utf-8") as f:
             json.dump(split, f, indent=2)
         paths.append(path)
+    n_old = sum(len(p["validate"]) for p in previous) if previous else 0
+    logger.info(
+        f"Wrote {k} k-fold splits to {out_dir / prefix}_{{1..{k}}}.json: "
+        f"{sum(len(s['validate']) for s in splits)} structures"
+        + (f" ({n_old} kept from {previous_dir}, the others new)" if previous else "")
+        + f", validate sizes {[len(s['validate']) for s in splits]}, {len(splits[0]['test'])} test"
+    )
     return paths

@@ -27,7 +27,9 @@ SLURM job script: ``job_gpu.sh``, running this script instead).
 Run with:  python ensemble_error_vs_dft.py   (e.g. inside a SLURM job)
 """
 
+import logging
 import os
+import sys
 from pathlib import Path
 
 from hamilflow.uncertainty.band_uncertainty import BandUncertaintyCalculator
@@ -50,6 +52,15 @@ FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
 ILL_METHOD = "orbital_removal"
 OUTPUT_JSON = "error_vs_dft.json"
 # -----------------------------------------------------------------------------
+
+# Show hamilflow's progress messages on stdout (the SLURM .out file) and save
+# them, with any warnings, to a log file next to OUTPUT_JSON.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(Path(OUTPUT_JSON).with_suffix(".log"))],
+)
+logging.captureWarnings(True)
 
 cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
 

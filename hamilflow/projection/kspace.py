@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +9,8 @@ import numpy as np
 import threadpoolctl
 
 from ..cpus import available_cpu_count  # noqa: F401  (re-exported)
+
+logger = logging.getLogger(__name__)
 
 
 def build_uniform_kmesh(nk: tuple[int, int, int]) -> np.ndarray:
@@ -662,6 +665,7 @@ def stream_project_to_real_space(
     worker_bytes = _estimate_worker_bytes(nb, nkp, len(rm) if schur else 0, k_chunk_size, n_mats, nnz)
     avail = available_memory_bytes()
     mem_note = "memory limit unknown"
+    log_level = logging.INFO
     if avail is not None:
         fit = int(_MEMORY_SAFETY * avail // max(1, worker_bytes))
         mem_note = f"{avail / 1024**3:.1f} GiB available, ~{worker_bytes / 1024**3:.2f} GiB per worker"
@@ -669,14 +673,15 @@ def stream_project_to_real_space(
             n_workers = max(1, fit)
             if fit < 1:
                 mem_note += " -- WARNING: even one worker may not fit"
+                log_level = logging.WARNING
             k_chunk_size = min(k_chunk_size, max(1, -(-total_nk // n_workers)))
     k_chunks = [ks[i : i + k_chunk_size] for i in range(0, total_nk, k_chunk_size)]
     n_workers = max(1, min(n_workers, len(k_chunks)))
     threads_per_worker = max(1, available_cpu_count() // n_workers)
-    print(
+    logger.log(
+        log_level,
         f"[projection] Nb={nb} kept={nkp} removed={len(rm)} Nk={total_nk} "
         f"chunk={k_chunk_size} workers={n_workers} ({worker_mode}) blas_threads={threads_per_worker} ({mem_note})",
-        flush=True,
     )
 
     # Per R, the IFT either gathers the targets' columns for every k-point

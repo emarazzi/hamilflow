@@ -1,7 +1,10 @@
+import logging
 import shutil
 from collections.abc import Iterable, Sequence
 from glob import glob
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def discover_structures(pattern: str) -> list[Path]:
@@ -9,7 +12,10 @@ def discover_structures(pattern: str) -> list[Path]:
 
     Example pattern: '/path/to/dft/str*' or './input_dir/dft/str*'
     """
-    return [Path(p).absolute() for p in glob(pattern)]
+    paths = [Path(p).absolute() for p in glob(pattern)]
+    if not paths:
+        logger.warning(f"No structures match {pattern!r}")
+    return paths
 
 
 def link_ensemble_files(
@@ -28,10 +34,13 @@ def link_ensemble_files(
     ensemble_dir = Path(ensemble_dir)
     dst_parent = Path(dst_parent)
 
+    missing = []
     for s in structures:
         s = Path(s)
         dst = dst_parent / ensemble_dir / s.name
-        if dst.is_dir():
+        if not dst.is_dir():
+            missing.append(s.name)
+        else:
             dst_file = dst / hamiltonian_name
             src_file = dst / hamiltonian_pred_name
             if not dst_file.exists() and src_file.exists():
@@ -47,7 +56,11 @@ def link_ensemble_files(
                         dst_file.symlink_to(src_file)
                     except Exception:
                         # Fall back to copying if symlinks are unavailable
+                        logger.debug(f"could not symlink {dst_file}, copying {src_file} instead")
                         shutil.copy2(src_file, dst_file)
+    if missing:
+        logger.warning(f"{len(missing)} structures have no folder in {dst_parent / ensemble_dir} and were skipped: "
+                       f"{missing[:5]}{' ...' if len(missing) > 5 else ''}")
 
 
 __all__ = ["discover_structures", "link_ensemble_files"]

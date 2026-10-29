@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 
 import numpy as np
@@ -219,6 +220,10 @@ def correct_k_points(bands: list | ndarray, remove_indices: Sequence[int]) -> nd
         raise ValueError("bands must be at least 2-dimensional (n_bands, n_kpoints)")
 
     n_kpoints = bands_array.shape[1]
+    out_of_range = sorted(i for i in remove_set if not 0 <= i < n_kpoints)
+    if out_of_range:
+        warnings.warn(f"remove_indices {out_of_range} are outside [0, {n_kpoints - 1}] and are ignored",
+                      stacklevel=2)
     keep_indices = [i for i in range(n_kpoints) if i not in remove_set]
 
     return bands_array[:, keep_indices].copy()

@@ -14,6 +14,7 @@ they are named ``yyyy-mm-dd_hh-mm-ss``, and when there are several the most rece
 """
 import copy
 import json
+import logging
 import re
 import tomllib
 import warnings
@@ -24,6 +25,8 @@ from .write_train_infer_toml import (
     write_infer_toml,
     write_train_toml,
 )
+
+logger = logging.getLogger(__name__)
 
 _RUN_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
 _SPLIT_KEYS = ("dataset_split_json", "train_size", "validate_size", "test_size")
@@ -110,6 +113,13 @@ def write_ensemble_train_tomls(
                 "previous_output_dir": str(find_run_dir(previous_outputs).resolve()),
             })
         paths.append(write_train_toml(fold, fold_dir(cycle_dir, j)))
+    if previous_cycle_dir is not None:
+        start = f"warm-started from the runs of {previous_cycle_dir} (new training data)"
+    elif continue_from is not None:
+        start = f"resuming from the runs in train_*/{continue_from} (same data)"
+    else:
+        start = "from scratch"
+    logger.info(f"Wrote train.toml for {k} folds of {cycle_dir}, {start}")
     return paths
 
 
@@ -130,5 +140,6 @@ def write_ensemble_infer_tomls(
         model_dir = find_run_dir(train_outputs_dir(cycle_dir, j)) / "model"
         fold = copy.deepcopy(overrides)
         fold.setdefault("model", {})["model_dir"] = str(model_dir.resolve())
+        logger.debug(f"fold {j}: model {model_dir}")
         paths.append(write_infer_toml(fold, fold_dir(cycle_dir, j) / infer_name))
     return paths

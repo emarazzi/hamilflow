@@ -1,5 +1,6 @@
 import copy
 import gzip
+import logging
 import shutil
 from collections.abc import Sequence
 from fnmatch import fnmatch
@@ -17,6 +18,7 @@ from pymatgen.io.aims.sets.core import StaticSetGenerator
 
 from hamilflow.dft_workflows.aims_makers import OvlOnlyAimsMaker
 
+from .._logging import job_logging
 from ..projection import (
     ProjectionConfig,
     ReductionMode,
@@ -25,6 +27,8 @@ from ..projection import (
 )
 from ..projection.io import zero_h5_entries
 from .kpoints import get_ksampling
+
+logger = logging.getLogger(__name__)
 
 
 def _gunzip_in_place(root: Path) -> None:
@@ -128,29 +132,32 @@ def collect_aims_output(
     collected_runs_root: str | Path,
 ) -> dict[str, str]:
     """Move one AIMS run directory to ``collected_runs_root / structure_name``."""
-    source_path = str(source_run_dir)
-    # Strip cluster name if path is remote (e.g., "cluster.host.com:/path/to/dir")
-    if ":" in source_path and not source_path.startswith("/"):
-        source_path = source_path.split(":", 1)[1]
+    with job_logging():
+        source_path = str(source_run_dir)
+        # Strip cluster name if path is remote (e.g., "cluster.host.com:/path/to/dir")
+        if ":" in source_path and not source_path.startswith("/"):
+            source_path = source_path.split(":", 1)[1]
 
-    source_dir = Path(source_path)
-    if not source_dir.is_dir():
-        raise ValueError(f"AIMS output directory does not exist: {source_dir}")
+        source_dir = Path(source_path)
+        if not source_dir.is_dir():
+            raise ValueError(f"AIMS output directory does not exist: {source_dir}")
 
-    output_root = Path(collected_runs_root)
-    output_root.mkdir(parents=True, exist_ok=True)
+        output_root = Path(collected_runs_root)
+        output_root.mkdir(parents=True, exist_ok=True)
 
-    target_dir = output_root / structure_name
-    if target_dir.exists():
-        rmtree(target_dir)
+        target_dir = output_root / structure_name
+        if target_dir.exists():
+            logger.warning(f"[{structure_name}] replacing the previously collected run in {target_dir}")
+            rmtree(target_dir)
 
-    moved_dir = Path(move(str(source_dir), str(target_dir)))
+        moved_dir = Path(move(str(source_dir), str(target_dir)))
+        logger.info(f"[{structure_name}] moved AIMS run {source_dir} to {moved_dir}")
 
-    return {
-        "structure_name": structure_name,
-        "collected_dir": str(moved_dir.resolve()),
-        "collected_runs_root": str(output_root.resolve()),
-    }
+        return {
+            "structure_name": structure_name,
+            "collected_dir": str(moved_dir.resolve()),
+            "collected_runs_root": str(output_root.resolve()),
+        }
 
 
 @job
@@ -175,43 +182,48 @@ def convert_aims_to_deeph_structure(
     job. It makes this job wait for that collection only (not for other
     structures) and overrides ``input_root``.
     """
-    if collection_output is not None:
-        collected_root = collection_output.get("collected_runs_root")
-        if not isinstance(collected_root, str):
-            raise ValueError("collection_output is missing 'collected_runs_root'.")
-        input_root = collected_root
+    with job_logging():
+        if collection_output is not None:
+            collected_root = collection_output.get("collected_runs_root")
+            if not isinstance(collected_root, str):
+                raise ValueError("collection_output is missing 'collected_runs_root'.")
+            input_root = collected_root
 
-    input_root = Path(input_root)
-    if not input_root.is_dir():
-        raise ValueError(f"Input directory does not exist: {input_root}")
-    _gunzip_in_place(input_root / structure_name)
+        input_root = Path(input_root)
+        if not input_root.is_dir():
+            raise ValueError(f"Input directory does not exist: {input_root}")
+        _gunzip_in_place(input_root / structure_name)
 
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    ierr = PeriodicAimsDataTranslator.transfer_one_aims_to_deeph(
-        dir_name=structure_name,
-        aims_path=input_root,
-        deeph_path=output_dir,
-        export_rho=export_rho,
-        export_r=export_r,
-        minus_H0=minus_H0,
-    )
+        ierr = PeriodicAimsDataTranslator.transfer_one_aims_to_deeph(
+            dir_name=structure_name,
+            aims_path=input_root,
+            deeph_path=output_dir,
+            export_rho=export_rho,
+            export_r=export_r,
+            minus_H0=minus_H0,
+        )
 
-    hamiltonian_file = output_dir / structure_name / "hamiltonian.h5"
-    if dummy_hamiltonian and hamiltonian_file.exists():
-        zero_h5_entries(hamiltonian_file)
+        hamiltonian_file = output_dir / structure_name / "hamiltonian.h5"
+        if dummy_hamiltonian and hamiltonian_file.exists():
+            zero_h5_entries(hamiltonian_file)
 
-    if (output_dir / structure_name / "overlap.h5").exists() and hamiltonian_file.exists():
-        _compress_raw(input_root / structure_name)
+        if (output_dir / structure_name / "overlap.h5").exists() and hamiltonian_file.exists():
+            _compress_raw(input_root / structure_name)
+        elif not (output_dir / structure_name / "overlap.h5").exists():
+            logger.warning(f"[{structure_name}] no overlap.h5 in {output_dir / structure_name} after conversion")
+        logger.info(f"[{structure_name}] converted {input_root / structure_name} to DeepH format in "
+                    f"{output_dir / structure_name} (ierr={ierr})")
 
-    return {
-        "structure_name": structure_name,
-        "input_dir": str((input_root / structure_name).resolve()),
-        "deeph_inputs_root": str(output_dir.resolve()),
-        "deeph_dir": str((output_dir / structure_name).resolve()),
-        "ierr": ierr,
-    }
+        return {
+            "structure_name": structure_name,
+            "input_dir": str((input_root / structure_name).resolve()),
+            "deeph_inputs_root": str(output_dir.resolve()),
+            "deeph_dir": str((output_dir / structure_name).resolve()),
+            "ierr": ierr,
+        }
 
 
 def resolve_structure_removal_plan(
@@ -279,52 +291,53 @@ def run_projection_for_structure(
     ``upstream_projection_output`` is an optional dependency-only payload used
     to force ordering between projection stages in multi-step workflows.
     """
-    # Kept as a dependency token for chained projection stages.
-    _ = upstream_projection_output
+    with job_logging():
+        # Kept as a dependency token for chained projection stages.
+        _ = upstream_projection_output
 
-    if deeph_conversion_output is not None:
-        if "deeph_inputs_root" not in deeph_conversion_output:
-            raise ValueError("deeph_conversion_output is missing 'deeph_inputs_root'.")
-        deeph_root = deeph_conversion_output["deeph_inputs_root"]
-        if not isinstance(deeph_root, str):
+        if deeph_conversion_output is not None:
+            if "deeph_inputs_root" not in deeph_conversion_output:
+                raise ValueError("deeph_conversion_output is missing 'deeph_inputs_root'.")
+            deeph_root = deeph_conversion_output["deeph_inputs_root"]
+            if not isinstance(deeph_root, str):
+                raise ValueError(
+                    "deeph_conversion_output['deeph_inputs_root'] must be a string."
+                )
+            deeph_inputs_root = deeph_root
+
+        if reduction_mode not in ("schur", "truncate"):
             raise ValueError(
-                "deeph_conversion_output['deeph_inputs_root'] must be a string."
+                f"Unsupported reduction_mode '{reduction_mode}'. Expected 'schur' or 'truncate'."
             )
-        deeph_inputs_root = deeph_root
 
-    if reduction_mode not in ("schur", "truncate"):
-        raise ValueError(
-            f"Unsupported reduction_mode '{reduction_mode}'. Expected 'schur' or 'truncate'."
+        deeph_inputs_root = Path(deeph_inputs_root)
+        input_dir = deeph_inputs_root / structure_name
+        if not input_dir.is_dir():
+            raise ValueError(f"DeepH structure directory does not exist: {input_dir}")
+
+        projected_root = Path(projected_root)
+        output_dir = projected_root / structure_name
+
+        if len(kgrid) != 3:
+            raise ValueError(f"kgrid must contain exactly three integers, got: {kgrid}")
+        kgrid_3: tuple[int, int, int] = (int(kgrid[0]), int(kgrid[1]), int(kgrid[2]))
+
+        result = run_projection(
+            config=ProjectionConfig(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                kgrid=kgrid_3,
+                user_kpoints_settings=user_kpoints_settings,
+                force_2d=force_2d,
+                force_1d=force_1d,
+                reduction_mode=reduction_mode,
+                overlap_only=overlap_only,
+                write_dummy_hamiltonian=write_dummy_hamiltonian,
+                n_workers=n_workers,
+            ),
+            removal_plan=removal_plan,
         )
 
-    deeph_inputs_root = Path(deeph_inputs_root)
-    input_dir = deeph_inputs_root / structure_name
-    if not input_dir.is_dir():
-        raise ValueError(f"DeepH structure directory does not exist: {input_dir}")
-
-    projected_root = Path(projected_root)
-    output_dir = projected_root / structure_name
-
-    if len(kgrid) != 3:
-        raise ValueError(f"kgrid must contain exactly three integers, got: {kgrid}")
-    kgrid_3: tuple[int, int, int] = (int(kgrid[0]), int(kgrid[1]), int(kgrid[2]))
-
-    result = run_projection(
-        config=ProjectionConfig(
-            input_dir=input_dir,
-            output_dir=output_dir,
-            kgrid=kgrid_3,
-            user_kpoints_settings=user_kpoints_settings,
-            force_2d=force_2d,
-            force_1d=force_1d,
-            reduction_mode=reduction_mode,
-            overlap_only=overlap_only,
-            write_dummy_hamiltonian=write_dummy_hamiltonian,
-            n_workers=n_workers,
-        ),
-        removal_plan=removal_plan,
-    )
-
-    payload = result.to_dict()
-    payload["structure_name"] = structure_name
-    return payload
+        payload = result.to_dict()
+        payload["structure_name"] = structure_name
+        return payload

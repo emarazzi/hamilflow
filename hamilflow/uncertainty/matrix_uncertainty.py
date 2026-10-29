@@ -1,7 +1,9 @@
 import concurrent.futures
 import json
+import logging
 import os
 import tempfile
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,8 @@ from .alignment import (
 )
 from .band_postprocess import BandUncertaintyPostProcessor
 from .hamiltonian_io import average_predicted_hamiltonians
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -97,6 +101,11 @@ class MatrixUncertaintyCalculator:
         if exclude_structures:
             excluded = set(exclude_structures)
             structures = [s for s in structures if s not in excluded]
+        if not structures:
+            applied = ([f"pattern {structure_pattern!r}"] if structure_pattern else []) + (
+                ["exclude_structures"] if exclude_structures else [])
+            logger.warning(f"No structures left in {root} after {' and '.join(applied)}" if applied
+                           else f"No structures found in {root}")
         return structures
 
     def _resolve_average_path(
@@ -110,6 +119,8 @@ class MatrixUncertaintyCalculator:
         avg_path = root / structure_name / self.hamiltonian_name
         if not avg_path.exists():
             average_predicted_hamiltonians(model_paths, avg_path)
+        elif average_hamiltonian_dir is not None:
+            logger.info(f"[{structure_name}] using the existing averaged Hamiltonian {avg_path}")
         return avg_path
 
     def _pair_weights(self, structure_dir: Path, atom_pairs: np.ndarray) -> np.ndarray | None:
@@ -178,6 +189,7 @@ class MatrixUncertaintyCalculator:
         tmp_root: Path,
         n_jobs: int = 1,
     ) -> tuple[str, dict]:
+        t_start = time.monotonic()
         model_paths = [Path(d) / structure_name / self.hamiltonian_name for d in model_dirs]
         avg_path = self._resolve_average_path(structure_name, model_paths, average_hamiltonian_dir, tmp_root)
         structure_dir = Path(model_dirs[0]) / structure_name
@@ -190,6 +202,7 @@ class MatrixUncertaintyCalculator:
         stream = SparseStream(model_paths + [avg_path], s_path, self.chunk_size, n_jobs)
         weights = self._pair_weights(structure_dir, stream.atom_pairs)
         stats = self._deviation_stats(stream, len(model_paths), len(model_paths), shifts, weights)
+        logger.info(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s")
         return structure_name, {
             **self.settings(),
             **stats,
@@ -309,6 +322,7 @@ class MatrixUncertaintyCalculator:
         # process's model-reads within a structure can still use more than
         # one thread when there are fewer workers than cores.
         read_threads_per_worker = max(1, available_cpu_count() // max_workers)
+        logger.info(f"{len(structures)} structures on {max_workers} workers, {read_threads_per_worker} read threads each")
 
         if output_path is not None:
             output_path = Path(output_path)
@@ -335,6 +349,7 @@ class MatrixUncertaintyCalculator:
                         with open(tmp_path, "w") as f:
                             json.dump(output, f, indent=4)
                         os.replace(tmp_path, output_path)
+                        logger.info(f"[{name}] wrote {len(output)} structures to {output_path}")
 
         return output
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
+import os
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import partial
@@ -14,6 +17,11 @@ from hamilflow.band_structures.band_calculation import (
     get_band_conf_from_file,
     get_band_conf_from_struc,
     get_hamiltonian,
+)
+from hamilflow.sparse_hamiltonian.dense_backend import (
+    GPU_MIN_DIM,
+    gpu_use_reported,
+    workers_gpu_memory,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -164,14 +172,36 @@ def run_batch(options: BatchOptions) -> list[tuple[Path, bool, str | None]]:
     if options.workers <= 1:
         return [run_single_case(case_dir, options) for case_dir in case_dirs]
 
-    with ProcessPoolExecutor(max_workers=options.workers) as executor:
+    # Report the workers' GPU use once here (nvidia-smi, without initializing CUDA in this process)
+    # and have the workers log it at DEBUG; if nvidia-smi cannot tell, each worker that sets up
+    # the GPU logs it at INFO.
+    reported = contextlib.nullcontext()
+    if workers_gpu_memory() is not None:
+        LOGGER.info(
+            "%d workers using the GPU (CUDA_VISIBLE_DEVICES=%s) for dense linear algebra of size >= %d",
+            options.workers, os.environ.get("CUDA_VISIBLE_DEVICES"), GPU_MIN_DIM,
+        )
+        reported = gpu_use_reported()
+    with reported, ProcessPoolExecutor(max_workers=options.workers) as executor:
         worker = partial(run_single_case, options=options)
         return list(executor.map(worker, case_dirs))
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     options = parse_args()
+    # Messages and warnings on stdout and in <parent_dir>/band_structure_batch.log
+    # (created at the first message). The --workers processes inherit this setup
+    # only when they are forked (the default start method on Linux up to Python
+    # 3.13); with "spawn" or "forkserver" they show only warnings and errors, on stderr.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(options.parent_dir / "band_structure_batch.log", delay=True),
+        ],
+    )
+    logging.captureWarnings(True)
     results = run_batch(options)
 
     succeeded = [case_dir for case_dir, ok, _ in results if ok]

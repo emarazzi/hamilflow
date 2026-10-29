@@ -61,7 +61,9 @@ HAMILFLOW_GPU=0 to stay on the CPU.
 Run with:  python ensemble_band_uncertainty.py   (e.g. inside a SLURM job)
 """
 
+import logging
 import os
+import sys
 from pathlib import Path
 
 from hamilflow.uncertainty.band_uncertainty import BandUncertaintyCalculator
@@ -99,6 +101,15 @@ DOWNFOLD = True
 # file keeps the structures already in it.
 OUTPUT_JSON = "band_uncertainty.json"
 # -----------------------------------------------------------------------------
+
+# Show hamilflow's progress messages on stdout (the SLURM .out file) and save
+# them, with any warnings, to a log file next to OUTPUT_JSON.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(Path(OUTPUT_JSON).with_suffix(".log"))],
+)
+logging.captureWarnings(True)
 
 # One worker process per allocated CPU.
 cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))

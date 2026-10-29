@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
+import time
 
 import numpy as np
 from deepx_dock.CONSTANT import (
@@ -24,6 +26,8 @@ from .kspace import (
 )
 from .models import ProjectionConfig, ProjectionResult, RemovalPlanLike
 from .removal import coerce_removal_plan, resolve_indices_from_rules
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
@@ -65,6 +69,7 @@ def run_projection(
     When overlap_only=True, only the overlap is processed. If write_dummy_hamiltonian=True,
     a zero-filled hamiltonian.h5 is also written to enable sequential projections.
     """
+    t_start = time.monotonic()
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     shutil.copy2(config.input_dir / DEEPX_POSCAR_FILENAME, config.output_dir / DEEPX_POSCAR_FILENAME)
@@ -96,6 +101,10 @@ def run_projection(
     ks = build_uniform_kmesh(resolved_kgrid)
     nb = int(obj.orbits_quantity) * (2 if obj.spinful else 1)
     keep_global = [i for i in range(nb) if i not in rm]
+    logger.info(
+        f"[projection] {config.input_dir} -> {config.output_dir}: removing {len(rm)}/{nb} orbitals "
+        f"({config.reduction_mode}{', overlap only' if config.overlap_only else ''}), k-grid {resolved_kgrid}"
+    )
 
     if obj.Rijk_list is None:
         raise ValueError("Rijk_list is None")
@@ -184,6 +193,7 @@ def run_projection(
         json.dump(metadata, fw, indent=2)
         fw.write("\n")
 
+    logger.info(f"[projection] wrote {config.output_dir} in {time.monotonic() - t_start:.1f}s")
     return ProjectionResult(
         output_dir=config.output_dir,
         hamiltonian_path=hamiltonian_path,

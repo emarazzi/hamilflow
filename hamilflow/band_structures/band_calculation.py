@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from plotly import graph_objects as go
 from pymatgen.symmetry.kpath import KPathSetyawanCurtarolo
 
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
+
+logger = logging.getLogger(__name__)
 
 
 def get_band_conf_from_file(
@@ -197,6 +200,7 @@ def plot_band(
         output = Path(save_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.write_image(str(output))
+        logger.info(f"Saved band plot to {output}")
     if show_fig:
         fig.show()
     return fig

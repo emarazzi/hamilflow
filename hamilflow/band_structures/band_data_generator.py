@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from deepx_dock.compute.eigen.band import BandDataGenerator
 
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
+
+logger = logging.getLogger(__name__)
 
 
 class SparseBandDataGenerator(BandDataGenerator):
@@ -99,7 +103,7 @@ class SparseBandDataGenerator(BandDataGenerator):
                     "diagonalization; use sparse_calc=False to get all bands."
                 )
             self.band_quantity = num_band
-            print(
+            logger.info(
                 f"Sparse calculation with num_band={num_band}, "
                 f"lowest_band_energy={lowest_band_energy}, maxiter={maxiter} ..."
             )
@@ -133,6 +137,6 @@ class SparseBandDataGenerator(BandDataGenerator):
             self.band_data = self.band_data[: self.band_quantity]
 
         if self.band_data.shape[0] != self.band_quantity:
-            print(f"Warn: Only {self.band_data.shape[0]} bands are calculated, not {self.band_quantity} in input.")
+            logger.warning(f"Only {self.band_data.shape[0]} bands are calculated, not {self.band_quantity} in input.")
             self.band_quantity = self.band_data.shape[0]
         self._shift_band_data_to_fermi_zero()

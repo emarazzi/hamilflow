@@ -1,10 +1,13 @@
 import copy
+import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Literal, get_args, get_origin, get_type_hints
 
 import tomli_w
+
+logger = logging.getLogger(__name__)
 
 # ============================== SYSTEM ==============================
 
@@ -268,6 +271,7 @@ def write_train_toml(overrides: dict, out_dir, filename: str = "train.toml") -> 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as f:
         tomli_w.dump(_to_toml_dict(config), f)
+    logger.info(f"Wrote {out_path}")
     return out_path
 
 
@@ -278,4 +282,5 @@ def write_infer_toml(overrides: dict, out_dir, filename: str = "infer.toml") -> 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as f:
         tomli_w.dump(_to_toml_dict(config), f)
+    logger.info(f"Wrote {out_path}")
     return out_path

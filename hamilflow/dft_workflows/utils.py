@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -6,6 +7,8 @@ from ase.io import read as ase_read
 from pymatgen.core import Structure
 from pymatgen.core.structure import FileFormats
 from pymatgen.io.ase import AseAtomsAdaptor
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["resolve_structure_path", "get_structure_names_from_path", "load_structures"]
 
@@ -115,6 +118,11 @@ def _trajectory_names(ase_structures: Sequence[Atoms]) -> list[str]:
     structure_indices = [atoms.info.get("index") for atoms in ase_structures]
     if all(index is not None for index in structure_indices):
         return [str(index) for index in structure_indices]
+    if any(index is not None for index in structure_indices):
+        logger.warning(
+            f"{sum(index is None for index in structure_indices)} of {len(ase_structures)} frames have no "
+            "'index' info entry; naming all frames structure_0000, structure_0001, ... instead"
+        )
 
     return [f"structure_{i:04d}" for i in range(len(ase_structures))]
 
@@ -180,4 +188,5 @@ def load_structures(
     if duplicates:
         raise ValueError(f"Duplicate structure names under {structures_path}: {duplicates}")
 
+    logger.info(f"Loaded {len(entries)} structures from {structures_path}")
     return entries

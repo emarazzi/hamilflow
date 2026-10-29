@@ -1,3 +1,6 @@
+import logging
+import os
+import warnings
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import Path
@@ -23,6 +26,8 @@ from .flows_base import (
     resolve_projection_removal_plan,
 )
 from .jobs import run_projection_for_structure, set_projection_job_name
+
+logger = logging.getLogger(__name__)
 
 # Added on top of DEFAULT_AIMS_KWARGS for overlap-only runs: stop FHI-aims
 # right after writing the real-space matrices.
@@ -64,6 +69,13 @@ class GenerateAimsToProjectedDeephData:
             for name, _ in entries
             if fnmatch(name, self.projection_config.structure_pattern)
         ]
+        if entries and not structure_names:
+            warnings.warn(
+                f"No structure matches projection_config.structure_pattern "
+                f"{self.projection_config.structure_pattern!r}: the flow runs DFT only, no projection",
+                # attributed to the first caller outside hamilflow
+                skip_file_prefixes=(os.path.dirname(os.path.dirname(__file__)) + os.sep,),
+            )
 
         second_structure_names: list[str] = []
         if self.second_projection_config is not None:
@@ -176,6 +188,10 @@ class GenerateAimsToProjectedDeephData:
             },
             "second_projected_deeph_inputs": second_outputs,
         }
+        logger.info(
+            f"{self.name}: {len(entries)} structures, {len(structure_names)} projected"
+            + (f", {len(second_structure_names)} projected twice" if self.second_projection_config is not None else "")
+        )
         return Flow(jobs=structure_flows, name=self.name, output=outputs)
 
 
@@ -361,6 +377,7 @@ class GenerateTwoStepProjectedDeephInputs:
                 "projection_results": [job.output for job in second_stage_jobs],
             },
         }
+        logger.info(f"{self.name}: {len(structure_names)} structures under {deeph_inputs_root}, projected twice")
         return Flow(
             jobs=[*first_stage_jobs, *second_stage_jobs],
             name=self.name,

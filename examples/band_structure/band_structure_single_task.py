@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,6 +100,17 @@ def parse_args() -> TaskPaths:
 
 def main() -> None:
     paths = parse_args()
+    # hamilflow's messages and warnings on stdout (the SLURM .out file) and in
+    # <case_dir>/band_structure.log (created at the first message)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(paths.case_dir / "band_structure.log", delay=True),
+        ],
+    )
+    logging.captureWarnings(True)
     output_path = build_band_data(paths)
     print(f"Saved band data to {output_path.resolve()}")
 

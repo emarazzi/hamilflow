@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 def available_cpu_count() -> int:
@@ -41,6 +44,9 @@ def available_memory_bytes() -> int:
             available = min(int(limit), available) if available else int(limit)
     except (OSError, ValueError):
         pass
+    if not available:
+        logger.warning("Could not determine the available memory (no SLURM allocation, /proc/meminfo or "
+                       "cgroup limit); assuming 8 GiB")
     return available or 8 * 2**30
 
 

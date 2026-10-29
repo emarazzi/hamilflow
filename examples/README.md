@@ -8,6 +8,72 @@ folders follow the usual order of a DeepH active-learning loop:
     candidate_selection -> dft_workflows -> (projection) -> training -> uncertainty -> candidate_selection
                                                                     \-> band_structure
 
+## Logging
+
+hamilflow reports progress (structures started/finished, files written,
+scheduling and memory estimates) with the standard `logging` module, under the
+`hamilflow` logger namespace (one logger per module, e.g.
+`hamilflow.uncertainty.band_uncertainty`), and reports misuse of its arguments
+with `warnings.warn`. Without any configuration, warnings and errors (and
+`warnings.warn` messages) go to stderr, the SLURM `.err` file, while progress
+messages (INFO) are not shown. The scripts here that call code which logs
+configure logging near their top, printing everything from INFO up to stdout
+(the SLURM `.out` file) and saving a log file:
+
+```python
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("my_run.log")],
+)
+logging.captureWarnings(True)  # send warnings.warn messages to the log file too
+```
+
+Levels can be set per module, e.g. to see the per-structure details logged at
+DEBUG (CPU/GPU backend choice, symlink fallbacks, the model used by each fold):
+
+```python
+logging.getLogger("hamilflow").setLevel(logging.DEBUG)
+```
+
+or to keep only warnings and errors from the band uncertainty:
+
+```python
+logging.getLogger("hamilflow.uncertainty").setLevel(logging.WARNING)
+```
+
+The ill-conditioned overlap treatment logs every orbital it removes
+(`[iter N] ...`, INFO) only with `verbose=True`; the band uncertainty runs it
+with `verbose=False`.
+
+The jobs submitted by `dft_workflows/` and `projection/` run in jobflow(-remote)
+workers, not in the submitting script, so a configuration in these scripts does
+not reach them. Instead each hamilflow job, if logging is not configured in
+the worker (no handler on the root or `hamilflow` logger), prints hamilflow's
+INFO messages and captured warnings to stdout, the job's output file, in the
+format above (e.g. the `[projection] Nb=... workers=...` line), for the
+duration of the job: afterwards the worker's logging is as it was. The handler
+is attached to the `hamilflow` logger, not to the root, so jobflow's own
+messages are not printed twice.
+
+GPU use (CuPy, see `hamilflow.sparse_hamiltonian.dense_backend`) is logged at
+INFO once per calculation: by the process that sets up the GPU, or, for the
+worker processes of `BandUncertaintyCalculator.compute_parallel` and of
+`band_structure/band_structure_batch_example.py --workers N`, once by the
+parent (the workers then log it at DEBUG). The parent learns it from
+`nvidia-smi`; if that fails, `compute_parallel` warns once when the first
+worker reports using the GPU (its scheduling then has no GPU memory budget),
+and the batch example's workers each log it at INFO. In your own process
+pools, each worker that sets up the GPU logs it at INFO; to report it once
+yourself, log it in the parent and start the workers inside
+`hamilflow.sparse_hamiltonian.dense_backend.gpu_use_reported()`, which makes
+them log it at DEBUG (with the forkserver start method, the Linux default from
+Python 3.14, only if the server starts inside it; otherwise they still log at
+INFO).
+
 ## `candidate_selection/`
 
 Pick which structures to compute with DFT.

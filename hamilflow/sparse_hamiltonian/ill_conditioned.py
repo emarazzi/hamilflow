@@ -20,6 +20,8 @@ docstring). It runs on a GPU when one is available (see ``dense_backend``).
 from __future__ import annotations
 
 import concurrent.futures
+import logging
+import threading
 
 import numpy as np
 import threadpoolctl
@@ -28,6 +30,51 @@ from scipy.linalg import LinAlgError, eigh
 from ..cpus import available_cpu_count
 from .dense_backend import get_backend
 from .eigensolver import eigh_generalized
+
+logger = logging.getLogger(__name__)
+
+# .failures: the list `_tracking_linalg_failures` collects this thread's per-k-point
+# LinAlgError fallbacks in, or None outside such a k-point loop
+_tracking = threading.local()
+
+
+def _linalg_failure(what: str, consequence: str) -> None:
+    """Report the LinAlgError fallback of one k-point: collected (and logged at DEBUG) inside a
+    `_tracking_linalg_failures` k-point loop, which warns once for all of them; a WARNING of its
+    own otherwise (e.g. `IllConditionedHandler.process_k` called directly)."""
+    failures = getattr(_tracking, "failures", None)
+    if failures is None:
+        logger.warning(f"{what} at a k-point: {consequence}")
+    else:
+        failures.append((what, consequence))
+        logger.debug(f"{what} at a k-point: {consequence}")
+
+
+def _tracking_linalg_failures(fn, failed: dict):
+    """`wrapped(i_k, *args) = fn(*args)` that records the LinAlgError fallbacks of k-point `i_k`
+    in `failed[i_k]` instead of warning for each; call `_warn_linalg_failures` after the loop.
+    Thread-safe: each k-point runs in one thread, and `failed` gets distinct keys."""
+    def wrapped(i_k, *args):
+        previous = getattr(_tracking, "failures", None)
+        _tracking.failures = failures = []
+        try:
+            return fn(*args)
+        finally:
+            _tracking.failures = previous
+            if failures:
+                failed[i_k] = failures
+    return wrapped
+
+
+def _warn_linalg_failures(failed: dict, n_k: int) -> None:
+    """One WARNING per kind of LinAlgError fallback recorded by `_tracking_linalg_failures`."""
+    by_kind: dict[tuple[str, str], list[int]] = {}
+    for i_k in sorted(failed):
+        for kind in dict.fromkeys(failed[i_k]):
+            by_kind.setdefault(kind, []).append(i_k)
+    for (what, consequence), ks in by_kind.items():
+        logger.warning(f"{what} at {len(ks)} of {n_k} k-points (indices {ks[:5]}{' ...' if len(ks) > 5 else ''}): "
+                       f"{consequence} there")
 
 
 def window_regularization_eig(
@@ -75,6 +122,7 @@ def window_regularization_eig(
         try:
             sub_vals, sub_vecs = eigh(H_sub, M_sub)
         except LinAlgError:
+            _linalg_failure("Window regularization failed (LinAlgError)", "unregularized eigenvalues returned")
             return eigvals, (eigvecs if return_vecs else None)
 
         final_vecs = filtered_vecs @ (good_mass_vecs @ sub_vecs)
@@ -320,7 +368,7 @@ def global_orbital_truncation(
         orbital_to_remove = int(kept[worst_local_idx])
 
         if verbose:
-            print(f"[iter {iteration}] ill_value = {global_min:.2e}, removing orbital {orbital_to_remove}")
+            logger.info(f"[iter {iteration}] ill_value = {global_min:.2e}, removing orbital {orbital_to_remove}")
 
         active = [ik for ik, _, _ in ill]
         for ik in list(states):
@@ -332,13 +380,13 @@ def global_orbital_truncation(
 
         if len(kept) == 0:
             if verbose:
-                print("[warning] All orbitals removed, stopping")
+                logger.warning("All orbitals removed, stopping")
             break
 
         iteration += 1
 
     if verbose:
-        print(f"[done] Kept {len(kept)}/{norb} orbitals")
+        logger.info(f"[done] Kept {len(kept)}/{norb} orbitals")
 
     return [int(i) for i in kept]
 
@@ -380,6 +428,8 @@ def eig_with_orbital_mask(
         return np.sort(full_vals), None
 
     except LinAlgError:
+        _linalg_failure(f"Diagonalization with {n_kept}/{norb_total} kept orbitals failed (LinAlgError)",
+                        f"all eigenvalues set to fill_value={fill_value}")
         eigvals = np.full(norb_total, fill_value)
         return eigvals, (np.zeros((norb_total, 0), dtype=Hk.dtype) if return_vecs else None)
 

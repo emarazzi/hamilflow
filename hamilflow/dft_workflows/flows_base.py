@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast, get_args
@@ -31,6 +32,8 @@ from .jobs import (
     set_projection_job_name,
 )
 from .utils import load_structures
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_AIMS_KWARGS: dict[str, Any] = {
     "species_dir": "tight",
@@ -322,6 +325,7 @@ class GenerateAimsDFTData:
             structure_flows.append(Flow(jobs=jobs, name=structure_name, output=outputs))
             by_structure[structure_name] = outputs
 
+        logger.info(f"{self.name}: {len(by_structure)} structures")
         return Flow(
             jobs=structure_flows, name=self.name, output=self.flow_output(by_structure)
         )
@@ -388,4 +392,5 @@ class GenerateProjectedDeephInputs:
             "structure_names": structure_names,
             "projection_results": [job.output for job in projection_jobs],
         }
+        logger.info(f"{self.name}: {len(structure_names)} structures under {deeph_inputs_root}")
         return Flow(jobs=projection_jobs, name=self.name, output=outputs)

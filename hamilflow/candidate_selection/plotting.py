@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -8,6 +9,8 @@ import numpy as np
 
 if TYPE_CHECKING:
     import plotly.graph_objects as go
+
+logger = logging.getLogger(__name__)
 
 
 def fit_mds(dist_matrix: np.ndarray, seed: int = 42) -> np.ndarray:
@@ -90,6 +93,7 @@ def plot_mds(
     if save_path is not None:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         fig.write_html(str(save_path))
+        logger.info(f"Saved MDS map to {save_path}")
     if show_fig:
         fig.show()
 
