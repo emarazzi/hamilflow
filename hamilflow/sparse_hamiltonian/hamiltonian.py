@@ -171,6 +171,12 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         (``_sparse_k``) and handed to ``eigsh`` directly, so no dense
         (Nb, Nb) array is ever allocated -- with ``sigma`` in ``kwargs`` the
         shift-invert factorization is a sparse LU of ``Hk - sigma*Sk``.
+
+        With ``bands_only=False`` it returns ``(vals, vecs)``, ``vals[j, k]`` the j-th eigenvalue
+        at k-point k and ``vecs[:, j, k]`` its eigenvector. With ``ill_handler``/``kept_orbitals``
+        the slots without an eigenpair (projected-out combinations or removed orbitals) hold
+        ``fill_value`` in ``vals`` (sorted after the real eigenvalues, as the default 1e4 is) and a
+        zero vector in ``vecs``.
         """
         if n_jobs < 0:
             n_jobs = available_cpu_count()
@@ -232,5 +238,9 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
             return np.stack(results, axis=1)
         else:
             eigvals = np.stack([r[0] for r in results], axis=1)
-            eigvecs = np.stack([r[1] for r in results], axis=2)
+            # ill_handler/kept_orbitals k-points can have fewer eigenvectors than eigenvalues: the
+            # fill_value slots (sorted last) get zero columns, so vecs[:, j, k] pairs with vals[j, k]
+            eigvecs = np.stack([v if v.shape[1] == len(e) else
+                                np.hstack([v, np.zeros((len(v), len(e) - v.shape[1]), dtype=v.dtype)])
+                                for e, v in results], axis=2)
             return eigvals, eigvecs
