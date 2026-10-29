@@ -4,8 +4,12 @@ import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
 
 from .plotting import fit_mds, plot_mds
 
@@ -289,7 +293,7 @@ class CandidateSelector:
         coords: np.ndarray | None = None,
         show_fig: bool = False,
         save_path: str | Path | None = None,
-        customize: Callable[["go.Figure"], "go.Figure | None"] | None = None,
+        customize: Callable[[go.Figure], go.Figure | None] | None = None,
     ):
         """Plot the 2D MDS embedding of ``result``'s distance matrix,
         coloring selected vs. non-selected structures. Pass ``customize`` to

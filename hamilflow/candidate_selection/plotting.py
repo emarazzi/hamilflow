@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
 
 
 def fit_mds(dist_matrix: np.ndarray, seed: int = 42) -> np.ndarray:
@@ -28,7 +32,7 @@ def plot_mds(
     seed: int = 42,
     show_fig: bool = False,
     save_path: str | Path | None = None,
-    customize: Callable[["go.Figure"], "go.Figure | None"] | None = None,
+    customize: Callable[[go.Figure], go.Figure | None] | None = None,
 ):
     """Plot a 2D MDS embedding of an AMD distance matrix, coloring selected
     vs. non-selected structures.
