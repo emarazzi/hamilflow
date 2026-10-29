@@ -214,7 +214,7 @@ def get_shift(
 def correct_k_points(bands: list | ndarray, remove_indices: Sequence[int]) -> ndarray:
     """Remove k-point indices from band structure along the second axis."""
     bands_array = _validate_bands_input(bands, "bands")
-    remove_set = set(int(i) for i in remove_indices)
+    remove_set = {int(i) for i in remove_indices}
 
     if bands_array.ndim < 2:
         raise ValueError("bands must be at least 2-dimensional (n_bands, n_kpoints)")

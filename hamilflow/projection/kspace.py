@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import threadpoolctl
 
-from ..cpus import available_cpu_count  # noqa: F401  (re-exported)
+from ..cpus import available_cpu_count
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def apply_custom_kspace_transform(
     if Hk.ndim != 3:
         raise ValueError(f"Hk/Sk must have shape (Nk, Nb, Nb), got {Hk.shape}")
 
-    rm = sorted(set(int(i) for i in remove_indices))
+    rm = sorted({int(i) for i in remove_indices})
     if len(rm) == 0:
         return Hk, Sk
 
@@ -74,7 +74,7 @@ def _truncation_transform_chunk(
     if nb != nb2:
         raise ValueError(f"Hk/Sk must be square in last two dims, got {Hk_chunk.shape}")
 
-    rm = sorted(set(int(i) for i in remove_indices))
+    rm = sorted({int(i) for i in remove_indices})
     if len(rm) == 0:
         return Hk_chunk, Sk_chunk
     if rm[0] < 0 or rm[-1] >= nb:
@@ -99,7 +99,7 @@ def _truncation_transform_chunk_overlap_only(
     if nb != nb2:
         raise ValueError(f"Sk must be square in last two dims, got {Sk_chunk.shape}")
 
-    rm = sorted(set(int(i) for i in remove_indices))
+    rm = sorted({int(i) for i in remove_indices})
     if len(rm) == 0:
         return Sk_chunk
     if rm[0] < 0 or rm[-1] >= nb:
@@ -128,7 +128,7 @@ def apply_truncation_kspace_transform(
     if nb != nb2:
         raise ValueError(f"Hk/Sk must be square in last two dims, got {Hk.shape}")
 
-    rm = sorted(set(int(i) for i in remove_indices))
+    rm = sorted({int(i) for i in remove_indices})
     if len(rm) == 0:
         return Hk, Sk
     if rm[0] < 0 or rm[-1] >= nb:
@@ -152,7 +152,7 @@ def apply_custom_kspace_transform_overlap_only(
     if Sk.ndim != 3:
         raise ValueError(f"Sk must have shape (Nk, Nb, Nb), got {Sk.shape}")
 
-    rm = sorted(set(int(i) for i in remove_indices))
+    rm = sorted({int(i) for i in remove_indices})
     if len(rm) == 0:
         return Sk
 
@@ -174,7 +174,7 @@ def apply_truncation_kspace_transform_overlap_only(
     if nb != nb2:
         raise ValueError(f"Sk must be square in last two dims, got {Sk.shape}")
 
-    rm = sorted(set(int(i) for i in remove_indices))
+    rm = sorted({int(i) for i in remove_indices})
     if len(rm) == 0:
         return Sk
     if rm[0] < 0 or rm[-1] >= nb:
@@ -201,7 +201,7 @@ def build_elimination_tk(
     if nb != nb2:
         raise ValueError(f"Sk must be square in last two dims, got {Sk.shape}")
 
-    rm = sorted(set(int(i) for i in remove_indices))
+    rm = sorted({int(i) for i in remove_indices})
     if len(rm) == 0:
         eye = np.eye(nb, dtype=np.complex128)
         return np.broadcast_to(eye, (nk, nb, nb)).copy(), list(range(nb)), []
@@ -620,7 +620,7 @@ def stream_project_to_real_space(
         raise ValueError(f"Unsupported reduction_mode '{reduction_mode}'. Expected 'schur' or 'truncate'.")
 
     nb = int(obj._mat_dim)
-    rm = np.array(sorted(set(int(i) for i in remove_indices)), dtype=np.int64)
+    rm = np.array(sorted({int(i) for i in remove_indices}), dtype=np.int64)
     if len(rm) and (rm[0] < 0 or rm[-1] >= nb):
         raise ValueError(f"remove_indices out of range for Nb={nb}: {rm.tolist()}")
     keep = np.setdiff1d(np.arange(nb, dtype=np.int64), rm)

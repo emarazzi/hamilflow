@@ -64,7 +64,7 @@ def get_band_conf_from_struc(
             kpt2_cart = recp_lattice.get_cartesian_coords(kpt2_frac)
 
             distance = np.linalg.norm(kpt2_cart - kpt1_cart)
-            n = max(2, int(round(distance * density)))
+            n = max(2, round(distance * density))
 
             kpt1_str = f"{kpt1_frac[0]:.6f} {kpt1_frac[1]:.6f} {kpt1_frac[2]:.6f}"
             kpt2_str = f"{kpt2_frac[0]:.6f} {kpt2_frac[1]:.6f} {kpt2_frac[2]:.6f}"
@@ -144,7 +144,7 @@ def plot_band(
             x=bd_gen.kpoints_distance_list,
             y=bd_gen.band_data[band_index],
             mode="lines",
-            line=dict(color="red", width=2),
+            line={"color": "red", "width": 2},
             showlegend=False,
         )
         fig.add_trace(scatter)
@@ -155,7 +155,7 @@ def plot_band(
                 x=[x, x],
                 y=[ymin, ymax],
                 mode="lines",
-                line=dict(color="black", width=2),
+                line={"color": "black", "width": 2},
                 showlegend=False,
             )
         )
@@ -165,7 +165,7 @@ def plot_band(
             x=[xmin, xmax],
             y=[0.0, 0.0],
             mode="lines",
-            line=dict(color="black", width=2, dash="dash"),
+            line={"color": "black", "width": 2, "dash": "dash"},
             showlegend=False,
         )
     )

@@ -5,8 +5,8 @@ higher-level wrappers.
 """
 
 __all__ = [
-    "ConvertAimsToDeephConfig",
     "DEFAULT_AIMS_KWARGS",
+    "ConvertAimsToDeephConfig",
     "GenerateAimsDFTData",
     "GenerateAimsToProjectedDeephData",
     "GenerateOvlOnlyAimsToProjectedDeephData",

@@ -49,7 +49,7 @@ fig = go.Figure()
 fig.add_trace(go.Scatter(
     x=coords[~has_unc, 0], y=coords[~has_unc, 1],
     mode="markers",
-    marker=dict(color="lightgrey", size=6, opacity=0.5),
+    marker={"color": "lightgrey", "size": 6, "opacity": 0.5},
     text=labels[~has_unc],
     hovertemplate="%{text}<extra>no uncertainty</extra>",
     name="not evaluated",
@@ -57,14 +57,14 @@ fig.add_trace(go.Scatter(
 fig.add_trace(go.Scatter(
     x=coords[has_unc, 0], y=coords[has_unc, 1],
     mode="markers",
-    marker=dict(
-        color=uncertainty[has_unc],
-        colorscale="Viridis",
-        size=9,
-        line=dict(width=0.5, color="black"),
-        colorbar=dict(title=f"{STAT}"),
-        showscale=True,
-    ),
+    marker={
+        "color": uncertainty[has_unc],
+        "colorscale": "Viridis",
+        "size": 9,
+        "line": {"width": 0.5, "color": "black"},
+        "colorbar": {"title": f"{STAT}"},
+        "showscale": True,
+    },
     text=labels[has_unc],
     customdata=uncertainty[has_unc],
     hovertemplate="%{text}<br>uncertainty = %{customdata:.4g} eV<extra></extra>",
@@ -78,7 +78,7 @@ if SHOW_SELECTED and selected_file.exists():
     fig.add_trace(go.Scatter(
         x=coords[is_selected, 0], y=coords[is_selected, 1],
         mode="markers",
-        marker=dict(size=14, color="rgba(0,0,0,0)", line=dict(width=2, color="crimson")),
+        marker={"size": 14, "color": "rgba(0,0,0,0)", "line": {"width": 2, "color": "crimson"}},
         text=labels[is_selected],
         hovertemplate="%{text}<extra>selected</extra>",
         name="selected",

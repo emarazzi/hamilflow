@@ -43,11 +43,11 @@ def _coerce_to_int_list(values: list[object], key: str) -> list[int]:
     out: list[int] = []
     for v in values:
         if isinstance(v, bool):
-            raise ValueError(f"Rule field '{key}' contains bool value, expected integer index")
+            raise ValueError(f"Rule field '{key}' contains bool value, expected integer index")  # noqa: TRY004
         if isinstance(v, (int, np.integer, str)):
             out.append(int(v))
         else:
-            raise ValueError(f"Rule field '{key}' contains unsupported value type: {type(v).__name__}")
+            raise ValueError(f"Rule field '{key}' contains unsupported value type: {type(v).__name__}")  # noqa: TRY004
     return out
 
 
@@ -57,7 +57,7 @@ def _normalize_rule(rule_obj: dict[str, object]) -> RemovalRule:
         if value is None:
             return []
         if not isinstance(value, list):
-            raise ValueError(f"Rule field '{name}' must be a list, got {type(value).__name__}")
+            raise ValueError(f"Rule field '{name}' must be a list, got {type(value).__name__}")  # noqa: TRY004
         return value
 
     return RemovalRule(
@@ -71,7 +71,7 @@ def _normalize_rule(rule_obj: dict[str, object]) -> RemovalRule:
 def _normalize_plan_payload(payload: Any) -> RemovalPlan:
     rules_payload = payload.get("rules", payload) if isinstance(payload, dict) else payload
     if not isinstance(rules_payload, list):
-        raise ValueError("removal plan must be a list or an object with key 'rules' (list)")
+        raise ValueError("removal plan must be a list or an object with key 'rules' (list)")  # noqa: TRY004
     rules = [_normalize_rule(r) for r in rules_payload]
     return RemovalPlan(rules=rules)
 
@@ -109,7 +109,7 @@ def resolve_indices_from_rules(
             atom_filter = {ia for ia, el in enumerate(elements) if el in target_set}
 
         if rule.target_atom_indices:
-            atom_index_set = set(int(i) for i in rule.target_atom_indices)
+            atom_index_set = {int(i) for i in rule.target_atom_indices}
             bad_idx = [i for i in atom_index_set if i < 0 or i >= n_atoms]
             if bad_idx:
                 raise ValueError(f"target_atom_indices out of range [0, {n_atoms - 1}]: {sorted(bad_idx)}")

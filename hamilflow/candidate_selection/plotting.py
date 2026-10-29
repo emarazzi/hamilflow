@@ -64,7 +64,7 @@ def plot_mds(
             y=coords[~is_selected, 1],
             mode="markers",
             name="not selected",
-            marker=dict(color="lightgray", size=6),
+            marker={"color": "lightgray", "size": 6},
             text=[frame_indices[i] for i in np.where(~is_selected)[0]],
             hovertemplate="%{text}<extra></extra>",
         )
@@ -75,7 +75,7 @@ def plot_mds(
             y=coords[is_selected, 1],
             mode="markers",
             name="selected",
-            marker=dict(color="crimson", size=9, symbol="diamond"),
+            marker={"color": "crimson", "size": 9, "symbol": "diamond"},
             text=[frame_indices[i] for i in np.where(is_selected)[0]],
             hovertemplate="%{text}<extra></extra>",
         )

@@ -363,12 +363,13 @@ def global_orbital_truncation(
 
     iteration = 0
     while True:
-        pairs = _map_threads(lambda ik: _lowest_eigpair(states[ik], kept, removed, ill_threshold),
+        # the lambdas below finish within the iteration, so the loop variables are current
+        pairs = _map_threads(lambda ik: _lowest_eigpair(states[ik], kept, removed, ill_threshold),  # noqa: B023
                              active, n_jobs, parallel_k)
         ill = [(ik, val, vec) for ik, (val, vec) in zip(active, pairs) if vec is not None]
         if not ill:
             break
-        k_worst, global_min, v = min(ill, key=lambda t: t[1])
+        _k_worst, global_min, v = min(ill, key=lambda t: t[1])
 
         worst_local_idx = int(np.argmax(np.abs(v)))
         orbital_to_remove = int(kept[worst_local_idx])
@@ -380,7 +381,8 @@ def global_orbital_truncation(
         for ik in list(states):
             if ik not in active:
                 del states[ik]
-        _map_threads(lambda ik: states[ik].remove(orbital_to_remove, worst_local_idx), active, n_jobs, parallel_k)
+        _map_threads(lambda ik: states[ik].remove(orbital_to_remove, worst_local_idx),  # noqa: B023
+                     active, n_jobs, parallel_k)
         kept = np.delete(kept, worst_local_idx)
         removed = np.append(removed, orbital_to_remove)
 

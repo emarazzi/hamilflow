@@ -50,7 +50,7 @@ def _run_in_child(sender, run_structure, structure_name) -> None:
 
     try:
         sender.send(("ok", run_structure(structure_name), gpu_in_use()))
-    except BaseException as err:
+    except BaseException as err:  # noqa: BLE001 - any failure of the child goes back to the parent
         sender.send(("error", (traceback.format_exc(), "".join(traceback.format_exception_only(err)).strip()),
                      gpu_in_use()))
     finally:
@@ -428,7 +428,8 @@ class BandUncertaintyCalculator:
                                             share_from=ref_obj)
         # one warning for all the k-points whose ill-conditioning treatment hit a LinAlgError
         failed = {}
-        eig_k = _tracking_linalg_failures(lambda k: self._eig_with_vecs(avg_obj, k, ill_handler), failed)
+        # F821: avg_obj is deleted below to free memory, after its last use here
+        eig_k = _tracking_linalg_failures(lambda k: self._eig_with_vecs(avg_obj, k, ill_handler), failed)  # noqa: F821
         eigs = self._map_k(lambda i_k: eig_k(i_k, ks[i_k]), len(ks), n_jobs, parallel_k)
         _warn_linalg_failures(failed, len(ks))
         n_bands = min(len(vals) for vals, _ in eigs)
@@ -471,7 +472,8 @@ class BandUncertaintyCalculator:
             # the sparse C^dag H product beats dense GEMM only for a sparse enough H(k); on the
             # GPU, dense GEMM always wins
             if be.name == "gpu":
-                build_k = lambda k: be.to_device(h_obj._dense_k(k))  # noqa: E731
+                # B023/F821: build_k runs within this iteration, before h_obj is deleted
+                build_k = lambda k: be.to_device(h_obj._dense_k(k))  # noqa: B023, F821
             else:
                 build_k = h_obj._sparse_k if h_obj.fill_fraction < SPARSE_PRODUCT_MAX_FILL else h_obj._dense_k
 
@@ -479,10 +481,10 @@ class BandUncertaintyCalculator:
             # on the window block and C_W^dag H_m C_o off it
             def window_deviation(i_k):
                 c, e = c_win[i_k], e_win[i_k]
-                y = c.conj().T @ build_k(ks[i_k])
+                y = c.conj().T @ build_k(ks[i_k])  # noqa: B023 (window_deviation runs within the iteration)
                 p = y @ c
                 p = 0.5 * (p + p.conj().T)
-                p[be.xp.diag_indices(len(e))] -= e + c_m
+                p[be.xp.diag_indices(len(e))] -= e + c_m  # noqa: B023
                 if self.downfold:
                     p = p + self._downfold_correction(e, y @ c_out[i_k], e_out[i_k])
                 e = e_win_host[i_k]
@@ -553,7 +555,7 @@ class BandUncertaintyCalculator:
         mesh = self.resolve_mesh(ref_obj)
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(ref_obj, mesh, self.symprec)
         ill_handler = self.make_ill_handler(ref_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
-        diag_kwargs = dict(bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k, ill_handler=ill_handler)
+        diag_kwargs = {"bands_only": True, "n_jobs": n_jobs, "parallel_k": parallel_k, "ill_handler": ill_handler}
 
         raws = []
         for i_model, model in enumerate(model_dirs):
@@ -994,7 +996,7 @@ class BandUncertaintyCalculator:
         mesh = self.resolve_mesh(dft_obj)
         ks, weights, anchor_k_idx = self.build_irreducible_kpoints(dft_obj, mesh, self.symprec)
         ill_handler = self.make_ill_handler(dft_obj, ks, n_jobs=n_jobs, parallel_k=parallel_k)
-        diag_kwargs = dict(bands_only=True, n_jobs=n_jobs, parallel_k=parallel_k, ill_handler=ill_handler)
+        diag_kwargs = {"bands_only": True, "n_jobs": n_jobs, "parallel_k": parallel_k, "ill_handler": ill_handler}
 
         avg_obj = self._avg_hamiltonian_obj(structure_name, model_dirs, average_hamiltonian_dir,
                                             share_from=dft_obj)

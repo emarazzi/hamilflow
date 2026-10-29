@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any, cast, get_args
 
 __all__ = [
-    "ConvertAimsToDeephConfig",
     "DEFAULT_AIMS_KWARGS",
+    "ConvertAimsToDeephConfig",
     "GenerateAimsDFTData",
     "GenerateProjectedDeephInputs",
     "ProjectDeephInputsConfig",
@@ -194,12 +194,16 @@ class GenerateAimsDFTData:
 
         if self.kgrid is not None and (self.kpoints_updates or self.user_kpoints_settings not in (None, {})):
             raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
-        if self.aims_maker is not None and not isinstance(self.aims_maker, (StaticMaker, OvlOnlyAimsMaker)):
-            if self.aims_kwargs or self.kgrid is not None or self.kpoints_updates or self.user_kpoints_settings not in (None, {}):
-                raise ValueError(
-                    "aims_kwargs and k-point sampling options are only supported with StaticMaker. "
-                    "Provide a configured custom maker or use the default StaticMaker path."
-                )
+        if (
+            self.aims_maker is not None
+            and not isinstance(self.aims_maker, (StaticMaker, OvlOnlyAimsMaker))
+            and (self.aims_kwargs or self.kgrid is not None or self.kpoints_updates
+                 or self.user_kpoints_settings not in (None, {}))
+        ):
+            raise ValueError(
+                "aims_kwargs and k-point sampling options are only supported with StaticMaker. "
+                "Provide a configured custom maker or use the default StaticMaker path."
+            )
 
         self.aims_kwargs = merged_aims_kwargs
 

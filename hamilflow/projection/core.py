@@ -174,7 +174,7 @@ def run_projection(
         "removed_global_indices": rm,
         "kept_global_indices": keep_global,
         "original_orbits_quantity": int(nb),
-        "reduced_orbits_quantity": int(len(keep_global)),
+        "reduced_orbits_quantity": len(keep_global),
         "reduced_orbitals_per_atom": reduced_orbital_counts,
         "rule_plan_resolution": plan_meta,
         "overlap_imag_max_before_real_cast": overlap_imag_max,

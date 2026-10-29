@@ -74,4 +74,4 @@ def average_predicted_hamiltonians(pred_h5_paths, output_h5_path):
     )
 
 
-__all__ = ["read_deeph_hamiltonian", "write_deeph_hamiltonian", "average_predicted_hamiltonians"]
+__all__ = ["average_predicted_hamiltonians", "read_deeph_hamiltonian", "write_deeph_hamiltonian"]

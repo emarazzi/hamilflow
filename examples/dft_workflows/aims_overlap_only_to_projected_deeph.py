@@ -70,19 +70,19 @@ truncate_config = ProjectDeephInputsConfig(
 
 maker = GenerateOvlOnlyAimsToProjectedDeephData(
     structures_path=STRUCTURES_FILE,
-    aims_kwargs=dict(
-        species_dir="tight",
-        density_update_method="density_matrix",
-        output_rs_matrices="plain",
-        occupation_type="gaussian 0.01",
-        use_local_index="false",
-        KS_method="parallel",
-        collect_eigenvectors="false",
+    aims_kwargs={
+        "species_dir": "tight",
+        "density_update_method": "density_matrix",
+        "output_rs_matrices": "plain",
+        "occupation_type": "gaussian 0.01",
+        "use_local_index": "false",
+        "KS_method": "parallel",
+        "collect_eigenvectors": "false",
         # Only S matters: no MBD and loose SCF criteria. The flow adds
         # output_rs_matrices_stop to stop AIMS once the matrices are written.
-        sc_accuracy_etot="1.0e-03 eV",
-        sc_accuracy_rho=1.0e-2,
-    ),
+        "sc_accuracy_etot": "1.0e-03 eV",
+        "sc_accuracy_rho": 1.0e-2,
+    },
     user_kpoints_settings=KPOINTS_SETTINGS,
     force_2d=FORCE_2D,
     collected_runs_root=WORKDIR / "aims_output_ovl",

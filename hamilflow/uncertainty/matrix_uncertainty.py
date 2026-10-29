@@ -328,28 +328,30 @@ class MatrixUncertaintyCalculator:
             output_path = Path(output_path)
 
         output = {}
-        with tempfile.TemporaryDirectory() as tmp:
-            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
-                futures = {
-                    ex.submit(
-                        self._compute_structure,
-                        s,
-                        model_dirs,
-                        average_hamiltonian_dir,
-                        tmp,
-                        read_threads_per_worker,
-                    ): s
-                    for s in structures
-                }
-                for fut in concurrent.futures.as_completed(futures):
-                    name, res = fut.result()
-                    output[name] = res
-                    if output_path is not None:
-                        tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-                        with open(tmp_path, "w") as f:
-                            json.dump(output, f, indent=4)
-                        os.replace(tmp_path, output_path)
-                        logger.info(f"[{name}] wrote {len(output)} structures to {output_path}")
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex,
+        ):
+            futures = {
+                ex.submit(
+                    self._compute_structure,
+                    s,
+                    model_dirs,
+                    average_hamiltonian_dir,
+                    tmp,
+                    read_threads_per_worker,
+                ): s
+                for s in structures
+            }
+            for fut in concurrent.futures.as_completed(futures):
+                name, res = fut.result()
+                output[name] = res
+                if output_path is not None:
+                    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+                    with open(tmp_path, "w") as f:
+                        json.dump(output, f, indent=4)
+                    os.replace(tmp_path, output_path)
+                    logger.info(f"[{name}] wrote {len(output)} structures to {output_path}")
 
         return output
 

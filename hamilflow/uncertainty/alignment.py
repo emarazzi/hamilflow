@@ -98,7 +98,7 @@ class SparseStream:
         try:
             for p0, p1 in pair_batches(self.bounds, self.batch_entries):
                 e0, e1 = self.bounds[p0], self.bounds[p1]
-                read = lambda f: np.asarray(f["entries"][e0:e1])
+                read = lambda f: np.asarray(f["entries"][e0:e1])  # noqa: B023 (used within the iteration)
                 hs = list(ex.map(read, h_files)) if ex else [read(f) for f in h_files]
                 s = overlap_like(np.asarray(s_file["entries"][self.s_bounds[p0]:self.s_bounds[p1]]),
                                  self.s_shapes[p0:p1], self.shapes[p0:p1])
@@ -198,12 +198,12 @@ def pair_distances(structure_dir: Path | str, atom_pairs: np.ndarray) -> np.ndar
 
 
 __all__ = [
-    "read_layout",
-    "pair_batches",
-    "overlap_like",
     "SparseStream",
     "fit_rigid_shifts",
-    "write_aligned_hamiltonian",
-    "read_poscar",
+    "overlap_like",
+    "pair_batches",
     "pair_distances",
+    "read_layout",
+    "read_poscar",
+    "write_aligned_hamiltonian",
 ]

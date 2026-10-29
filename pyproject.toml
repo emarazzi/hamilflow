@@ -46,3 +46,9 @@ py-modules = ["hamilflow_projection"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["hamilflow*"]
+
+[tool.ruff]
+# ruff's default rule set (0.17), checked at the line length the code is written to
+required-version = ">=0.17"
+line-length = 120
+target-version = "py312"

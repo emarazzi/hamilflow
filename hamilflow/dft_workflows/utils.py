@@ -10,7 +10,7 @@ from pymatgen.io.ase import AseAtomsAdaptor
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["resolve_structure_path", "get_structure_names_from_path", "load_structures"]
+__all__ = ["get_structure_names_from_path", "load_structures", "resolve_structure_path"]
 
 _KNOWN_STRUCTURE_SUFFIXES = {
     ".cif",

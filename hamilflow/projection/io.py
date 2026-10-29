@@ -20,7 +20,7 @@ def build_reduced_elements_orbital_map(
     This requires that all atoms of the same element keep the same shell list,
     otherwise info.json cannot represent the reduced basis consistently.
     """
-    rm_set = set(int(i) for i in removed_indices)
+    rm_set = {int(i) for i in removed_indices}
     per_element_kept_shells: dict[str, list[int]] = {}
     g0 = 0
 
@@ -69,14 +69,14 @@ def reduce_occupation_value(
         return None
 
     if not isinstance(occupation, (int, float, np.integer, np.floating)):
-        raise ValueError("Unsupported occupation format in info.json. Expected a scalar total.")
+        raise ValueError("Unsupported occupation format in info.json. Expected a scalar total.")  # noqa: TRY004 - malformed input file, callers catch ValueError
 
     if reduction_mode == "truncate":
         return occupation
     if reduction_mode != "schur":
         raise ValueError(f"Unsupported reduction_mode '{reduction_mode}'. Expected 'schur' or 'truncate'.")
 
-    removed_count = len(set(int(i) for i in removed_indices))
+    removed_count = len({int(i) for i in removed_indices})
     reduced = float(occupation) - 2 * removed_count
     if reduced.is_integer():
         return int(reduced)
@@ -138,7 +138,7 @@ def dump_reduced_matrix_h5(
     if Rijk_list is None:
         raise ValueError("Rijk_list is None")
 
-    keep_arr = np.array(sorted(set(int(i) for i in keep_global)), dtype=int)
+    keep_arr = np.array(sorted({int(i) for i in keep_global}), dtype=int)
 
     r_to_idx = {tuple(int(v) for v in r): i for i, r in enumerate(Rijk_list)}
     atom_pairs = np.asarray(atom_pairs, dtype=np.int64)
@@ -245,7 +245,7 @@ def build_reduced_output_layout(
     if Rijk_list is None:
         raise ValueError("Rijk_list is None")
 
-    keep_arr = np.array(sorted(set(int(i) for i in keep_global)), dtype=np.int64)
+    keep_arr = np.array(sorted({int(i) for i in keep_global}), dtype=np.int64)
     nkp = len(keep_arr)
     nkp2 = np.int64(nkp) * np.int64(nkp)
     n_r = len(Rijk_list)

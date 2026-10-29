@@ -54,7 +54,7 @@ def link_ensemble_files(
                     dst_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
                         dst_file.symlink_to(src_file)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         # Fall back to copying if symlinks are unavailable
                         logger.debug(f"could not symlink {dst_file}, copying {src_file} instead")
                         shutil.copy2(src_file, dst_file)

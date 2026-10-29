@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .._logging import job_logging
 from .core import run_projection
 from .models import ProjectionConfig, RemovalPlanLike
-
-if TYPE_CHECKING:
-    from jobflow import Job
 
 
 def make_run_projection_job() -> Any:

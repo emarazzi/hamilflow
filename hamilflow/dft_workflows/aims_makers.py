@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 from atomate2 import SETTINGS
 from atomate2.aims.files import (
@@ -19,7 +19,6 @@ from jobflow import Maker, Response, job
 from monty.serialization import dumpfn
 from pydantic import Field
 from pymatgen.io.aims.sets.base import AimsInputGenerator
-from typing_extensions import Self
 
 if TYPE_CHECKING:
     from pymatgen.core import Molecule, Structure

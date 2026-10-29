@@ -162,7 +162,7 @@ def run_single_case(case_dir: Path, options: BatchOptions) -> tuple[Path, bool, 
         paths.output_path.parent.mkdir(parents=True, exist_ok=True)
         band_data.dump_band_data(str(paths.output_path))
         return case_dir, True, None
-    except Exception as exc:  # pragma: no cover - surfaced to the user in summary
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover - surfaced to the user in summary
         return case_dir, False, f"{type(exc).__name__}: {exc}"
 
 

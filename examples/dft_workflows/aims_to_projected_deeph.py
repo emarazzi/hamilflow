@@ -57,18 +57,18 @@ convert_config = ConvertAimsToDeephConfig(output_dir=WORKDIR / "deeph_full")
 
 aims_dft = GenerateAimsDFTData(
     structures_path=STRUCTURES_FILE,
-    aims_kwargs=dict(
-        species_dir="tight",
-        density_update_method="density_matrix",
-        output_rs_matrices="plain",  # required: writes the real-space H and S
-        occupation_type="gaussian 0.01",
-        sc_accuracy_etot="1.0e-07 eV",
-        sc_accuracy_rho=1.0e-5,
-        many_body_dispersion_nl="",
-        use_local_index="false",
-        KS_method="parallel",
-        collect_eigenvectors="false",
-    ),
+    aims_kwargs={
+        "species_dir": "tight",
+        "density_update_method": "density_matrix",
+        "output_rs_matrices": "plain",  # required: writes the real-space H and S
+        "occupation_type": "gaussian 0.01",
+        "sc_accuracy_etot": "1.0e-07 eV",
+        "sc_accuracy_rho": 1.0e-5,
+        "many_body_dispersion_nl": "",
+        "use_local_index": "false",
+        "KS_method": "parallel",
+        "collect_eigenvectors": "false",
+    },
     user_kpoints_settings=KPOINTS_SETTINGS,
     force_2d=FORCE_2D,
     collected_runs_root=WORKDIR / "aims_output",

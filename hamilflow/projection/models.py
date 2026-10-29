@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal
 
-ReductionMode: TypeAlias = Literal["schur", "truncate"]
+type ReductionMode = Literal["schur", "truncate"]
 
 
 @dataclass(frozen=True)
@@ -76,4 +76,4 @@ class ProjectionResult:
         }
 
 
-RemovalPlanLike: TypeAlias = RemovalPlan | Path | str | dict[str, Any] | list[dict[str, Any]]
+type RemovalPlanLike = RemovalPlan | Path | str | dict[str, Any] | list[dict[str, Any]]
