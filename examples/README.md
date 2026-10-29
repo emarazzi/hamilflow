@@ -49,6 +49,24 @@ disk (e.g. the `deeph_full/` folder written by `dft_workflows/`).
 The scripts in `dft_workflows/` and `projection/` read the removal plans from
 their `WORKDIR`, so copy the plans there and edit them for your system.
 
+## `train_infer_config/`
+
+DeepH inputs for a k-model ensemble, one AL cycle per folder (`cycle_dir`).
+Run in this order:
+
+- `make_kfold_splits.py`: writes `dataset_split_{1..k}.json` for training a
+  k-model ensemble. Variants of the same structure family (by default, names
+  that differ only after their last `-`; set `GROUP_KEY` for other naming
+  schemes) are spread over different validate sets. In later AL cycles, the
+  previous splits are kept unchanged and only the new structures are added.
+- `write_train_tomls.py`: one `train_{j}/train.toml` per fold, with the split
+  file, train/validate sizes and seed filled in per fold. With a previous
+  cycle, fold j continues training from that cycle's fold-j model; with
+  `CONTINUE_FROM` (e.g. `outputs_3`), it resumes its own earlier run instead.
+- `write_infer_tomls.py`: once training is done, one
+  `train_{j}/<infer_name>/infer.toml` per fold, pointing to the model of the
+  most recent training run of that fold (with a warning if there are several).
+
 ## `uncertainty/`
 
 Uncertainty of an ensemble of DeepH models (e.g. from k-fold training) that

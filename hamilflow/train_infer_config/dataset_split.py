@@ -2,7 +2,7 @@
 
 Fold ``i`` validates on group ``i`` and trains on the other ``k - 1`` groups. Structures are
 dealt into groups stratified by parent: variants of the same parent geometry (by default, names
-that differ only by a trailing ``-<digits>``, e.g. ``tMoS2Bilayer_n1m5Ang6-003``) are spread over
+that differ only after their last ``-``, e.g. ``tMoS2Bilayer_n1m5Ang6-003`` and ``-init``) are spread over
 different folds, so every ensemble member sees every geometry. Names with no parent in common
 fall back to a balanced random split.
 
@@ -11,18 +11,14 @@ into the k groups, appended to each fold's validate set, and to every other fold
 """
 import json
 import random
-import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-_PARENT_RE = re.compile(r"^(.*)-\d+$")
-
 
 def parent_of(name: str) -> str:
-    """Strip a trailing ``-<digits>`` variant index; names without one are their own parent."""
-    m = _PARENT_RE.match(name)
-    return m.group(1) if m else name
+    """Strip the variant suffix after the last ``-``; names without a ``-`` are their own parent."""
+    return name.rsplit("-", 1)[0]
 
 
 def _check_previous(previous: list[dict], k: int) -> set:
