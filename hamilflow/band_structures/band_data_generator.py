@@ -72,7 +72,9 @@ class SparseBandDataGenerator(BandDataGenerator):
 
         ill_handler = None
         if ill_method is not None:
-            from hamilflow.sparse_hamiltonian.ill_conditioned import IllConditionedHandler
+            from hamilflow.sparse_hamiltonian.ill_conditioned import (
+                IllConditionedHandler,
+            )
 
             ill_handler = IllConditionedHandler(
                 method=ill_method,

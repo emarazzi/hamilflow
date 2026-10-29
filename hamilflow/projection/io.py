@@ -6,7 +6,6 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-
 from deepx_dock.CONSTANT import DEEPX_INFO_FILENAME
 
 

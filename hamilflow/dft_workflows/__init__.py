@@ -25,7 +25,11 @@ from .flows_base import (
 	ProjectDeephInputsConfig,
 	ProjectionRemovalPlanConfig,
 )
-from .flows_core import GenerateAimsToProjectedDeephData, GenerateOvlOnlyAimsToProjectedDeephData, GenerateTwoStepProjectedDeephInputs
+from .flows_core import (
+	GenerateAimsToProjectedDeephData,
+	GenerateOvlOnlyAimsToProjectedDeephData,
+	GenerateTwoStepProjectedDeephInputs,
+)
 from .jobs import (
 	build_aims_dft_job,
 	build_aims_dft_jobs,

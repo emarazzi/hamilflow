@@ -4,16 +4,20 @@ import json
 import shutil
 
 import numpy as np
-from pymatgen.core import Structure
-
 from deepx_dock.CONSTANT import (
     DEEPX_HAMILTONIAN_FILENAME,
     DEEPX_OVERLAP_FILENAME,
     DEEPX_POSCAR_FILENAME,
 )
+from pymatgen.core import Structure
+
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 
-from .io import build_reduced_output_layout, dump_reduced_entries_h5, write_reduced_info_json
+from .io import (
+    build_reduced_output_layout,
+    dump_reduced_entries_h5,
+    write_reduced_info_json,
+)
 from .kspace import (
     build_uniform_kmesh,
     stream_project_to_real_space,

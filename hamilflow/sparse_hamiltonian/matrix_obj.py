@@ -4,9 +4,8 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-from scipy.sparse import coo_matrix, csr_matrix
-
 from deepx_dock.compute.eigen.matrix_obj import AOMatrixObj
+from scipy.sparse import coo_matrix, csr_matrix
 
 
 class SparseAOMatrixObj(AOMatrixObj):

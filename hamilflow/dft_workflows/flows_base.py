@@ -2,8 +2,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast, get_args
 
-
-
 __all__ = [
     "ConvertAimsToDeephConfig",
     "DEFAULT_AIMS_KWARGS",
@@ -22,9 +20,8 @@ from pymatgen.core import Structure
 from pymatgen.core.structure import FileFormats
 from pymatgen.io.aims.sets.core import StaticSetGenerator
 
-from .aims_makers import OvlOnlyAimsMaker
 from ..projection.models import ReductionMode, RemovalPlanLike
-
+from .aims_makers import OvlOnlyAimsMaker
 from .jobs import (
     build_aims_dft_job,
     collect_aims_output,

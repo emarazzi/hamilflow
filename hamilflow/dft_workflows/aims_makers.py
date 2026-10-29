@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from jobflow import Maker, Response, job
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from monty.serialization import dumpfn
-from pymatgen.io.aims.sets.base import AimsInputGenerator
+
 from atomate2 import SETTINGS
 from atomate2.aims.files import (
     cleanup_aims_outputs,
@@ -17,8 +15,12 @@ from atomate2.aims.run import run_aims
 from atomate2.common.files import gzip_output_folder
 from emmet.core.structure import MoleculeMetadata, StructureMetadata
 from emmet.core.task import BaseTaskDocument
+from jobflow import Maker, Response, job
+from monty.serialization import dumpfn
 from pydantic import Field
+from pymatgen.io.aims.sets.base import AimsInputGenerator
 from typing_extensions import Self
+
 if TYPE_CHECKING:
     from pymatgen.core import Molecule, Structure
 

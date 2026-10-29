@@ -17,7 +17,13 @@ __all__ = [
 
 from pathlib import Path
 
-from hamilflow import ProjectionConfig, ProjectionResult, RemovalPlan, RemovalRule, run_projection
+from hamilflow import (
+    ProjectionConfig,
+    ProjectionResult,
+    RemovalPlan,
+    RemovalRule,
+    run_projection,
+)
 from hamilflow.projection.removal import coerce_removal_plan
 
 

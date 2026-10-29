@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import logging
-from functools import partial
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from pymatgen.core import Structure

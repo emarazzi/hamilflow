@@ -13,7 +13,7 @@ Provides:
   for callers who want to build their own plot instead.
 """
 
-from .selector import CandidateSelector, SelectionResult
 from .plotting import fit_mds, plot_mds
+from .selector import CandidateSelector, SelectionResult
 
 __all__ = ["CandidateSelector", "SelectionResult", "fit_mds", "plot_mds"]

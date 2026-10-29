@@ -22,7 +22,10 @@ from pathlib import Path
 
 from jobflow_remote import set_run_config, submit_flow
 
-from hamilflow.dft_workflows.flows_base import ConvertAimsToDeephConfig, ProjectDeephInputsConfig
+from hamilflow.dft_workflows.flows_base import (
+    ConvertAimsToDeephConfig,
+    ProjectDeephInputsConfig,
+)
 from hamilflow.dft_workflows.flows_core import GenerateOvlOnlyAimsToProjectedDeephData
 
 # --- User settings -----------------------------------------------------------

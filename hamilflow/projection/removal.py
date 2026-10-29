@@ -9,7 +9,6 @@ import numpy as np
 
 from .models import RemovalPlan, RemovalPlanLike, RemovalRule
 
-
 L_TO_LABEL = {0: "s", 1: "p", 2: "d", 3: "f", 4: "g", 5: "h"}
 
 

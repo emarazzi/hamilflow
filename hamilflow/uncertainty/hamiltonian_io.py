@@ -1,6 +1,8 @@
 from pathlib import Path
+
 import h5py
 import numpy as np
+
 
 def read_deeph_hamiltonian(h5_path: str | Path):
     h5_path = Path(h5_path)

@@ -13,6 +13,7 @@ __all__ = [
 
 from jobflow.core.flow import Flow
 from jobflow.core.job import Job
+from pymatgen.io.aims.sets.core import StaticSetGenerator
 
 from .aims_makers import OvlOnlyAimsMaker
 from .flows_base import (
@@ -22,7 +23,6 @@ from .flows_base import (
     resolve_projection_removal_plan,
 )
 from .jobs import run_projection_for_structure, set_projection_job_name
-from pymatgen.io.aims.sets.core import StaticSetGenerator
 
 # Added on top of DEFAULT_AIMS_KWARGS for overlap-only runs: stop FHI-aims
 # right after writing the real-space matrices.
