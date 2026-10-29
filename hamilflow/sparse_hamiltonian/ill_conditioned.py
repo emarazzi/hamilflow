@@ -93,6 +93,12 @@ def window_regularization_eig(
     M = Psi^dag Psi; its eigenvectors with eigenvalue <= ill_threshold are nearly
     linearly dependent combinations, and the window problem is re-solved without
     them. The removed slots are filled with ``fill_value`` and the result is sorted.
+
+    Reported for completeness, as in deepx-dock
+    (``deepx_dock/compute/eigen/ill_conditioned.py``, which this follows line by line). hamilflow's
+    workflows use orbital removal (`BandUncertaintyCalculator` rejects this method); it stays
+    selectable through `IllConditionedHandler` / ``ill_method="window_regularization"`` but is
+    not validated here and may be broken.
     """
     norb = Hk.shape[0]
 
@@ -116,9 +122,7 @@ def window_regularization_eig(
     if n_good < n_window:
         good_mass_vecs = mass_eigvecs[:, project_mask]
 
-        # Rayleigh-Ritz in span(filtered_vecs @ good_mass_vecs): filtered_vecs are S-orthonormal
-        # with filtered_vecs^dag Hk filtered_vecs = diag(filtered_vals), so H and S project to these
-        H_sub = good_mass_vecs.T.conj() @ np.diag(filtered_vals) @ good_mass_vecs
+        H_sub = np.diag(filtered_vals)
         M_sub = good_mass_vecs.T.conj() @ good_mass_vecs
 
         try:
@@ -134,7 +138,7 @@ def window_regularization_eig(
 
         sort_idx = np.argsort(final_vals)
         final_vals = final_vals[sort_idx]
-        final_vecs = final_vecs[:, sort_idx[sort_idx < n_good]]  # (Norb, n_good), as eig_with_orbital_mask
+        final_vecs = final_vecs[:, sort_idx]
 
         return final_vals, (final_vecs if return_vecs else None)
 
