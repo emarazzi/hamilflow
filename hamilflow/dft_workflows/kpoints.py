@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, cast
 
-from typing import cast
-
-from pymatgen.core import SETTINGS, Structure
+from pymatgen.core import Structure
 from pymatgen.io.vasp.inputs import Kpoints
 from pymatgen.symmetry.bandstructure import HighSymmKpath
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional
 
 import numpy as np
 import threadpoolctl
@@ -117,7 +116,7 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
             return self._s_obj._dense_k(k)
         return np.stack([self._s_obj._dense_k(kk) for kk in k], axis=0)
 
-    def get_all_Sk(self, ks, n_jobs: int = -1, parallel_k: bool = True) -> List[np.ndarray]:
+    def get_all_Sk(self, ks, n_jobs: int = -1, parallel_k: bool = True) -> list[np.ndarray]:
         """
         Overlap matrices for every k-point, gathered up front.
 
@@ -146,7 +145,7 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         sparse_calc: bool = False,
         bands_only: bool = True,
         ill_handler=None,
-        kept_orbitals: Optional[List[int]] = None,
+        kept_orbitals: list[int] | None = None,
         **kwargs,
     ):
         """

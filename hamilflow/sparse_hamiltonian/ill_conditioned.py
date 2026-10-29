@@ -20,7 +20,6 @@ docstring). It runs on a GPU when one is available (see ``dense_backend``).
 from __future__ import annotations
 
 import concurrent.futures
-from typing import List, Optional, Tuple
 
 import numpy as np
 import threadpoolctl
@@ -39,7 +38,7 @@ def window_regularization_eig(
     ill_threshold: float,
     fill_value: float = 1e4,
     return_vecs: bool = False,
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+) -> tuple[np.ndarray, np.ndarray | None]:
     """
     Eigenvalues of (Hk, Sk) with the ill-conditioned combinations in [emin, emax] projected out.
 
@@ -153,7 +152,7 @@ class _KPointState:
 
 def _lowest_eigpair_subspace(
     state: _KPointState, kept: np.ndarray, removed: np.ndarray
-) -> Tuple[float, Optional[np.ndarray]]:
+) -> tuple[float, np.ndarray | None]:
     """Lowest eigenpair of the kept-orbital submatrix S_KK of S(k) by block inverse subspace
     iteration: only multi-vector solves and products, which (unlike the memory-bound tridiagonal
     reduction of a dense eigh, or single-vector Lanczos) run at BLAS-3 speed.
@@ -220,7 +219,7 @@ def _lowest_eigpair_subspace(
 
 def _lowest_eigpair(
     state: _KPointState, kept: np.ndarray, removed: np.ndarray, ill_threshold: float
-) -> Tuple[float, Optional[np.ndarray]]:
+) -> tuple[float, np.ndarray | None]:
     """Lowest eigenvalue and eigenvector (NumPy) of the kept-orbital S(k), or (inf, None) if all
     its eigenvalues are above `ill_threshold` (checked with a Cholesky factorization of
     S_KK - ill_threshold * 1).
@@ -269,12 +268,12 @@ def _lowest_eigpair(
 
 
 def global_orbital_truncation(
-    Sk_list: List[np.ndarray],
+    Sk_list: list[np.ndarray],
     ill_threshold: float,
     verbose: bool = True,
     n_jobs: int = -1,
     parallel_k: bool = True,
-) -> List[int]:
+) -> list[int]:
     """
     Orbitals to keep so that S(k) has all eigenvalues above `ill_threshold` at every k-point.
 
@@ -345,8 +344,8 @@ def global_orbital_truncation(
 
 
 def eig_with_orbital_mask(
-    Hk: np.ndarray, Sk: np.ndarray, kept_orbitals: List[int], fill_value: float = 1e4, return_vecs: bool = False
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    Hk: np.ndarray, Sk: np.ndarray, kept_orbitals: list[int], fill_value: float = 1e4, return_vecs: bool = False
+) -> tuple[np.ndarray, np.ndarray | None]:
     """
     Eigenvalues of (Hk, Sk) restricted to `kept_orbitals`, the removed slots filled with
     `fill_value` (all sorted). The eigenvectors, if requested, are (Norb, N_kept): rows in the
@@ -424,16 +423,16 @@ class IllConditionedHandler:
         self.fill_value = fill_value
         self.verbose = verbose
 
-        self._kept_orbitals: Optional[List[int]] = None
+        self._kept_orbitals: list[int] | None = None
 
     @property
-    def kept_orbitals(self) -> Optional[List[int]]:
+    def kept_orbitals(self) -> list[int] | None:
         """Indices of the orbitals kept by `prepare_orbital_truncation`."""
         return self._kept_orbitals
 
     def prepare_orbital_truncation(
-        self, Sk_list: List[np.ndarray], n_jobs: int = -1, parallel_k: bool = True
-    ) -> List[int]:
+        self, Sk_list: list[np.ndarray], n_jobs: int = -1, parallel_k: bool = True
+    ) -> list[int]:
         """Select the kept orbitals from S(k) at every k-point (see `global_orbital_truncation`)."""
         if self.method != self.METHOD_ORBITAL:
             raise RuntimeError(

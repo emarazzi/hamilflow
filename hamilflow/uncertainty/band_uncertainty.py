@@ -1,7 +1,3 @@
-from pathlib import Path
-from typing import Iterable
-import numpy as np
-from dataclasses import dataclass, field
 import concurrent.futures
 import json
 import math
@@ -9,9 +5,20 @@ import multiprocessing
 import multiprocessing.connection
 import os
 import time
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
 
+import numpy as np
+import spglib
 import threadpoolctl
-from hamilflow.cpus import available_cpu_count, available_memory_bytes, peak_rss_bytes, reset_peak_rss
+
+from hamilflow.cpus import (
+    available_cpu_count,
+    available_memory_bytes,
+    peak_rss_bytes,
+    reset_peak_rss,
+)
 from hamilflow.sparse_hamiltonian import SparseHamiltonianObj
 from hamilflow.sparse_hamiltonian.dense_backend import (
     GPU_MIN_DIM,
@@ -19,13 +26,11 @@ from hamilflow.sparse_hamiltonian.dense_backend import (
     release_gpu_memory,
     workers_gpu_memory,
 )
-from hamilflow.sparse_hamiltonian.matrix_obj import SparseAOMatrixObj
 from hamilflow.sparse_hamiltonian.eigensolver import eigh_generalized
+from hamilflow.sparse_hamiltonian.matrix_obj import SparseAOMatrixObj
 
 from .alignment import fit_rigid_shifts, write_aligned_hamiltonian
 from .hamiltonian_io import average_predicted_hamiltonians
-
-import spglib
 
 
 def _run_in_child(sender, run_structure, structure_name) -> None:

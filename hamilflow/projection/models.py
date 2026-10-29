@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional, TypeAlias
-
+from typing import Any, Literal, TypeAlias
 
 ReductionMode: TypeAlias = Literal["schur", "truncate"]
 
@@ -60,7 +59,7 @@ class ProjectionResult:
     """Serializable projection outputs for scripts and workflow engines."""
 
     output_dir: Path
-    hamiltonian_path: Optional[Path]
+    hamiltonian_path: Path | None
     overlap_path: Path
     info_path: Path
     meta_path: Path

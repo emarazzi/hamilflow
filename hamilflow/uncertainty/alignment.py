@@ -17,8 +17,8 @@ diagonal spin blocks, as `SparseHamiltonianObj` does.
 """
 
 import concurrent.futures
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Iterator, Sequence
 
 import h5py
 import numpy as np

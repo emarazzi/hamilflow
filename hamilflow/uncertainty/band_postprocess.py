@@ -1,9 +1,10 @@
-from pathlib import Path
-from typing import Callable, Mapping, Sequence
-import math
-import numpy as np
-from dataclasses import dataclass
 import json
+import math
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
 
 
 @dataclass

@@ -1,7 +1,7 @@
-from glob import glob
 import shutil
+from collections.abc import Iterable, Sequence
+from glob import glob
 from pathlib import Path
-from typing import Iterable, Sequence
 
 
 def discover_structures(pattern: str) -> list[Path]:

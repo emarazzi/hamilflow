@@ -1,7 +1,9 @@
-from dataclasses import dataclass, field, fields, is_dataclass, asdict
-from pathlib import Path
-from typing import Optional, List, Callable, Literal, get_type_hints, get_args, get_origin
 import copy
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field, is_dataclass
+from pathlib import Path
+from typing import Literal, get_args, get_origin, get_type_hints
+
 import tomli_w
 
 # ============================== SYSTEM ==============================
@@ -115,7 +117,7 @@ class OptimizerConfig:
     init_learning_rate: float = 2e-3
     clip_norm_factor: float = -1.0
     momentum: float = 0.8          # sgd only (informational)
-    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])  # adam/adamw only (informational)
+    betas: list[float] = field(default_factory=lambda: [0.9, 0.999])  # adam/adamw only (informational)
     weight: float = 0.001          # adamw only (informational)
     eps: float = 1e-8              # adam/adamw only (informational)
 
@@ -179,7 +181,7 @@ class TrainConfig:
 
 # ============================ VALIDATION ================================
 
-def _choices(tp) -> Optional[tuple]:
+def _choices(tp) -> tuple | None:
     return get_args(tp) if get_origin(tp) is Literal else None
 
 def validate_keys(schema_cls, overrides: dict, path: str = "") -> None:
@@ -231,7 +233,7 @@ class Rule:
     check: Callable[["TrainConfig"], bool]
     message: str
 
-def validate_constraints(config, rules: List[Rule]) -> None:
+def validate_constraints(config, rules: list[Rule]) -> None:
     for rule in rules:
         if not rule.check(config):
             raise ValueError(rule.message)
@@ -240,7 +242,7 @@ def _has_odd_parity(irreps: str) -> bool:
     # crude but sufficient: e3nn irreps strings mark odd parity with a trailing 'o' per term
     return any(term.strip().endswith("o") for term in irreps.split("+"))
 
-TRAIN_RULES: List[Rule] = [
+TRAIN_RULES: list[Rule] = [
     Rule(
         check=lambda c: c.model.net_type not in ("eagle", "owl") or c.model.advanced.consider_parity is False,
         message="net_type in {'eagle','owl'} requires model.advanced.consider_parity=False",

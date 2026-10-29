@@ -1,5 +1,5 @@
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from ase import Atoms
 from ase.io import read as ase_read

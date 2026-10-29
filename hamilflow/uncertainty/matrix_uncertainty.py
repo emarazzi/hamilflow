@@ -1,15 +1,20 @@
-from pathlib import Path
-from typing import Iterable
 import concurrent.futures
 import json
 import os
 import tempfile
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
-from dataclasses import dataclass
 
 from ..cpus import available_cpu_count
-from .alignment import SparseStream, fit_rigid_shifts, pair_distances, write_aligned_hamiltonian
+from .alignment import (
+    SparseStream,
+    fit_rigid_shifts,
+    pair_distances,
+    write_aligned_hamiltonian,
+)
 from .band_postprocess import BandUncertaintyPostProcessor
 from .hamiltonian_io import average_predicted_hamiltonians
 

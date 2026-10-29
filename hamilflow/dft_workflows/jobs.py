@@ -1,10 +1,11 @@
 import copy
 import gzip
 import shutil
+from collections.abc import Sequence
 from fnmatch import fnmatch
 from pathlib import Path
 from shutil import move, rmtree
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 from atomate2.aims.jobs.core import StaticMaker
