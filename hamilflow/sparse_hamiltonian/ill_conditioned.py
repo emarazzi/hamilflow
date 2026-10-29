@@ -116,7 +116,9 @@ def window_regularization_eig(
     if n_good < n_window:
         good_mass_vecs = mass_eigvecs[:, project_mask]
 
-        H_sub = np.diag(filtered_vals)
+        # Rayleigh-Ritz in span(filtered_vecs @ good_mass_vecs): filtered_vecs are S-orthonormal
+        # with filtered_vecs^dag Hk filtered_vecs = diag(filtered_vals), so H and S project to these
+        H_sub = good_mass_vecs.T.conj() @ np.diag(filtered_vals) @ good_mass_vecs
         M_sub = good_mass_vecs.T.conj() @ good_mass_vecs
 
         try:
@@ -132,7 +134,7 @@ def window_regularization_eig(
 
         sort_idx = np.argsort(final_vals)
         final_vals = final_vals[sort_idx]
-        final_vecs = final_vecs[:, sort_idx]
+        final_vecs = final_vecs[:, sort_idx[sort_idx < n_good]]  # (Norb, n_good), as eig_with_orbital_mask
 
         return final_vals, (final_vecs if return_vecs else None)
 

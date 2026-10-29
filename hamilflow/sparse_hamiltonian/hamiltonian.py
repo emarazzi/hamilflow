@@ -174,6 +174,8 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         """
         if n_jobs < 0:
             n_jobs = available_cpu_count()
+        if not hasattr(ks, "__len__"):  # e.g. a generator: counted below for the worker count
+            ks = list(ks)
 
         def process_k(k):
             if sparse_calc and ill_handler is None and kept_orbitals is None:
@@ -187,7 +189,8 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
                 return ill_handler.process_k(Hk, Sk, return_vecs=not bands_only)
 
             if kept_orbitals is not None:
-                return eig_with_orbital_mask(Hk, Sk, kept_orbitals, return_vecs=not bands_only)
+                vals, vecs = eig_with_orbital_mask(Hk, Sk, kept_orbitals, return_vecs=not bands_only)
+                return vals if bands_only else (vals, vecs)
 
             if sparse_calc:
                 if bands_only:

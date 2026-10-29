@@ -812,7 +812,8 @@ class BandUncertaintyCalculator:
                        gpu + WORKER_GPU_GB * gb if gpu else 0.0)  # a CUDA context only if it uses the GPU
         too_big = sorted((s for s in structures if need[s][0] > host_budget or need[s][1] > gpu_budget),
                          key=lambda s: need[s])
-        pending = sorted(set(structures) - set(too_big), key=lambda s: need[s], reverse=True)
+        # largest first, equal estimates by name (not by set order, which depends on PYTHONHASHSEED)
+        pending = sorted(sorted(set(structures) - set(too_big)), key=lambda s: need[s], reverse=True)
         if too_big:
             logger.warning(f"{len(too_big)} structures exceed the memory budget on their own and run last, "
                            f"one at a time: {too_big}")
