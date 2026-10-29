@@ -143,3 +143,6 @@ deepx_dock/
 
 # Local change notes, never pushed
 hamilflow/dft_workflows/CHANGES_per_structure_flows.md
+
+# Private notes, not for the public repo
+user_guide.md
