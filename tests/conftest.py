@@ -46,6 +46,41 @@ class SyntheticStructure:
         phase = np.exp(2j * np.pi * (self.Rs @ np.asarray(k, dtype=np.float64)))
         return np.tensordot(phase, self.S_R, axes=1), np.tensordot(phase, self.H_R, axes=1)
 
+    def perturbation(self, seed: int = 0) -> np.ndarray:
+        """Random delta H(R) with delta(-R) = delta(R)^dag, zero wherever H(R) is (absent blocks, decoupled core)."""
+        rng = np.random.default_rng(seed)
+        delta = rng.uniform(-1, 1, self.H_R.shape)
+        if self.spinful:
+            delta = delta + 1j * rng.uniform(-1, 1, self.H_R.shape)
+        for i, R in enumerate(self.Rs):
+            i_minus = int(np.nonzero((self.Rs == -R).all(axis=1))[0][0])
+            if i < i_minus:
+                delta[i_minus] = delta[i].conj().T
+            elif i == i_minus:
+                delta[i] = (delta[i] + delta[i].conj().T) / 2
+        return np.where(self.H_R == 0, 0.0, delta)
+
+    def write_hamiltonian(self, H_R: np.ndarray, path: Path) -> Path:
+        """Write these H(R) with the block layout of this structure's own hamiltonian.h5."""
+        with h5py.File(self.path / DEEPX_HAMILTONIAN_FILENAME, "r") as f:
+            atom_pairs = f["atom_pairs"][:]
+        n_orbitals = sum(ATOM_N_ORBITALS)
+        offsets = np.cumsum([0, *ATOM_N_ORBITALS])
+        index_of_R = {tuple(int(c) for c in R): i for i, R in enumerate(self.Rs)}
+        keys, blocks = [], {}
+        for pair in atom_pairs:
+            key = tuple(int(c) for c in pair)
+            i_slice = np.arange(offsets[key[3]], offsets[key[3] + 1])
+            j_slice = np.arange(offsets[key[4]], offsets[key[4] + 1])
+            if self.spinful:
+                i_slice = np.r_[i_slice, i_slice + n_orbitals]
+                j_slice = np.r_[j_slice, j_slice + n_orbitals]
+            blocks[key] = H_R[index_of_R[key[:3]]][np.ix_(i_slice, j_slice)]
+            keys.append(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_blocks(path, blocks, keys)
+        return path
+
 
 def _write_blocks(path: Path, blocks: dict[tuple, np.ndarray], keys: list[tuple]) -> None:
     sizes = [blocks[key].size for key in keys]
