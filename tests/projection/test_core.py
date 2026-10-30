@@ -305,20 +305,11 @@ def test_force_2d_and_1d_are_exclusive(tmp_path):
         ProjectionConfig(tmp_path, tmp_path, force_2d=True, force_1d=True)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="spinful projection reports success but is wrong: rules select only the spin-up copy of an orbital, "
-    "the reduced layout and info.json describe spinless blocks, and only the real part of H is written",
-)
-@pytest.mark.parametrize("mode", ["schur", "truncate"])
-def test_spinful_projection_keeps_the_valence_bands(make_synthetic_structure, tmp_path, mode):
-    structure = make_synthetic_structure("input", spinful=True, core_level=CORE_LEVEL)
-    result = project(structure, tmp_path, REMOVE_CORE, mode)
-    k = KPOINTS[1]
-    Sk, Hk = SparseHamiltonianObj(result.output_dir).Sk_and_Hk(np.array(k))
-    S0, H0 = structure.Sk_and_Hk(k)
-    full = scipy.linalg.eigh(H0, S0, eigvals_only=True)
-    np.testing.assert_allclose(scipy.linalg.eigh(Hk, Sk, eigvals_only=True), full[2:], atol=1e-9)
+def test_spinful_input_is_rejected_before_writing_anything(make_synthetic_structure, tmp_path):
+    structure = make_synthetic_structure("input", spinful=True)
+    with pytest.raises(NotImplementedError, match="spinful"):
+        project(structure, tmp_path, REMOVE_CORE)
+    assert not (tmp_path / "output").exists()
 
 
 # ---------------------------------- k-grid ----------------------------------

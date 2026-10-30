@@ -70,10 +70,7 @@ def run_projection(
     a zero-filled hamiltonian.h5 is also written to enable sequential projections.
     """
     t_start = time.monotonic()
-    config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    shutil.copy2(config.input_dir / DEEPX_POSCAR_FILENAME, config.output_dir / DEEPX_POSCAR_FILENAME)
-    
     # HamiltonianObj requires hamiltonian.h5 to exist to load metadata (elements, atom_pairs, etc.)
     # even in overlap_only mode where we don't process the Hamiltonian itself
     hamiltonian_file = config.input_dir / DEEPX_HAMILTONIAN_FILENAME
@@ -87,6 +84,14 @@ def run_projection(
         )
     
     obj = SparseHamiltonianObj(config.input_dir, load_hamiltonian=not config.overlap_only)
+    if obj.spinful:
+        raise NotImplementedError(
+            f"{config.input_dir} is spinful, which the projection does not support: removal rules select "
+            "spinless orbitals, and the output files store real entries in spinless blocks."
+        )
+
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(config.input_dir / DEEPX_POSCAR_FILENAME, config.output_dir / DEEPX_POSCAR_FILENAME)
 
     plan_model = coerce_removal_plan(removal_plan)
     rm, plan_meta = resolve_indices_from_rules(
