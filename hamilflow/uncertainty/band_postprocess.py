@@ -160,6 +160,7 @@ class BandUncertaintyPostProcessor:
         tau: float = 0.1,
         bands: Sequence[int] | slice | None = None,
         vbm_fraction: float | None = None,
+        quantile: float | None = None,
     ) -> dict:
         """Band-edge-weighted mean and max of `self.key` for one structure.
 
@@ -170,6 +171,9 @@ class BandUncertaintyPostProcessor:
         - `weighted_mean_eV`: `sum(w_k * w * x) / sum(w_k * w)`, with `w_k` the k-point symmetry
           weights -- the typical value near the band edges.
         - `weighted_max_eV`: `max(w * x)` -- the worst state near the band edges.
+        - `weighted_quantile_eV` (only if `quantile` is given): the `quantile` of `x` over the
+          states, each with weight `w_k * w` (see `weighted_quantile`) -- e.g. 0.5 for the median,
+          0.9 for a tail value less dominated by a single state than `weighted_max_eV`.
         - `n_eff_bands`: `sum(w_k * w) / sum(w_k)`, the number of bands per k-point the window
           effectively keeps.
 
@@ -183,7 +187,7 @@ class BandUncertaintyPostProcessor:
         weighted = w * sel
         i_k, i_b = np.unravel_index(np.argmax(weighted), weighted.shape)
         vbm_e, cbm_e = self.band_edges(structure)
-        return {
+        out = {
             **self.structure_stats(structure, bands, vbm_fraction),
             "weighted_mean_eV": float(np.sum(state_w * sel) / np.sum(state_w)),
             "weighted_max_eV": float(weighted[i_k, i_b]),
@@ -194,6 +198,22 @@ class BandUncertaintyPostProcessor:
             "cbm_eV": cbm_e,
             "gap_eV": cbm_e - vbm_e,
         }
+        if quantile is not None:
+            out["weighted_quantile_eV"] = self.weighted_quantile(sel, state_w, quantile)
+        return out
+
+    @staticmethod
+    def weighted_quantile(x: np.ndarray, w: np.ndarray, q: float) -> float:
+        """Smallest value of `x` whose cumulative weight reaches a fraction `q` of the total weight
+        `sum(w)` (`q = 1` gives the maximum over the states with nonzero weight)."""
+        if not 0 <= q <= 1:
+            raise ValueError(f"`quantile` must be in [0, 1], got {q}")
+        x, w = np.ravel(x), np.ravel(w)
+        order = np.argsort(x)
+        cdf = np.cumsum(w[order])
+        # small tolerance so that rounding in the cumulative sum does not skip a value
+        i = np.searchsorted(cdf, q * cdf[-1] * (1 - 1e-12))
+        return float(x[order][min(i, len(x) - 1)])
 
     def weighted_summary(
         self,
@@ -201,9 +221,10 @@ class BandUncertaintyPostProcessor:
         tau: float = 0.1,
         bands: Sequence[int] | slice | None = None,
         vbm_fraction: float | None = None,
+        quantile: float | None = None,
     ) -> dict[str, dict]:
         """`weighted_stats` for every structure in the file."""
-        return {s: self.weighted_stats(s, e_cut, tau, bands, vbm_fraction) for s in self.results}
+        return {s: self.weighted_stats(s, e_cut, tau, bands, vbm_fraction, quantile) for s in self.results}
 
 
 Groups = Callable[[str], str] | Mapping[str, str] | None
@@ -235,6 +256,7 @@ class UncertaintyCalibrator:
 
     - "weighted_max_eV" / "weighted_mean_eV": `BandUncertaintyPostProcessor.weighted_stats`
       with `e_cut`, `tau` (and `bands`/`vbm_fraction` as a hard preselection);
+    - "weighted_quantile_eV": the same, the weighted `quantile` of the states (e.g. 0.9);
     - "max_eV" / "mean_eV": `BandUncertaintyPostProcessor.structure_stats` with `bands`/`vbm_fraction`.
 
     The calibration factor is a split-conformal quantile of the ratios `r_i = e_i / u_i`:
@@ -260,13 +282,16 @@ class UncertaintyCalibrator:
     tau: float = 0.1
     bands: Sequence[int] | slice | None = None
     vbm_fraction: float | None = None
+    quantile: float = 0.9
 
-    _STATS = ("weighted_max_eV", "weighted_mean_eV", "max_eV", "mean_eV")
+    _STATS = ("weighted_max_eV", "weighted_mean_eV", "weighted_quantile_eV", "max_eV", "mean_eV")
     _SETTINGS = ("align_mode", "ill_method", "ill_threshold")
 
     def __post_init__(self):
         if self.stat not in self._STATS:
             raise ValueError(f"`stat` must be one of {self._STATS}, got {self.stat!r}")
+        if not 0 <= self.quantile <= 1:
+            raise ValueError(f"`quantile` must be in [0, 1], got {self.quantile}")
         self.check_consistency()
 
     @classmethod
@@ -298,7 +323,7 @@ class UncertaintyCalibrator:
     def score(self, pp: BandUncertaintyPostProcessor, structure: str) -> float:
         """`stat` of `pp.key` for one structure."""
         if self.stat.startswith("weighted"):
-            stats = pp.weighted_stats(structure, self.e_cut, self.tau, self.bands, self.vbm_fraction)
+            stats = pp.weighted_stats(structure, self.e_cut, self.tau, self.bands, self.vbm_fraction, self.quantile)
         else:
             stats = pp.structure_stats(structure, self.bands, self.vbm_fraction)
         return stats[self.stat]
@@ -366,6 +391,7 @@ class UncertaintyCalibrator:
             "ratio_max": float(np.max(r)),
             "rank_correlation": _rank_correlation(u, e),
             "stat": self.stat,
+            **({"quantile": self.quantile} if self.stat == "weighted_quantile_eV" else {}),
         }
         if groups is not None:
             per_group, fallback, sizes = {}, [], {}
