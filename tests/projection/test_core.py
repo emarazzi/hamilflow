@@ -329,6 +329,45 @@ def test_kgrid_follows_the_config(tmp_path, options, expected):
     assert _resolve_projection_kgrid(config) == expected
 
 
+def run_with_kgrid(structure, tmp_path, kgrid):
+    config = ProjectionConfig(structure.path, tmp_path / "output", kgrid=kgrid, reduction_mode="truncate", n_workers=1)
+    return run_projection(config, REMOVE_P)
+
+
+@pytest.mark.parametrize("kgrid", [(2, 3, 1), (3, 2, 1), (2, 2, 1)])
+def test_grid_too_coarse_for_the_r_vectors_warns_but_still_runs(structure, tmp_path, caplog, kgrid):
+    """The fixture's R go from -1 to 1 in-plane, which needs 3 points per direction."""
+    with caplog.at_level("WARNING", logger="hamilflow.projection.core"):
+        result = run_with_kgrid(structure, tmp_path, kgrid)
+    assert "too coarse for the stored R vectors, which need at least (3, 3, 1)" in caplog.text
+    assert result.overlap_path.exists()
+
+
+@pytest.mark.parametrize("kgrid", [(3, 3, 1), (4, 5, 2)])
+def test_grid_that_separates_the_r_vectors_does_not_warn(structure, tmp_path, caplog, kgrid):
+    with caplog.at_level("WARNING", logger="hamilflow.projection.core"):
+        run_with_kgrid(structure, tmp_path, kgrid)
+    assert "too coarse" not in caplog.text
+
+
+def test_warning_is_right_about_what_it_warns_of(structure, tmp_path):
+    """Below the limit the output really is wrong, and at the limit it is exact."""
+    k = np.array(KPOINTS[1])
+    keep = np.ix_([0, 4, 5], [0, 4, 5])
+    H0 = structure.Sk_and_Hk(k)[1][keep]
+    exact = run_with_kgrid(structure, tmp_path / "a", (3, 3, 1))
+    np.testing.assert_allclose(SparseHamiltonianObj(exact.output_dir).Sk_and_Hk(k)[1], H0, atol=1e-10)
+    coarse = run_with_kgrid(structure, tmp_path / "b", (2, 2, 1))
+    assert np.abs(SparseHamiltonianObj(coarse.output_dir).Sk_and_Hk(k)[1] - H0).max() > 1e-3
+
+
+def test_user_kpoint_settings_go_through_the_real_sampling_function(structure, tmp_path):
+    config = ProjectionConfig(structure.path, tmp_path, kgrid=(9, 9, 9), user_kpoints_settings={"k_grid": [2, 3, 5]})
+    assert _resolve_projection_kgrid(config) == (2, 3, 5)
+    config = ProjectionConfig(structure.path, tmp_path, user_kpoints_settings={"k_grid": [2, 3, 5]}, force_2d=True)
+    assert _resolve_projection_kgrid(config) == (2, 3, 1)
+
+
 def test_user_kpoint_settings_take_over_the_kgrid(structure, tmp_path, monkeypatch):
     calls = {}
 

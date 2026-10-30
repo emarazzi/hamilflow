@@ -57,6 +57,17 @@ def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
     return (int(config.kgrid[0]), int(config.kgrid[1]), int(config.kgrid[2]))
 
 
+def _warn_if_undersampled(kgrid: tuple[int, int, int], Rijk_list: np.ndarray, input_dir) -> None:
+    """Warn if `kgrid` cannot tell the stored R vectors apart: R and R' with R - R' a multiple of
+    the grid get the same phase at every k-point, so the inverse transform adds their blocks."""
+    needed = Rijk_list.max(axis=0) - Rijk_list.min(axis=0) + 1
+    if any(n < need for n, need in zip(kgrid, needed)):
+        logger.warning(
+            f"[projection] {input_dir}: k-grid {tuple(kgrid)} is too coarse for the stored R vectors, which need "
+            f"at least {tuple(int(n) for n in needed)}: blocks of different R are mixed in the output"
+        )
+
+
 def run_projection(
     config: ProjectionConfig,
     removal_plan: RemovalPlanLike,
@@ -113,6 +124,7 @@ def run_projection(
 
     if obj.Rijk_list is None:
         raise ValueError("Rijk_list is None")
+    _warn_if_undersampled(resolved_kgrid, obj.Rijk_list, config.input_dir)
 
     # Only the real-space entries that end up in the output files (plus their
     # Hermitian partners) are ever accumulated -- never a dense
