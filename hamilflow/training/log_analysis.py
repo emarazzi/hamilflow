@@ -263,8 +263,8 @@ def replay_reduce_on_plateau(loss, patience: int, cooldown: int, rtol: float, fa
                              atol: float = 0.0, min_scale: float = 1e-4) -> np.ndarray:
     """``optax.contrib.reduce_on_plateau`` on one already-accumulated value per check.
 
-    Returns the LR scale in effect during each check, as the ``Scale`` printed on the log's epoch
-    line: a reduction decided at the end of epoch i shows up from epoch i + 1.
+    Returns the LR scale in effect during each check, as the ``Scale`` printed on the log's line for
+    the last epoch of that check: a reduction decided at the end of check i shows up there at check i + 1.
     """
     best, plateau, cool, scale = np.inf, 0, 0, 1.0
     out = np.empty(len(loss))
@@ -321,14 +321,15 @@ def _replay_mismatch(curve: TrainingCurve, k: int, min_scale: float) -> dict[str
     mismatch = {}
     for monitor in _MONITORS:
         values, epochs = _checks(curve, monitor, k)
-        logged = curve.scale[: len(values) * k].reshape(-1, k)[:, 0]
+        # the logged scale changes on the last epoch of a check
+        logged = curve.scale[: len(values) * k].reshape(-1, k)[:, -1]
         patience = max(1, round(curve.patience * curve.epochs_per_check / k))
         cooldown = round(curve.cooldown * curve.epochs_per_check / k)
         replayed = logged[0] * replay_reduce_on_plateau(
             values, patience, cooldown, curve.rtol, curve.factor, min_scale=min_scale / logged[0]
         )
         same = np.isclose(replayed, logged)
-        mismatch[monitor] = None if same.all() else int(epochs[np.argmin(same)]) - k + 1
+        mismatch[monitor] = None if same.all() else int(epochs[np.argmin(same)])
     return mismatch
 
 

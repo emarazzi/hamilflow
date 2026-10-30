@@ -389,11 +389,21 @@ def test_replay_mismatch_is_empty_without_reductions(tmp_path):
     assert analyze_training_logs([write_log(tmp_path / "deepx.log", np.ones(10))]).members[0].replay_mismatch == {}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="_replay_mismatch compares with the first epoch of each check, but the logged scale changes on its "
-    "last (real log: 160 structures, batch 2, 2 epochs per check; val reproduces all 10 reductions)",
-)
+def test_replay_mismatch_with_several_epochs_per_check_reports_the_first_wrong_epoch(tmp_path):
+    val = np.r_[np.linspace(4, 1, 20), np.ones(60)]
+    checks = val.reshape(-1, 2).mean(axis=1)
+    replayed = replay_reduce_on_plateau(checks, patience=5, cooldown=2, rtol=0.05)
+    i_reduced = np.argmax(replayed < 1)
+    scale = np.ones(80)  # the log never reduces, so the replay is first wrong at the end of check i_reduced
+    path = write_log(
+        tmp_path / "deepx.log", np.ones(80), val=val, scale=scale, patience=5, cooldown=2, accumulation=80, n_train=40
+    )
+    # a job without reductions is not compared: lower the very last epoch to make this one count
+    scale[-1] = 0.5
+    write_log(path, np.ones(80), val=val, scale=scale, patience=5, cooldown=2, accumulation=80, n_train=40)
+    assert analyze_training_logs([path]).members[0].replay_mismatch["job 1"]["val"] == 2 * (i_reduced + 1)
+
+
 def test_replay_mismatch_with_several_epochs_per_check_matches_the_real_log_behaviour(tmp_path):
     """In real logs the scale changes on the last epoch of a check: a replay reduced from check i shows at its end."""
     val = np.r_[np.linspace(4, 1, 20), np.ones(60)]
