@@ -18,6 +18,8 @@ ELEMENTS_ORBITAL_MAP = {"Mo": [0, 1], "S": [0]}
 ATOM_ELEMENTS = ["Mo", "S", "S"]
 ATOM_N_ORBITALS = [4, 1, 1]
 HALF_RS = [(1, 0, 0), (0, 1, 0), (1, 1, 0)]
+CORE_ORBITAL = 0  # the Mo s orbital
+CORE_LEVEL = -20000.0  # eV, the scale of the deepest states in FHI-aims all-electron Hamiltonians
 
 
 def pytest_collection_modifyitems(items):
@@ -37,6 +39,7 @@ class SyntheticStructure:
     Rs: np.ndarray  # (N_R, 3)
     S_R: np.ndarray  # (N_R, dim, dim), spin-expanded when spinful
     H_R: np.ndarray  # (N_R, dim, dim)
+    core_level: float | None = None
 
     def Sk_and_Hk(self, k) -> tuple[np.ndarray, np.ndarray]:
         """Direct sum M(k) = sum_R exp(2 pi i k.R) M(R), independent of any file parsing."""
@@ -53,13 +56,19 @@ def _write_blocks(path: Path, blocks: dict[tuple, np.ndarray], keys: list[tuple]
         f["entries"] = np.concatenate([blocks[key].ravel() for key in keys])
 
 
-def write_synthetic_structure(path: Path, spinful: bool = False, seed: int = 0) -> SyntheticStructure:
+def write_synthetic_structure(
+    path: Path, spinful: bool = False, seed: int = 0, core_level: float | None = None
+) -> SyntheticStructure:
     """
     Write POSCAR, info.json, overlap.h5 and hamiltonian.h5 for a Mo1S2-like cell of 6 orbitals (12 when spinful).
 
     Atoms have different orbital counts and some inter-cell atom pairs are absent, as in real files. M(-R) is
     the conjugate transpose of M(R), so H(k) and S(k) are Hermitian, and the off-site overlap is scaled so
     that every eigenvalue of S(k) lies in [0.5, 1.5] at every k (Gershgorin).
+
+    ``core_level`` mimics an all-electron Hamiltonian: the Mo s orbital gets this on-site energy and is fully
+    decoupled, in H and S, from everything else, so it is an exact flat eigenvalue at every k. Real core states
+    couple weakly to the valence, which this does not reproduce.
     """
     path.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
@@ -102,6 +111,10 @@ def write_synthetic_structure(path: Path, spinful: bool = False, seed: int = 0) 
         S_R[tuple(-c for c in R)] = block.T
     S_R[zero] = (S_R[zero] + S_R[zero].T) / 2
     np.fill_diagonal(S_R[zero], 0.0)
+    if core_level is not None:
+        for block in S_R.values():
+            block[CORE_ORBITAL, :] = 0.0
+            block[:, CORE_ORBITAL] = 0.0
     scale = 0.5 / np.abs(np.stack(list(S_R.values()))).sum(axis=0).sum(axis=1).max()
     S_R = {R: scale * block for R, block in S_R.items()}
     S_R[zero] += np.eye(n_orbitals)
@@ -117,6 +130,12 @@ def write_synthetic_structure(path: Path, spinful: bool = False, seed: int = 0) 
         H_R[R] = block
         H_R[tuple(-c for c in R)] = block.conj().T
     H_R[zero] = (H_R[zero] + H_R[zero].conj().T) / 2
+    if core_level is not None:
+        core = [CORE_ORBITAL, CORE_ORBITAL + n_orbitals] if spinful else [CORE_ORBITAL]
+        for block in H_R.values():
+            block[core, :] = 0.0
+            block[:, core] = 0.0
+        H_R[zero][core, core] = core_level
 
     S_blocks = {}
     H_blocks = {}
@@ -140,20 +159,27 @@ def write_synthetic_structure(path: Path, spinful: bool = False, seed: int = 0) 
     if spinful:
         zeros = np.zeros_like(S_dense)
         S_dense = np.block([[S_dense, zeros], [zeros, S_dense]])
-    return SyntheticStructure(path, spinful, np.array(Rs), S_dense, np.stack([H_R[R] for R in Rs]))
+    return SyntheticStructure(path, spinful, np.array(Rs), S_dense, np.stack([H_R[R] for R in Rs]), core_level)
 
 
-@pytest.fixture(scope="session", params=[False, True], ids=["spinless", "spinful"])
+@pytest.fixture(
+    scope="session",
+    params=[(False, None), (True, None), (False, CORE_LEVEL), (True, CORE_LEVEL)],
+    ids=["spinless", "spinful", "spinless-core", "spinful-core"],
+)
 def synthetic_structure(request, tmp_path_factory) -> SyntheticStructure:
-    """A read-only structure shared by the session, spinless and spinful. Do not write to its directory."""
-    return write_synthetic_structure(tmp_path_factory.mktemp("synthetic"), spinful=request.param)
+    """A read-only structure shared by the session, with and without spin and core. Do not write to its directory."""
+    spinful, core_level = request.param
+    return write_synthetic_structure(tmp_path_factory.mktemp("synthetic"), spinful=spinful, core_level=core_level)
 
 
 @pytest.fixture
 def make_synthetic_structure(tmp_path):
     """Factory for tests that need their own structure, e.g. another seed: make(name, spinful=..., seed=...)."""
 
-    def make(name: str = "structure", spinful: bool = False, seed: int = 0) -> SyntheticStructure:
-        return write_synthetic_structure(tmp_path / name, spinful=spinful, seed=seed)
+    def make(
+        name: str = "structure", spinful: bool = False, seed: int = 0, core_level: float | None = None
+    ) -> SyntheticStructure:
+        return write_synthetic_structure(tmp_path / name, spinful=spinful, seed=seed, core_level=core_level)
 
     return make

@@ -3,6 +3,7 @@
 import h5py
 import numpy as np
 import pytest
+import scipy.linalg
 from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
 from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 
@@ -30,6 +31,17 @@ def test_reference_is_not_trivial(synthetic_structure):
     _, H_general = synthetic_structure.Sk_and_Hk(KPOINTS[2])
     assert np.abs(H_general - H_gamma).max() > 0.1
     assert np.abs(H_general.imag).max() > 0.1
+
+
+@pytest.mark.parametrize("k", KPOINTS)
+def test_core_level_is_an_exact_flat_band(synthetic_structure, k):
+    if synthetic_structure.core_level is None:
+        pytest.skip("structure has no core level")
+    Sk, Hk = synthetic_structure.Sk_and_Hk(k)
+    eigvals = scipy.linalg.eigh(Hk, Sk, eigvals_only=True)
+    n_core = 2 if synthetic_structure.spinful else 1
+    np.testing.assert_allclose(eigvals[:n_core], synthetic_structure.core_level, atol=1e-8)
+    assert eigvals[n_core] > synthetic_structure.core_level / 2
 
 
 def test_atom_pairs_are_not_grouped_by_R_like_real_files(synthetic_structure):
