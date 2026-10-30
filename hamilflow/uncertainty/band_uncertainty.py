@@ -1030,7 +1030,8 @@ class BandUncertaintyCalculator:
             }
             mae_values.append(float(np.mean(vals)))
 
-        overall_mae = float(np.mean(mae_values))
+        # weighted, so that it is the mean over the full k-mesh
+        overall_mae = float(np.average(mae_values, weights=weights))
 
         logger.info(f"[{structure_name}] finished in {time.monotonic() - t_start:.1f}s{self._peak_memory()}")
         return structure_name, {

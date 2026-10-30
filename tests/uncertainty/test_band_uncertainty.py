@@ -520,6 +520,26 @@ def test_overall_mae_of_one_k_point_is_its_mean_error(small_structure, tmp_path)
     assert result["overall_mae_eV"] == pytest.approx(np.mean(result["kpoints"]["k0"]["abs_err_eV"]))
 
 
+def test_overall_mae_weights_each_k_point_by_its_symmetry_weight(small_structure, tmp_path, monkeypatch):
+    root = tmp_path / "dft"
+    root.mkdir()
+    shutil.copytree(small_structure.path, root / NAME)
+    model_dirs, _ = make_ensemble(small_structure, tmp_path, random_deltas(small_structure))
+    original = BandUncertaintyCalculator.build_irreducible_kpoints
+
+    def unequal_weights(self, h_obj, mesh, symprec):
+        ks, _, anchor = original(self, h_obj, mesh, symprec)
+        return ks, np.arange(1, len(ks) + 1), anchor
+
+    monkeypatch.setattr(BandUncertaintyCalculator, "build_irreducible_kpoints", unequal_weights)
+    result = compare(model_dirs, root, tmp_path)[NAME]
+    means = [np.mean(e["abs_err_eV"]) for e in result["kpoints"].values()]
+    weights = [e["weight"] for e in result["kpoints"].values()]
+    assert len(set(weights)) > 1
+    assert not np.isclose(np.mean(means), np.average(means, weights=weights))
+    assert result["overall_mae_eV"] == pytest.approx(np.average(means, weights=weights))
+
+
 def test_grid_alignment_of_the_comparison_uses_each_own_midgap(small_structure, tmp_path):
     root = tmp_path / "dft"
     root.mkdir()
