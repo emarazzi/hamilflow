@@ -19,7 +19,7 @@ Run with:  python write_train_tomls.py
 
 from pathlib import Path
 
-from hamilflow.train_infer_config.ensemble import write_ensemble_train_tomls
+from hamilflow.training.ensemble import write_ensemble_train_tomls
 
 # --- User settings -----------------------------------------------------------
 CYCLE_DIR = Path("/path/to/your/models/cycle2")

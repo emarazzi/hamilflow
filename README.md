@@ -54,4 +54,4 @@ Tools that estimate how uncertain an ensemble of DeepH predictions is, both on t
 ### Other utilities
 
 - `hamilflow.band_structures`: k-path setup, band calculation and plotting, gap and shift analysis.
-- `hamilflow.train_infer_config`: writes DeepH training and inference TOML configs from dataclasses.
+- `hamilflow.training`: writes DeepH training and inference TOML configs from dataclasses; analyzes training logs (LR reductions, convergence, `patience` and `cooldown` suggestions).

@@ -115,7 +115,7 @@ disk (e.g. the `deeph_full/` folder written by `dft_workflows/`).
 The scripts in `dft_workflows/` and `projection/` read the removal plans from
 their `WORKDIR`, so copy the plans there and edit them for your system.
 
-## `train_infer_config/`
+## `training/`
 
 DeepH inputs for a k-model ensemble, one AL cycle per folder (`cycle_dir`).
 Run in this order:
@@ -132,6 +132,12 @@ Run in this order:
 - `write_infer_tomls.py`: once training is done, one
   `train_{j}/<infer_name>/infer.toml` per fold, pointing to the model of the
   most recent training run of that fold (with a warning if there are several).
+
+Independent of that order, while training runs or after it:
+
+- `analyze_training_logs.py`: from the training logs, the LR reductions of each
+  member, whether the ensemble has converged, and suggested `patience` and
+  `cooldown` for `reduce_on_plateau`.
 
 ## `uncertainty/`
 

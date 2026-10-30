@@ -24,7 +24,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from hamilflow.train_infer_config.dataset_split import parent_of, write_kfold_splits
+from hamilflow.training.dataset_split import parent_of, write_kfold_splits
 
 # --- User settings -----------------------------------------------------------
 INPUTS_DIR = Path("/path/to/your/training/inputs/dft")
