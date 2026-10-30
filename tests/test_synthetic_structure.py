@@ -1,8 +1,10 @@
 """The fixture itself, checked against upstream deepx_dock so that hamilflow tests rest on a valid reference."""
 
+import h5py
 import numpy as np
 import pytest
 from deepx_dock.compute.eigen.hamiltonian import HamiltonianObj
+from deepx_dock.CONSTANT import DEEPX_HAMILTONIAN_FILENAME
 
 KPOINTS = [(0.0, 0.0, 0.0), (0.5, 0.0, 0.0), (0.13, 0.37, 0.0), (0.21, -0.44, 0.3)]
 
@@ -28,6 +30,13 @@ def test_reference_is_not_trivial(synthetic_structure):
     _, H_general = synthetic_structure.Sk_and_Hk(KPOINTS[2])
     assert np.abs(H_general - H_gamma).max() > 0.1
     assert np.abs(H_general.imag).max() > 0.1
+
+
+def test_atom_pairs_are_not_grouped_by_R_like_real_files(synthetic_structure):
+    with h5py.File(synthetic_structure.path / DEEPX_HAMILTONIAN_FILENAME, "r") as f:
+        Rs = f["atom_pairs"][:, :3]
+    n_runs = 1 + np.any(Rs[1:] != Rs[:-1], axis=1).sum()
+    assert n_runs > len(np.unique(Rs, axis=0))
 
 
 @pytest.mark.parametrize("k", KPOINTS)

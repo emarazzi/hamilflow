@@ -44,13 +44,12 @@ class SyntheticStructure:
         return np.tensordot(phase, self.S_R, axes=1), np.tensordot(phase, self.H_R, axes=1)
 
 
-def _write_blocks(path: Path, blocks: dict[tuple, np.ndarray]) -> None:
-    keys = sorted(blocks, key=lambda key: (key[2], key[1], key[0], key[3], key[4]))
+def _write_blocks(path: Path, blocks: dict[tuple, np.ndarray], keys: list[tuple]) -> None:
     sizes = [blocks[key].size for key in keys]
     with h5py.File(path, "w") as f:
-        f["atom_pairs"] = np.array(keys, dtype=np.int64)
-        f["chunk_boundaries"] = np.cumsum([0, *sizes], dtype=np.int64)
-        f["chunk_shapes"] = np.array([blocks[key].shape for key in keys], dtype=np.int64)
+        f["atom_pairs"] = np.array(keys, dtype=np.int32)
+        f["chunk_boundaries"] = np.cumsum([0, *sizes], dtype=np.int32)
+        f["chunk_shapes"] = np.array([blocks[key].shape for key in keys], dtype=np.int32)
         f["entries"] = np.concatenate([blocks[key].ravel() for key in keys])
 
 
@@ -81,7 +80,7 @@ def write_synthetic_structure(path: Path, spinful: bool = False, seed: int = 0) 
                 "orbits_quantity": n_orbitals,
                 "orthogonal_basis": False,
                 "spinful": spinful,
-                "fermi_energy_eV": 0.0,
+                "fermi_energy_eV": -5.0,
                 "elements_orbital_map": ELEMENTS_ORBITAL_MAP,
                 "occupation": n_orbitals,
             }
@@ -131,8 +130,11 @@ def write_synthetic_structure(path: Path, spinful: bool = False, seed: int = 0) 
                 i_slice = np.r_[i_slice, i_slice + n_orbitals]
                 j_slice = np.r_[j_slice, j_slice + n_orbitals]
             H_blocks[key] = H_R[R][np.ix_(i_slice, j_slice)]
-    _write_blocks(path / DEEPX_OVERLAP_FILENAME, S_blocks)
-    _write_blocks(path / DEEPX_HAMILTONIAN_FILENAME, H_blocks)
+    # Real files do not group atom pairs by R (R and -R alternate), so no order may be relied on
+    keys = list(S_blocks)
+    keys = [keys[i] for i in rng.permutation(len(keys))]
+    _write_blocks(path / DEEPX_OVERLAP_FILENAME, S_blocks, keys)
+    _write_blocks(path / DEEPX_HAMILTONIAN_FILENAME, H_blocks, keys)
 
     S_dense = np.stack([S_R[R] for R in Rs])
     if spinful:
