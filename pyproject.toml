@@ -36,6 +36,7 @@ dependencies = [
 # GPU eigensolvers (sparse_hamiltonian.dense_backend). cupy-cuda12x is built for CUDA 12: on a
 # machine with another CUDA major version, install the matching wheel instead (e.g. cupy-cuda11x).
 gpu = ["cupy-cuda12x"]
+test = ["pytest>=8", "pytest-cov"]
 
 [project.urls]
 Repository = "https://github.com/emarazzi/hamilflow"
@@ -49,3 +50,13 @@ include = ["hamilflow*"]
 required-version = ">=0.17"
 line-length = 120
 target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# importlib mode: tests/ mirrors the package, so test files in different folders can share a name
+addopts = "--import-mode=importlib --strict-markers"
+markers = [
+  "slow: takes more than a few seconds",
+  "gpu: needs a working GPU backend, skipped otherwise",
+  "integration: exercises several modules together",
+]
