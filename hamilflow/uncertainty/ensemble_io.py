@@ -53,7 +53,8 @@ def link_ensemble_files(
                 if src_file.exists() and not dst_file.exists():
                     dst_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
-                        dst_file.symlink_to(src_file)
+                        # absolute: a relative target would resolve against the member folder
+                        dst_file.symlink_to(src_file.absolute())
                     except Exception:  # noqa: BLE001
                         # Fall back to copying if symlinks are unavailable
                         logger.debug(f"could not symlink {dst_file}, copying {src_file} instead")

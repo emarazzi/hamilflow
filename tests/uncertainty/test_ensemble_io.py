@@ -125,10 +125,6 @@ def test_running_twice_changes_nothing(layout):
     assert (member / "POSCAR").read_text() == "source POSCAR"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a relative structure path is stored as the link target, which resolves against the member folder",
-)
 def test_structure_given_by_a_relative_path_gives_working_links(layout, tmp_path, monkeypatch):
     _, member, _ = layout
     monkeypatch.chdir(tmp_path)
