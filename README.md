@@ -55,3 +55,23 @@ Tools that estimate how uncertain an ensemble of DeepH predictions is, both on t
 
 - `hamilflow.band_structures`: k-path setup, band calculation and plotting, gap and shift analysis.
 - `hamilflow.training`: writes DeepH training and inference TOML configs from dataclasses; analyzes training logs (LR reductions, convergence, `patience` and `cooldown` suggestions).
+
+## Testing
+
+```bash
+pip install -e .[test]
+pytest
+```
+
+The suite takes about 15 seconds and little memory: it builds small synthetic structures on the fly (see
+`tests/conftest.py`), so it needs no DFT data, no FHI-aims and no GPU. `tests/` mirrors the package.
+
+```bash
+pytest tests/projection                  # one part of the package
+pytest -m "not slow"                     # skip the slowest tests
+pytest --cov=hamilflow --cov-report=term # with coverage
+```
+
+Tests that need a GPU are marked `gpu` and skipped when none is available. GitHub Actions runs `ruff check .` and
+`pytest` on every push; its runners have no GPU, so the GPU code paths have to be checked by hand on a machine with one.
+`dft_workflows` is only lightly tested so far.
