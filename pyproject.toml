@@ -40,9 +40,6 @@ gpu = ["cupy-cuda12x"]
 [project.urls]
 Repository = "https://github.com/emarazzi/hamilflow"
 
-[tool.setuptools]
-py-modules = ["hamilflow_projection"]
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["hamilflow*"]
