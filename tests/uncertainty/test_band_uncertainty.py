@@ -6,6 +6,7 @@ layout and overlap. With mesh (2, 2, 1) the bands are computed at a few k-points
 electrons: 3 occupied bands of 6 when spinless, 6 of 12 when spinful.
 """
 
+import dataclasses
 import json
 import logging
 import shutil
@@ -365,14 +366,32 @@ def test_downfold_correction_matches_exact_diagonalization_for_a_small_coupling(
     np.testing.assert_allclose(np.linalg.eigvalsh(np.diag(e_w) + sigma), exact, atol=1e-10)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a band outside the window nearly degenerate with one inside gives a huge correction, with no warning",
-)
-def test_downfold_correction_stays_bounded_at_a_near_degeneracy():
-    e_w, e_o = np.array([0.0, 1.0]), np.array([1.0 + 1e-13])
-    sigma = BandUncertaintyCalculator._downfold_correction(e_w, np.array([[0.01], [0.01]]), e_o)
-    assert np.abs(sigma).max() < 1.0
+def test_window_does_not_split_a_degenerate_group_of_bands(small_structure, tmp_path, monkeypatch):
+    """Band 5 is degenerate with band 4 at the edge of a window ending at band 4: the correction would blow up."""
+    S_R = np.where(np.all(small_structure.Rs == 0, axis=1)[:, None, None], np.eye(6), 0.0)
+    H_R = np.where(
+        np.all(small_structure.Rs == 0, axis=1)[:, None, None], np.diag([-3.0, -2.0, -1.0, 1.0, 2.0, 2.0 + 1e-13]), 0.0
+    )
+    structure = dataclasses.replace(small_structure, S_R=S_R, H_R=H_R)
+    # opposite perturbations: the average keeps the degeneracy
+    delta = 0.01 * small_structure.perturbation()
+    model_dirs, _ = make_ensemble(structure, tmp_path, [delta, -delta])
+    for model in model_dirs:
+        structure.write_hamiltonian(S_R, model / NAME / DEEPX_OVERLAP_FILENAME)
+    window = {"method": "projected", "n_bands_below": 1, "n_bands_above": 2}
+
+    exact = compute(model_dirs, tmp_path)[NAME]
+    result = compute(model_dirs, tmp_path, **window)[NAME]
+    assert (result["first_band_index"], result["n_bands"]) == (2, 4)
+    assert per_k(result, "sigma_eV_avg_ham").max() < 1.0
+    np.testing.assert_allclose(per_k(result, "sigma_eV_avg_ham"), per_k(exact, "sigma_eV_avg_ham")[2:], atol=1e-3)
+
+    # the same run without the protection: what this test guards against
+    monkeypatch.setattr(band_uncertainty, "WINDOW_EDGE_MIN_GAP", 0.0)
+    unprotected = compute(model_dirs, tmp_path, **window)[NAME]
+    assert unprotected["n_bands"] == 3
+    # sigma_eV would not show it: the correction goes with D^2, the same for both members, so their spread cancels
+    assert per_k(unprotected, "sigma_eV_avg_ham").max() > 1e3
 
 
 def fake_structure(occupation=6, spinful=False):
@@ -410,6 +429,35 @@ WINDOW_BANDS = np.array(
 def test_band_window(options, expected):
     calc = BandUncertaintyCalculator(**options)
     assert calc._band_window(WINDOW_BANDS, fake_structure()) == expected
+
+
+@pytest.mark.parametrize(
+    "options", [{"n_bands_below": 1, "n_bands_above": 1}, {"window_e": 0.001}], ids=["count", "energy"]
+)
+@pytest.mark.parametrize(
+    ("gap", "expected"),
+    [
+        (0.0, (1, 5)),  # exactly degenerate
+        (1e-13, (1, 5)),
+        (0.009, (1, 5)),  # just inside the limit
+        (0.011, (2, 4)),  # just outside
+    ],
+)
+def test_window_grows_past_bands_too_close_to_its_edges(options, gap, expected):
+    # at the second k-point only, band 1 comes within `gap` of band 2 and band 4 of band 3
+    bands = np.array([[-5.0, -5.0], [-3.0, -1.0 - gap], [-1.0, -1.0], [1.0, 1.0], [2.0, 1.0 + gap], [6.0, 7.0]])
+    assert BandUncertaintyCalculator(**options)._band_window(bands, fake_structure()) == expected
+
+
+def test_window_grows_through_a_whole_group_of_close_bands():
+    bands = np.array([[-1.002], [-1.001], [-1.0], [1.0], [1.001], [1.002], [5.0]])
+    calc = BandUncertaintyCalculator(n_bands_below=1, n_bands_above=1)
+    assert calc._band_window(bands, fake_structure()) == (0, 6)
+
+
+def test_window_growth_stops_at_the_ends_of_the_spectrum():
+    bands = np.array([[-1.0], [-1.0], [-1.0], [1.0], [1.0], [1.0]])
+    assert BandUncertaintyCalculator(n_bands_below=1, n_bands_above=1)._band_window(bands, fake_structure()) == (0, 6)
 
 
 # ---------------------------------- comparison to DFT ----------------------------------
@@ -463,7 +511,6 @@ def test_gaps_of_the_average_and_of_dft_are_reported(small_structure, tmp_path):
 
 
 def test_overall_mae_of_one_k_point_is_its_mean_error(small_structure, tmp_path):
-    """One k-point only: whether the mean over several should use their weights is an open question."""
     root = tmp_path / "dft"
     root.mkdir()
     shutil.copytree(small_structure.path, root / NAME)

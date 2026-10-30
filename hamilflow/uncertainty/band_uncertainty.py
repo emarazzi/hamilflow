@@ -61,6 +61,11 @@ def _run_in_child(sender, run_structure, structure_name) -> None:
 # crossover: sparse ~1.5x faster at 10% fill, slower above ~15%, independent of n.
 SPARSE_PRODUCT_MAX_FILL = 0.1
 
+# Smallest separation (eV), at every k-point, between a band of the method="projected" window and
+# the next band outside it. The second-order downfolding divides by this separation, so bands
+# closer than the members' deviations (~0.01 eV) are taken into the window instead.
+WINDOW_EDGE_MIN_GAP = 0.01
+
 # Memory model of the parallel drivers' scheduling (`_memory_estimate`). Peak memory of one
 # structure in a worker, in complex n x n matrices (n the Hamiltonian dimension), as
 # a * n_k + b with n_k the irreducible k-points, fitted to the peaks measured on an A100 node
@@ -145,7 +150,9 @@ class BandUncertaintyCalculator:
       some k-point of the grid (band edges over the grid, as for the gap). The number of bands
       then adapts to each structure's band density. One value for both sides, like the `e_cut`
       of the band-edge-weighted statistics in `BandUncertaintyPostProcessor`; use e_cut plus a
-      few tau.
+      few tau. Whichever way it is set, the window grows past a band that comes within
+      `WINDOW_EDGE_MIN_GAP` of the next one at some k-point, so that no (nearly) degenerate group
+      of bands is split; `n_bands` and `first_band_index` of the output give the actual window.
     - `downfold`: with `method="projected"`, fold the coupling to every band outside the window
       back into the window block (Loewdin partitioning, second order, `H_oo ~ E_o`): with
       `D = C^dag (H_m - H_avg - c_m S) C` in the averaged Hamiltonian's eigenbasis, the window
@@ -390,15 +397,13 @@ class BandUncertaintyCalculator:
             # bands are sorted at every k, so the bands reaching the window are contiguous
             first = int(np.argmax(eigvals[: homo_idx + 1].max(axis=1) >= vbm - self.window_e))
             stop = lumo_idx + int(np.sum(eigvals[lumo_idx:].min(axis=1) <= cbm + self.window_e))
-            return first, stop
-        if self.n_bands_below is not None:
-            first = max(0, homo_idx + 1 - self.n_bands_below)
         else:
-            first = 0
-        if self.n_bands_above is not None:
-            stop = min(n_bands, lumo_idx + self.n_bands_above)
-        else:
-            stop = n_bands
+            first = max(0, homo_idx + 1 - self.n_bands_below) if self.n_bands_below is not None else 0
+            stop = min(n_bands, lumo_idx + self.n_bands_above) if self.n_bands_above is not None else n_bands
+        while first > 0 and (eigvals[first] - eigvals[first - 1]).min() < WINDOW_EDGE_MIN_GAP:
+            first -= 1
+        while stop < n_bands and (eigvals[stop] - eigvals[stop - 1]).min() < WINDOW_EDGE_MIN_GAP:
+            stop += 1
         return first, stop
 
     @staticmethod
