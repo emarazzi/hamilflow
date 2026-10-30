@@ -10,8 +10,9 @@ batches, so patience and cooldown are in epochs.
 
 Monitored loss: with ``only_use_train_loss = false`` the scheduler "considers both train and
 validation loss"; how they are combined is not documented, so ``monitor`` chooses train / val /
-mean. On logs with actual reductions, ``MemberAnalysis.replay_mismatch`` shows which choice
-reproduces the logged LR scale.
+mean. The default is val: on a real log with 10 reductions, only val reproduced all of them. On logs
+with actual reductions, ``MemberAnalysis.replay_mismatch`` shows which choice reproduces the logged
+LR scale.
 
 Suggestion logic, on the part of each log run at the initial LR (the replay of other parameters
 is only meaningful up to the first actual reduction):
@@ -376,7 +377,7 @@ def _median_first(epochs: list[int | None]) -> float:
 def analyze_training_logs(
     logs: Sequence,
     *,
-    monitor: str = "mean",
+    monitor: str = "val",
     rtols: Sequence[float] | None = None,
     patience_grid: Sequence[int] = tuple(range(5, 201, 5)),
     smooth: int = 21,

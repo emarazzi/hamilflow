@@ -19,7 +19,7 @@ LOGS = [CYCLE_DIR / f"train_{j}" / "deepx.log" for j in range(1, K + 1)]
 #   LOGS = [[CYCLE_DIR / f"train_{j}" / run / "deepx.log" for run in ("outputs_1", "outputs_2")]
 #           for j in range(1, K + 1)]
 
-MONITOR = "mean"  # loss seen by the scheduler: "train", "val" or "mean"
+MONITOR = "val"  # loss seen by the scheduler: "train", "val" or "mean"
 MIN_SCALE = 1e-4  # min_learning_rate_scale in train.toml
 WALLTIME_H = 24.0  # walltime per job, to express the training length in jobs; None to skip
 # -----------------------------------------------------------------------------
