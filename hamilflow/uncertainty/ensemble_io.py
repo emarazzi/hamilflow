@@ -28,7 +28,7 @@ def link_ensemble_files(
 ):
     """For each structure path, ensure ensemble files are placed under dst_parent/ensemble_dir/<structure.name>.
 
-    - If <dst>/hamiltonian.h5 is missing but <dst>/hamiltonian_pred.h5 exists, copy it.
+    - If <dst>/hamiltonian.h5 is missing but <dst>/hamiltonian_pred.h5 exists, rename it.
     - Create symlinks for the files in `symlink_files` from the source structure into the dst.
     """
     ensemble_dir = Path(ensemble_dir)
@@ -44,8 +44,7 @@ def link_ensemble_files(
             dst_file = dst / hamiltonian_name
             src_file = dst / hamiltonian_pred_name
             if not dst_file.exists() and src_file.exists():
-                dst_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_file, dst_file)
+                shutil.move(src_file, dst_file)
 
             for fname in symlink_files:
                 src_file = s / fname

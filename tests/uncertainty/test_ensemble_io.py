@@ -36,12 +36,12 @@ def test_discover_warns_when_nothing_matches(tmp_path, caplog):
     assert "No structures match" in caplog.text
 
 
-def test_prediction_is_copied_to_the_hamiltonian_name(layout):
+def test_prediction_is_renamed_to_the_hamiltonian_name(layout):
     source, member, parent = layout
     link_ensemble_files([source], Path("member_1"), parent)
     assert (member / "hamiltonian.h5").read_text() == "predicted"
     assert not (member / "hamiltonian.h5").is_symlink()
-    assert (member / "hamiltonian_pred.h5").exists()
+    assert not (member / "hamiltonian_pred.h5").exists()
 
 
 def test_existing_hamiltonian_is_not_overwritten(layout):
