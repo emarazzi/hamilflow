@@ -521,6 +521,7 @@ class BandUncertaintyCalculator:
                 "sigma_eV": sigma_eigvals[:, i_k].tolist(),
                 "sigma_eV_avg_ham": sigma_eigvals_avg_ham[:, i_k].tolist(),
                 "eigvals_avg_ham_eV": avg_window[:, i_k].tolist(),
+                "member_deviation_eV": deviations[:, :, i_k].tolist(),
             }
 
         return {
@@ -596,7 +597,8 @@ class BandUncertaintyCalculator:
         sigma_eigvals = np.std(aligned_stack, axis=0, ddof=1)
         # Deviation from the averaged Hamiltonian's own eigenvalues (a fixed
         # reference, not estimated from this sample) -- no ddof correction needed.
-        sigma_eigvals_avg_ham = np.sqrt(np.mean((aligned_stack - avg_ham_aligned[None, :, :]) ** 2, axis=0))
+        deviations = aligned_stack - avg_ham_aligned[None, :, :]
+        sigma_eigvals_avg_ham = np.sqrt(np.mean(deviations ** 2, axis=0))
 
         n_irr = len(ks)
         result_per_k = {}
@@ -607,6 +609,7 @@ class BandUncertaintyCalculator:
                 "sigma_eV": sigma_eigvals[:, i_k].tolist(),
                 "sigma_eV_avg_ham": sigma_eigvals_avg_ham[:, i_k].tolist(),
                 "eigvals_avg_ham_eV": avg_ham_aligned[:, i_k].tolist(),
+                "member_deviation_eV": deviations[:, :, i_k].tolist(),
             }
 
         return {
@@ -694,7 +697,11 @@ class BandUncertaintyCalculator:
           get the `sigma_eV_avg_ham` reference below. If a structure's average is already there
           it is read as-is; otherwise it is computed and written there. Its midgap-aligned
           eigenvalues are also stored per k-point as `eigvals_avg_ham_eV` (same band order as
-          `sigma_eV_avg_ham`), for energy-dependent weighting in post-processing.
+          `sigma_eV_avg_ham`), for energy-dependent weighting in post-processing, together with
+          `member_deviation_eV[model][band]`: each member's signed deviation from the average,
+          aligned eigenvalue minus the average's (so `sigma_eV_avg_ham` is its RMS over members),
+          which lets the post-processor refit the members' shifts in an energy window
+          (`BandUncertaintyPostProcessor(refit_shift=...)`).
         - `n_jobs`: CPU budget for every diagonalization (-1 = all cores). Passed to
           `SparseHamiltonianObj.diag`.
         - `parallel_k`: if True, k-points are spread over threads (leftover budget goes to each
@@ -1016,7 +1023,8 @@ class BandUncertaintyCalculator:
         else:
             avg_aligned, _ = self.align_to_midgap(avg_raw, dft_obj, anchor_k_idx)
 
-        abs_err = np.abs(avg_aligned - dft_aligned)
+        err = avg_aligned - dft_aligned
+        abs_err = np.abs(err)
 
         per_k = {}
         mae_values = []
@@ -1026,6 +1034,7 @@ class BandUncertaintyCalculator:
                 "k_frac": ks[i_k].tolist(),
                 "weight": int(weights[i_k]),
                 "abs_err_eV": vals,
+                "err_eV": err[:, i_k].tolist(),
                 "eigvals_avg_ham_eV": avg_aligned[:, i_k].tolist(),
             }
             mae_values.append(float(np.mean(vals)))
@@ -1063,7 +1072,10 @@ class BandUncertaintyCalculator:
     ):
         """Compare the models' averaged Hamiltonian to the DFT reference under `dft_root`.
 
-        Returns a dict keyed by structure with MAE and per-k error lists similar to `compute`.
+        Returns a dict keyed by structure with MAE and per-k error lists similar to `compute`:
+        `abs_err_eV` and the signed `err_eV` (average minus DFT, after alignment), whose sign
+        lets the post-processor refit the shift in an energy window
+        (`BandUncertaintyPostProcessor(refit_shift=...)`).
 
         - `average_hamiltonian_dir`: see `compute`. Each structure's averaged `hamiltonian.h5`
           is read from there if present, otherwise averaged from `model_dirs` and written there.

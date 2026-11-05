@@ -285,6 +285,16 @@ def test_common_bands_cuts_to_the_bands_real_in_all_spectra():
     np.testing.assert_array_equal(cut_b, b[:1])
 
 
+def test_signed_member_deviations_give_the_stored_sigmas(synthetic_structure, ensemble, tmp_path):
+    model_dirs, _ = ensemble
+    result = compute(model_dirs, tmp_path)[NAME]
+    for entry in result["kpoints"].values():
+        dev = np.array(entry["member_deviation_eV"])
+        assert dev.shape == (len(model_dirs), len(entry["sigma_eV"]))
+        np.testing.assert_allclose(np.sqrt(np.mean(dev**2, axis=0)), entry["sigma_eV_avg_ham"], atol=1e-12)
+        np.testing.assert_allclose(np.std(dev, axis=0, ddof=1), entry["sigma_eV"], atol=1e-12)
+
+
 # ---------------------------------- projected method ----------------------------------
 
 
@@ -293,7 +303,7 @@ def test_projected_with_the_whole_spectrum_reproduces_exact(small_structure, tmp
     model_dirs, _ = make_ensemble(small_structure, tmp_path, random_deltas(small_structure))
     exact = compute(model_dirs, tmp_path)[NAME]
     projected = compute(model_dirs, tmp_path, method="projected", downfold=downfold)[NAME]
-    for key in ("sigma_eV", "sigma_eV_avg_ham", "eigvals_avg_ham_eV"):
+    for key in ("sigma_eV", "sigma_eV_avg_ham", "eigvals_avg_ham_eV", "member_deviation_eV"):
         np.testing.assert_allclose(per_k(projected, key), per_k(exact, key), atol=1e-9)
     np.testing.assert_allclose(projected["per_model_gap_eV"], exact["per_model_gap_eV"], atol=1e-9)
 
@@ -338,6 +348,27 @@ def test_projected_with_orbital_removal_reproduces_exact(small_structure, tmp_pa
     projected = compute(model_dirs, tmp_path, method="projected", **options)[NAME]
     assert projected["n_bands"] == exact["n_bands"] == exact["n_kept_orbitals"]
     np.testing.assert_allclose(per_k(projected, "sigma_eV"), per_k(exact, "sigma_eV"), atol=1e-9)
+
+
+def test_member_shift_moves_the_restricted_downfolded_window_rigidly(small_structure, tmp_path, monkeypatch):
+    """Changing a member's rigid shift by delta subtracts exactly delta from its window deviations, also with
+    downfolding (C_W^dag S C_o = 0), so refitting the shift in post-processing is exact."""
+    model_dirs, _ = make_ensemble(small_structure, tmp_path, random_deltas(small_structure, scale=0.05))
+    options = {"method": "projected", "n_bands_below": 1, "n_bands_above": 1, "downfold": True}
+    ref = compute(model_dirs, tmp_path, **options)
+    assert ref[NAME]["n_bands"] < ref[NAME]["n_bands_total"]
+    delta = np.array([0.0, 0.23, -0.4])
+    fit = BandUncertaintyCalculator._fit_and_save
+    monkeypatch.setattr(BandUncertaintyCalculator, "_fit_and_save", lambda self, *a, **k: [
+        dict(r, c_eV=r["c_eV"] + d) for r, d in zip(fit(self, *a, **k), delta, strict=True)])
+    shifted = compute(model_dirs, tmp_path, **options)
+    np.testing.assert_allclose(per_k(shifted[NAME], "member_deviation_eV"),
+                               per_k(ref[NAME], "member_deviation_eV") - delta[:, None, None], atol=1e-12)
+    for mode in ("mean", "median"):
+        a = BandUncertaintyPostProcessor(ref, refit_shift=mode).weighted_stats(NAME, e_cut=1.0, tau=0.1, quantile=0.9)
+        b = BandUncertaintyPostProcessor(shifted, refit_shift=mode).weighted_stats(NAME, e_cut=1.0, tau=0.1, quantile=0.9)
+        for key in ("weighted_mean_eV", "weighted_max_eV", "weighted_quantile_eV", "mean_eV", "max_eV"):
+            assert a[key] == pytest.approx(b[key], abs=1e-12), key
 
 
 def test_downfold_correction_is_the_second_order_formula_by_hand():
@@ -485,6 +516,7 @@ def test_error_is_measured_after_the_rigid_alignment(synthetic_structure, ensemb
     dft = spectra(synthetic_structure, synthetic_structure.H_R, result["kpoints"])
     atol = tol(synthetic_structure)
     np.testing.assert_allclose(per_k(result, "abs_err_eV"), np.abs(avg - c - dft), atol=atol)
+    np.testing.assert_allclose(per_k(result, "err_eV"), avg - c - dft, atol=atol)
     assert result["avg_vs_dft_rigid_shift_eV"] == pytest.approx(c, abs=atol)
 
 
@@ -572,6 +604,12 @@ def test_outputs_feed_the_calibrator(small_structure, tmp_path):
     assert e[0] > 0
     stats = BandUncertaintyPostProcessor.from_json(u_path).weighted_stats(NAME)
     assert stats["gap_eV"] == pytest.approx(json.loads(u_path.read_text())[NAME]["avg_hamiltonian_gap_eV"])
+
+    for mode in ("mean", "median"):
+        refit = UncertaintyCalibrator.from_json(u_path, e_path, refit_shift=mode, e_cut=1.0, tau=0.1)
+        _, u_r, e_r = refit.paired()
+        assert u_r[0] > 0
+        assert e_r[0] > 0
 
 
 # ---------------------------------- k-points and edges ----------------------------------

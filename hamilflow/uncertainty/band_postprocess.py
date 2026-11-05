@@ -3,6 +3,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 
@@ -15,19 +16,44 @@ class BandUncertaintyPostProcessor:
     and `compare_averaged_to_dft` outputs (`key="abs_err_eV"`), so the predicted uncertainty
     and the true error can be reduced over exactly the same bands.
 
+    `refit_shift`: None (default) uses the stored values, aligned by the rigid shift fitted on
+    the Hamiltonian matrices (`align_mode="matrix"`), which is dominated by the orbitals far from
+    the gap. "mean" or "median" instead refits, for every statistic, one constant shift per
+    spectrum on the states it reduces over, with the statistic's own state weights (the soft
+    window of `weighted_stats`, the k-point weights over the selected bands in `structure_stats`):
+    for `abs_err_eV` the shift of the average against DFT, from the signed `err_eV`
+    (`|err - delta|`); for `sigma_eV_avg_ham` / `sigma_eV` one shift per member, from the signed
+    `member_deviation_eV` (RMS / standard deviation over members of `dev_m - delta_m`). "mean"
+    takes the weighted mean of the signed values (least squares), "median" the weighted median.
+    A rigid shift moves every eigenvalue of a spectrum by the same amount, so this removes only
+    the energy offset in the window; gap, band-shape and k-dependent errors are kept. Use the same
+    `refit_shift` for uncertainty and error. Needs files that store the signed values.
+
     Example usage:
       pp = BandUncertaintyPostProcessor.from_json("band_uncertainty.json")
       stats = pp.summary(vbm_fraction=0.2)
       weighted = pp.weighted_summary(e_cut=1.0, tau=0.1)
+      refit = BandUncertaintyPostProcessor.from_json("band_uncertainty.json", refit_shift="mean")
     """
 
     results: dict
     key: str = "sigma_eV_avg_ham"
+    refit_shift: str | None = None
+
+    _REFIT: ClassVar[tuple] = (None, "mean", "median")
+    # signed per-k values each key is built from
+    _SIGNED: ClassVar[dict] = {"abs_err_eV": "err_eV", "sigma_eV_avg_ham": "member_deviation_eV", "sigma_eV": "member_deviation_eV"}
+
+    def __post_init__(self):
+        if self.refit_shift not in self._REFIT:
+            raise ValueError(f"`refit_shift` must be one of {self._REFIT}, got {self.refit_shift!r}")
+        if self.refit_shift is not None and self.key not in self._SIGNED:
+            raise ValueError(f"`refit_shift` needs `key` in {tuple(self._SIGNED)}, got {self.key!r}")
 
     @classmethod
-    def from_json(cls, path: Path | str, key: str = "sigma_eV_avg_ham"):
+    def from_json(cls, path: Path | str, key: str = "sigma_eV_avg_ham", refit_shift: str | None = None):
         with open(path) as f:
-            return cls(json.load(f), key=key)
+            return cls(json.load(f), key=key, refit_shift=refit_shift)
 
     @staticmethod
     def _per_k(res: dict) -> dict:
@@ -51,6 +77,44 @@ class BandUncertaintyPostProcessor:
             raise KeyError(f"{structure}: no {e} in per-k entries -- wrong `key` for this file?") from e
         weights = np.array([entry["weight"] for entry in per_k.values()], dtype=float)
         return values, weights
+
+    def signed_values(self, structure: str) -> np.ndarray:
+        """Signed values behind `self.key`, `d[i_spectrum, i_k, i_band]`: the members' deviations
+        from the average (`member_deviation_eV`, one spectrum per member) or the average's error
+        against DFT (`err_eV`, a single spectrum)."""
+        signed = self._SIGNED[self.key]
+        per_k = self._per_k(self.results[structure])
+        try:
+            d = np.array([entry[signed] for entry in per_k.values()], dtype=float)
+        except KeyError as e:
+            raise KeyError(
+                f"{structure}: no {e} in per-k entries -- file written before signed values were "
+                "stored, recompute it to use `refit_shift`"
+            ) from e
+        return d[None] if d.ndim == 2 else np.moveaxis(d, 1, 0)
+
+    def refit(self, structure: str, idx: np.ndarray, state_w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """`(values[i_k, i], shifts)`: `self.key` on the bands `idx` after subtracting from each
+        spectrum the shift `refit_shift` fitted on those states with weights `state_w[i_k, i]`
+        (see the class docstring); `shifts` has one entry per spectrum."""
+        d = self.signed_values(structure)[:, :, idx]
+        if self.refit_shift == "mean":
+            shifts = np.array([np.sum(state_w * dm) / np.sum(state_w) for dm in d])
+        else:
+            shifts = np.array([self.weighted_quantile(dm, state_w, 0.5) for dm in d])
+        d = d - shifts[:, None, None]
+        if self.key == "abs_err_eV":
+            return np.abs(d[0]), shifts
+        if self.key == "sigma_eV_avg_ham":
+            return np.sqrt(np.mean(d**2, axis=0)), shifts
+        return np.std(d, axis=0, ddof=1), shifts
+
+    def _selected(self, structure: str, idx: np.ndarray, state_w: np.ndarray) -> tuple[np.ndarray, dict]:
+        """`self.key` on the bands `idx` (refitted if `refit_shift`), and the refit shifts to report."""
+        if self.refit_shift is None:
+            return self.values(structure)[0][:, idx], {}
+        sel, shifts = self.refit(structure, idx, state_w)
+        return sel, {"refit_shift_eV": shifts.tolist()}
 
     def eigenvalues(self, structure: str) -> np.ndarray:
         """Midgap-aligned eigenvalues of the averaged Hamiltonian, `eigvals[i_k, i_band]`."""
@@ -131,12 +195,13 @@ class BandUncertaintyPostProcessor:
         The mean weights each irreducible k-point by its symmetry weight, i.e. it is the mean over
         the full k-mesh.
         """
-        values, weights = self.values(structure)
+        weights = self.values(structure)[1]
         idx = self.band_indices(structure, bands, vbm_fraction)
-        sel = values[:, idx]
+        sel, refit = self._selected(structure, idx, np.repeat(weights[:, None], len(idx), axis=1))
         i_k, i_b = np.unravel_index(np.argmax(sel), sel.shape)
         vbm = self.vbm_index(self.results[structure])
         return {
+            **refit,
             "mean_eV": float(np.average(sel.mean(axis=1), weights=weights)),
             "max_eV": float(sel[i_k, i_b]),
             "argmax_k": int(i_k),
@@ -178,17 +243,20 @@ class BandUncertaintyPostProcessor:
           effectively keeps.
 
         The unweighted `structure_stats` over the same bands are included alongside, for comparison.
+        With `refit_shift`, the weighted statistics use the shifts refitted with the window
+        weights (`weighted_refit_shift_eV`), the unweighted ones their own (`refit_shift_eV`).
         """
-        values, weights = self.values(structure)
+        weights = self.values(structure)[1]
         idx = self.band_indices(structure, bands, vbm_fraction)
-        sel = values[:, idx]
         w = self.soft_window(self.edge_distance(structure)[:, idx], e_cut, tau)
         state_w = weights[:, None] * w
+        sel, refit = self._selected(structure, idx, state_w)
         weighted = w * sel
         i_k, i_b = np.unravel_index(np.argmax(weighted), weighted.shape)
         vbm_e, cbm_e = self.band_edges(structure)
         out = {
             **self.structure_stats(structure, bands, vbm_fraction),
+            **{f"weighted_{k}": v for k, v in refit.items()},
             "weighted_mean_eV": float(np.sum(state_w * sel) / np.sum(state_w)),
             "weighted_max_eV": float(weighted[i_k, i_b]),
             "weighted_argmax_k": int(i_k),
@@ -292,13 +360,23 @@ class UncertaintyCalibrator:
             raise ValueError(f"`stat` must be one of {self._STATS}, got {self.stat!r}")
         if not 0 <= self.quantile <= 1:
             raise ValueError(f"`quantile` must be in [0, 1], got {self.quantile}")
+        self._check_refit(self.error, "error")
         self.check_consistency()
 
+    def _check_refit(self, pp: BandUncertaintyPostProcessor, name: str) -> None:
+        if pp.refit_shift != self.uncertainty.refit_shift:
+            raise ValueError(
+                f"`refit_shift` of the {name} ({pp.refit_shift!r}) differs from that of the uncertainty "
+                f"({self.uncertainty.refit_shift!r}): u and e would be aligned differently"
+            )
+
     @classmethod
-    def from_json(cls, uncertainty_path: Path | str, error_path: Path | str, **kwargs):
+    def from_json(cls, uncertainty_path: Path | str, error_path: Path | str, refit_shift: str | None = None,
+                  **kwargs):
+        """`refit_shift`: see `BandUncertaintyPostProcessor`, applied to both files."""
         return cls(
-            BandUncertaintyPostProcessor.from_json(uncertainty_path, key="sigma_eV_avg_ham"),
-            BandUncertaintyPostProcessor.from_json(error_path, key="abs_err_eV"),
+            BandUncertaintyPostProcessor.from_json(uncertainty_path, key="sigma_eV_avg_ham", refit_shift=refit_shift),
+            BandUncertaintyPostProcessor.from_json(error_path, key="abs_err_eV", refit_shift=refit_shift),
             **kwargs,
         )
 
@@ -443,6 +521,7 @@ class UncertaintyCalibrator:
         of a noisy `u` is dominated by its fluctuations. `pool` is a `compute` output of the same
         ensemble, with the same settings (key `sigma_eV_avg_ham`).
         """
+        self._check_refit(pool, "pool")
         names = list(pool.results)
         u = np.array([self.score(pool, n) for n in names])
         bound = self._s_values(names, s, groups) * u

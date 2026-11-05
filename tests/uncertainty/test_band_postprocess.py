@@ -292,6 +292,154 @@ def test_weighted_quantile_rejects_q_out_of_range(q):
         BandUncertaintyPostProcessor.weighted_quantile(np.ones(2), np.ones(2), q)
 
 
+# ---------------------------------- shift refit ----------------------------------
+
+# signed values behind the fixture's states; in the hard window (e_cut 1, tau 1e-3) the states are
+# 2, 3 (k0, weight 1) and 6, 7 (k1, weight 3)
+SIGNED = [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]
+
+
+def error_structure(signed=SIGNED, **kwargs):
+    s = structure(values=np.abs(signed).tolist(), key=ERROR, **kwargs)
+    for entry, d in zip(s["kpoints"].values(), signed, strict=True):
+        entry["err_eV"] = d
+    return s
+
+
+def member_structure(deviations, **kwargs):
+    """`deviations[i_k][member][band]`, with the stored sigmas computed from them."""
+    d = np.asarray(deviations, dtype=float)
+    s = structure(values=np.sqrt(np.mean(d**2, axis=1)).tolist(), **kwargs)
+    for entry, dk in zip(s["kpoints"].values(), d, strict=True):
+        entry["member_deviation_eV"] = dk.tolist()
+        entry["sigma_eV"] = np.std(dk, axis=0, ddof=1).tolist()
+    return s
+
+
+def test_without_refit_the_stored_values_are_used():
+    pp = BandUncertaintyPostProcessor({"a": error_structure()}, key=ERROR)
+    stats = pp.weighted_stats("a", e_cut=1.0, tau=1e-3)
+    assert stats["weighted_mean_eV"] == pytest.approx(44 / 8)
+    assert "refit_shift_eV" not in stats
+    assert "weighted_refit_shift_eV" not in stats
+
+
+def test_mean_refit_subtracts_the_weighted_mean_of_the_signed_error():
+    # shift (2 + 3 + 3 * 6 + 3 * 7) / 8 = 5.5; |e| = 3.5, 2.5, 0.5, 1.5 -> (3.5 + 2.5 + 3 * 0.5 + 3 * 1.5) / 8
+    pp = BandUncertaintyPostProcessor({"a": error_structure()}, key=ERROR, refit_shift="mean")
+    stats = pp.weighted_stats("a", e_cut=1.0, tau=1e-3)
+    assert stats["weighted_refit_shift_eV"] == pytest.approx([5.5])
+    assert stats["weighted_mean_eV"] == pytest.approx(1.5)
+    assert stats["weighted_max_eV"] == pytest.approx(3.5)
+
+
+def test_median_refit_subtracts_the_weighted_median():
+    # cumulative weights 1, 2, 5, 8: half of 8 is reached at 6; |e| = 4, 3, 0, 1
+    pp = BandUncertaintyPostProcessor({"a": error_structure()}, key=ERROR, refit_shift="median")
+    stats = pp.weighted_stats("a", e_cut=1.0, tau=1e-3)
+    assert stats["weighted_refit_shift_eV"] == pytest.approx([6.0])
+    assert stats["weighted_mean_eV"] == pytest.approx((4 + 3 + 0 + 3 * 1) / 8)
+
+
+def test_a_constant_error_is_removed_by_the_refit():
+    signed = [[0.3] * 4, [0.3] * 4]
+    for mode in ("mean", "median"):
+        pp = BandUncertaintyPostProcessor({"a": error_structure(signed)}, key=ERROR, refit_shift=mode)
+        stats = pp.weighted_stats("a", e_cut=1.0, tau=0.1, quantile=0.9)
+        assert stats["weighted_mean_eV"] == pytest.approx(0.0, abs=1e-12)
+        assert stats["weighted_quantile_eV"] == pytest.approx(0.0, abs=1e-12)
+        assert stats["max_eV"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_refit_is_fitted_on_the_window_only():
+    # a large error far from the edges (band 3) does not move the shift fitted in the hard window
+    signed = [[9.0, 1.0, 1.0, 9.0], [9.0, 1.0, 1.0, 9.0]]
+    pp = BandUncertaintyPostProcessor({"a": error_structure(signed)}, key=ERROR, refit_shift="mean")
+    stats = pp.weighted_stats("a", e_cut=1.0, tau=1e-3)
+    assert stats["weighted_refit_shift_eV"] == pytest.approx([1.0])
+    assert stats["weighted_mean_eV"] == pytest.approx(0.0, abs=1e-12)
+    # the unweighted statistics fit their own shift on all bands: (1 * 20 + 3 * 20) / 16 = 5
+    assert stats["refit_shift_eV"] == pytest.approx([5.0])
+    assert stats["max_eV"] == pytest.approx(4.0)
+
+
+def test_refit_of_the_uncertainty_removes_each_member_own_offset():
+    # members offset by +0.2, -0.1 and 0.4 on top of a common band-dependent deviation g
+    g = np.array([0.01, -0.02, 0.03, 0.0])
+    offsets = np.array([0.2, -0.1, 0.4])
+    dev = [(offsets[:, None] + g[None, :]).tolist()] * 2
+    pp = BandUncertaintyPostProcessor({"a": member_structure(dev)}, refit_shift="mean")
+    stats = pp.structure_stats("a")
+    # uniform weights over the 4 bands and both k-points: each member's shift is its offset + mean(g)
+    np.testing.assert_allclose(stats["refit_shift_eV"], offsets + g.mean())
+    values, _ = pp.refit("a", np.arange(4), np.ones((2, 4)))
+    np.testing.assert_allclose(values, np.abs(g - g.mean())[None, :].repeat(2, axis=0), atol=1e-12)
+
+
+def test_refit_of_sigma_eV_is_the_standard_deviation_of_the_refitted_deviations():
+    rng = np.random.default_rng(0)
+    dev = rng.normal(size=(2, 3, 4))
+    pp = BandUncertaintyPostProcessor({"a": member_structure(dev)}, key="sigma_eV", refit_shift="mean")
+    w = np.ones((2, 4))
+    values, shifts = pp.refit("a", np.arange(4), w)
+    d = np.moveaxis(dev, 1, 0) - shifts[:, None, None]
+    np.testing.assert_allclose(shifts, np.moveaxis(dev, 1, 0).mean(axis=(1, 2)))
+    np.testing.assert_allclose(values, np.std(d, axis=0, ddof=1))
+
+
+def test_refit_with_zero_shifts_reproduces_the_stored_values():
+    # deviations whose weighted mean is zero for every member: the refit changes nothing
+    dev = [[[0.1, -0.1, 0.2, -0.2], [0.3, -0.3, 0.0, 0.0]]] * 2
+    stored = BandUncertaintyPostProcessor({"a": member_structure(dev)})
+    refit = BandUncertaintyPostProcessor({"a": member_structure(dev)}, refit_shift="mean")
+    assert refit.structure_stats("a")["mean_eV"] == pytest.approx(stored.structure_stats("a")["mean_eV"])
+
+
+def test_refit_needs_the_signed_values():
+    pp = BandUncertaintyPostProcessor({"a": structure(key=ERROR)}, key=ERROR, refit_shift="mean")
+    with pytest.raises(KeyError, match="recompute it to use `refit_shift`"):
+        pp.weighted_stats("a")
+
+
+def test_unknown_refit_or_key_without_signed_values_is_rejected():
+    with pytest.raises(ValueError, match="`refit_shift` must be one of"):
+        BandUncertaintyPostProcessor({}, refit_shift="max")
+    with pytest.raises(ValueError, match="needs `key`"):
+        BandUncertaintyPostProcessor({}, key="other", refit_shift="mean")
+
+
+def test_from_json_passes_the_refit_on(tmp_path):
+    path = tmp_path / "e.json"
+    path.write_text(json.dumps({"a": error_structure()}))
+    pp = BandUncertaintyPostProcessor.from_json(path, key=ERROR, refit_shift="median")
+    assert pp.refit_shift == "median"
+
+
+def test_calibrator_from_json_refits_both_files(tmp_path):
+    u_path, e_path = tmp_path / "u.json", tmp_path / "e.json"
+    u_path.write_text(json.dumps({"a": member_structure([[[0.1, 0.2, 0.3, 0.4], [0.2, 0.1, 0.0, 0.1]]] * 2)}))
+    e_path.write_text(json.dumps({"a": error_structure()}))
+    cal = UncertaintyCalibrator.from_json(u_path, e_path, refit_shift="mean", stat="weighted_mean_eV",
+                                         e_cut=1.0, tau=1e-3)
+    assert cal.uncertainty.refit_shift == cal.error.refit_shift == "mean"
+    assert cal.paired()[2][0] == pytest.approx(1.5)
+
+
+def test_calibrator_rejects_different_refits_of_uncertainty_and_error():
+    u = BandUncertaintyPostProcessor({"a": structure()}, refit_shift="mean")
+    e = BandUncertaintyPostProcessor({"a": error_structure()}, key=ERROR)
+    with pytest.raises(ValueError, match="aligned differently"):
+        UncertaintyCalibrator(u, e)
+
+
+def test_pool_criterion_rejects_a_pool_refitted_differently():
+    u = BandUncertaintyPostProcessor({"a": structure()})
+    e = BandUncertaintyPostProcessor({"a": error_structure()}, key=ERROR)
+    pool = BandUncertaintyPostProcessor({"a": structure()}, refit_shift="mean")
+    with pytest.raises(ValueError, match="aligned differently"):
+        UncertaintyCalibrator(u, e).pool_criterion(pool, 1.0, eta_tol=1.0)
+
+
 # ---------------------------------- conformal factor ----------------------------------
 
 
