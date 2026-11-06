@@ -34,8 +34,14 @@ STRUCTURES_FILE = WORKDIR / "structures.extxyz"
 SCHUR_REMOVAL_PLAN = WORKDIR / "removal_plan_schur.json"
 TRUNCATE_REMOVAL_PLAN = WORKDIR / "removal_plan_truncate.json"
 
+# K-points of the projections, and of the AIMS runs unless KGRID_FROM_STRUCTURES.
 KPOINTS_SETTINGS = {"reciprocal_density": 1000}
 FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
+# True: each AIMS run uses the grid stored in its frame of STRUCTURES_FILE as
+# info["k_grid"], e.g. written with ``atoms.info["k_grid"] = [6, 6, 1]`` before
+# ``ase.io.write(..., format="extxyz")``. Every frame must carry one. FORCE_2D
+# still applies on top of it. The projections keep using KPOINTS_SETTINGS.
+KGRID_FROM_STRUCTURES = False
 
 SLURM_ACCOUNT = "your_account"
 JOBFLOW_PROJECT = "your_project"
@@ -43,6 +49,13 @@ PRE_RUN = "source /path/to/your/venv/bin/activate"
 # -----------------------------------------------------------------------------
 
 convert_config = ConvertAimsToDeephConfig(output_dir=WORKDIR / "deeph_full_ovl")
+
+# K-point arguments of the AIMS runs (see KGRID_FROM_STRUCTURES).
+aims_kpoints = (
+    {"kgrid_from_structure": True}
+    if KGRID_FROM_STRUCTURES
+    else {"user_kpoints_settings": KPOINTS_SETTINGS}
+)
 
 # n_workers=None: automatic. For Schur, one worker using all cores in BLAS when
 # many orbitals (>= 128) are removed, otherwise one worker per core.
@@ -83,7 +96,7 @@ maker = GenerateOvlOnlyAimsToProjectedDeephData(
         "sc_accuracy_etot": "1.0e-03 eV",
         "sc_accuracy_rho": 1.0e-2,
     },
-    user_kpoints_settings=KPOINTS_SETTINGS,
+    **aims_kpoints,
     force_2d=FORCE_2D,
     collected_runs_root=WORKDIR / "aims_output_ovl",
     aims_to_deeph_config=convert_config,

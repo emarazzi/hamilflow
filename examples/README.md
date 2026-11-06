@@ -97,6 +97,10 @@ inference inputs with FHI-aims.
 - `aims_overlap_only_to_projected_deeph.py`: same chain for the overlap matrix
   only (short, loosely converged AIMS runs), e.g. to prepare inputs for DeepH
   inference on new structures.
+
+  Both scripts set the AIMS k-points from `KPOINTS_SETTINGS`, or, with
+  `KGRID_FROM_STRUCTURES = True`, from each frame's `info["k_grid"]` in the
+  extxyz file (`kgrid_from_structure=True` in the flow).
 - `removal_plan_schur.json`, `removal_plan_truncate.json`: example removal
   plans for MoS2 (core shells folded out with the Schur complement, then
   high-l polarisation shells truncated). Their `_comment` keys explain the
