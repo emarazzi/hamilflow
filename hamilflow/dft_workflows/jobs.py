@@ -53,6 +53,20 @@ def _compress_raw(d: Path) -> None:
             (d / n).unlink(missing_ok=True)
 
 
+def kgrid_from_properties(structure: Structure, structure_name: str) -> tuple[int, int, int]:
+    """Return the ``k_grid`` stored in ``structure.properties`` (from ``atoms.info``)."""
+    k_grid = (structure.properties or {}).get("k_grid")
+    if k_grid is None:
+        raise ValueError(
+            f"[{structure_name}] kgrid_from_structure is set but the structure has no 'k_grid' "
+            "entry; add info['k_grid'] to every frame of the trajectory file."
+        )
+    values = [int(v) for v in np.ravel(k_grid)]
+    if len(values) != 3 or any(v < 1 for v in values):
+        raise ValueError(f"[{structure_name}] k_grid must be three positive integers, got: {k_grid}")
+    return (values[0], values[1], values[2])
+
+
 def build_aims_dft_job(
     structure: Structure,
     structure_name: str,
@@ -65,8 +79,21 @@ def build_aims_dft_job(
     force_2d: bool = False,
     force_1d: bool = False,
     symprec: float = 0.01,
+    kgrid_from_structure: bool = False,
 ) -> Job:
-    """Build the AIMS static job for a single structure."""
+    """
+    Build the AIMS static job for a single structure.
+
+    With ``kgrid_from_structure=True`` the k-grid is read from
+    ``structure.properties["k_grid"]``, which holds ``atoms.info["k_grid"]`` for
+    structures loaded from a trajectory file (e.g. extxyz).
+    """
+    if kgrid_from_structure:
+        if kgrid is not None or kpoints_updates or user_kpoints_settings not in (None, {}):
+            raise ValueError(
+                "kgrid_from_structure cannot be combined with kgrid or k-point sampling settings."
+            )
+        kgrid = kgrid_from_properties(structure, structure_name)
     if kgrid is not None and (kpoints_updates or user_kpoints_settings not in (None, {})):
         raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
 

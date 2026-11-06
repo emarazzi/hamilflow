@@ -143,7 +143,9 @@ class GenerateAimsDFTData:
     sampling can be provided either as a direct ``kgrid`` or as richer sampling
     settings through ``kpoints_updates`` or ``user_kpoints_settings``; those are
     resolved into an AIMS k-point payload before job construction. Provide either
-    ``kgrid`` or a k-point sampling payload, not both.
+    ``kgrid`` or a k-point sampling payload, not both. Alternatively, set
+    ``kgrid_from_structure=True`` to use each frame's ``info["k_grid"]`` when
+    ``structures_path`` is a trajectory file (e.g. extxyz).
 
     Wrapper flows can extend each structure's chain by calling
     :meth:`structure_entries` and :meth:`make_structure_jobs` directly.
@@ -161,6 +163,7 @@ class GenerateAimsDFTData:
     force_2d: bool = False
     force_1d: bool = False
     symprec: float = 1e-5
+    kgrid_from_structure: bool = False
     aims_maker: Maker | None = field(
         default_factory=lambda: StaticMaker(input_set_generator=StaticSetGenerator())
     )
@@ -194,11 +197,18 @@ class GenerateAimsDFTData:
 
         if self.kgrid is not None and (self.kpoints_updates or self.user_kpoints_settings not in (None, {})):
             raise ValueError("Provide either kgrid or k-point sampling settings, not both.")
+        if self.kgrid_from_structure and (
+            self.kgrid is not None or self.kpoints_updates
+            or self.user_kpoints_settings not in (None, {})
+        ):
+            raise ValueError(
+                "kgrid_from_structure cannot be combined with kgrid or k-point sampling settings."
+            )
         if (
             self.aims_maker is not None
             and not isinstance(self.aims_maker, (StaticMaker, OvlOnlyAimsMaker))
             and (self.aims_kwargs or self.kgrid is not None or self.kpoints_updates
-                 or self.user_kpoints_settings not in (None, {}))
+                 or self.user_kpoints_settings not in (None, {}) or self.kgrid_from_structure)
         ):
             raise ValueError(
                 "aims_kwargs and k-point sampling options are only supported with StaticMaker. "
@@ -263,6 +273,7 @@ class GenerateAimsDFTData:
                 force_2d=self.force_2d,
                 force_1d=self.force_1d,
                 symprec=self.symprec,
+                kgrid_from_structure=self.kgrid_from_structure,
             )
             jobs.append(aims_job)
             aims_output = aims_job.output

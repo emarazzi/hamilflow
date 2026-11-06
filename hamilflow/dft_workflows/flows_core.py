@@ -218,6 +218,7 @@ class GenerateOvlOnlyAimsToProjectedDeephData:
     force_2d: bool = False
     force_1d: bool = False
     symprec: float = 1e-5
+    kgrid_from_structure: bool = False
     aims_maker: OvlOnlyAimsMaker = field(
         default_factory=lambda: OvlOnlyAimsMaker(input_set_generator=StaticSetGenerator())
         )
@@ -246,6 +247,7 @@ class GenerateOvlOnlyAimsToProjectedDeephData:
             force_2d=self.force_2d,
             force_1d=self.force_1d,
             symprec=self.symprec,
+            kgrid_from_structure=self.kgrid_from_structure,
             aims_maker=self.aims_maker,
             collected_runs_root=self.collected_runs_root,
             source_run_dirs=self.source_run_dirs,
