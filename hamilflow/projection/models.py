@@ -30,6 +30,11 @@ class ProjectionConfig:
 
     If ``user_kpoints_settings`` is provided, the projection core resolves the
     k-mesh from the POSCAR stored in ``input_dir`` and ignores ``kgrid``.
+
+    A k-grid smaller, along some direction, than the span of the stored R vectors
+    (``max(R) - min(R) + 1``) mixes the blocks of different R in the output. By
+    default the grid is raised to that span along such directions;
+    ``allow_undersampled_kgrid=True`` keeps the requested grid (with a warning).
     """
 
     input_dir: Path
@@ -46,6 +51,7 @@ class ProjectionConfig:
     # Schur reductions, otherwise one worker per CPU. Always capped by the
     # available memory and the number of k-points.
     n_workers: int | None = None
+    allow_undersampled_kgrid: bool = False
 
     def __post_init__(self) -> None:
         if self.force_2d and self.force_1d:

@@ -63,3 +63,85 @@ def test_flow_passes_kgrid_from_structure(trajectory):
         for name, s in flow.structure_entries()
     ]
     assert grids == [[4, 5, 6], [2, 2, 1]]
+
+
+# --- projections -----------------------------------------------------------------
+
+
+def _projection_kgrids(flow, prefix):
+    """``kgrid`` argument of every projection job whose name starts with ``prefix``."""
+    return {
+        job.name: job.function_kwargs["kgrid"]
+        for structure_flow in flow.jobs
+        for job in structure_flow.jobs
+        if job.name.startswith(prefix)
+    }
+
+
+def _projection_config(tmp_path, stage, mode, **kwargs):
+    from hamilflow.dft_workflows.flows_base import ProjectDeephInputsConfig
+
+    return ProjectDeephInputsConfig(
+        output_root=tmp_path / stage, removal_plan={"rules": []}, reduction_mode=mode, **kwargs
+    )
+
+
+def test_projections_use_kgrid_from_structure(trajectory, tmp_path):
+    from hamilflow.dft_workflows.flows_base import ConvertAimsToDeephConfig
+    from hamilflow.dft_workflows.flows_core import GenerateAimsToProjectedDeephData
+
+    dft = GenerateAimsDFTData(
+        structures_path=trajectory,
+        kgrid_from_structure=True,
+        aims_to_deeph_config=ConvertAimsToDeephConfig(output_dir=tmp_path / "deeph"),
+    )
+    flow = GenerateAimsToProjectedDeephData(
+        dft_data_flow=dft,
+        projection_config=_projection_config(tmp_path, "p1", "schur", kgrid_from_structure=True),
+        second_projection_config=_projection_config(
+            tmp_path, "p2", "truncate", kgrid=(3, 3, 3)
+        ),
+    ).make()
+    assert _projection_kgrids(flow, "projection_schur") == {
+        "projection_schur_0": (4, 5, 6),
+        "projection_schur_1": (2, 2, 1),
+    }
+    # The second stage keeps its own kgrid.
+    assert set(_projection_kgrids(flow, "projection_truncate").values()) == {(3, 3, 3)}
+
+
+def test_projection_kgrid_from_structure_conflicts_with_kpoints_settings(tmp_path):
+    with pytest.raises(ValueError, match="kgrid_from_structure"):
+        _projection_config(
+            tmp_path, "p1", "schur",
+            kgrid_from_structure=True, user_kpoints_settings={"reciprocal_density": 100},
+        )
+
+
+def test_projection_only_flow_rejects_kgrid_from_structure(tmp_path):
+    from hamilflow.dft_workflows.flows_base import GenerateProjectedDeephInputs
+
+    (tmp_path / "deeph" / "s0").mkdir(parents=True)
+    flow = GenerateProjectedDeephInputs(
+        deeph_inputs_root=tmp_path / "deeph",
+        projection_config=_projection_config(tmp_path, "p1", "schur", kgrid_from_structure=True),
+    )
+    with pytest.raises(ValueError, match="do not carry"):
+        flow.make()
+
+
+def test_allow_undersampled_kgrid_reaches_the_projection_jobs(tmp_path):
+    from hamilflow.dft_workflows.flows_base import GenerateProjectedDeephInputs
+
+    (tmp_path / "deeph" / "s0").mkdir(parents=True)
+    flows = {
+        allow: GenerateProjectedDeephInputs(
+            deeph_inputs_root=tmp_path / "deeph",
+            projection_config=_projection_config(
+                tmp_path, "p1", "schur", allow_undersampled_kgrid=allow
+            ),
+        ).make()
+        for allow in (False, True)
+    }
+    for allow, flow in flows.items():
+        assert flow.jobs[0].function_kwargs["allow_undersampled_kgrid"] is allow

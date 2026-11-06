@@ -23,6 +23,8 @@ from .flows_base import (
     ConvertAimsToDeephConfig,
     GenerateAimsDFTData,
     ProjectDeephInputsConfig,
+    projection_kpoints_kwargs,
+    reject_kgrid_from_structure,
     resolve_projection_removal_plan,
 )
 from .jobs import run_projection_for_structure, set_projection_job_name
@@ -117,14 +119,14 @@ class GenerateAimsToProjectedDeephData:
                         structure_name=structure_name,
                         removal_plan=self.projection_config.removal_plan,
                     ),
-                    kgrid=self.projection_config.kgrid,
-                    user_kpoints_settings=self.projection_config.user_kpoints_settings,
+                    **projection_kpoints_kwargs(self.projection_config, structure_name, source),
                     force_2d=self.projection_config.force_2d,
                     force_1d=self.projection_config.force_1d,
                     reduction_mode=self.projection_config.reduction_mode,
                     overlap_only=self.projection_config.overlap_only,
                     write_dummy_hamiltonian=self.projection_config.write_dummy_hamiltonian,
                     n_workers=self.projection_config.n_workers,
+                    allow_undersampled_kgrid=self.projection_config.allow_undersampled_kgrid,
                     deeph_conversion_output=dft_outputs["deeph"],
                 )
                 projection_job = set_projection_job_name(
@@ -148,14 +150,14 @@ class GenerateAimsToProjectedDeephData:
                             structure_name=structure_name,
                             removal_plan=self.second_projection_config.removal_plan,
                         ),
-                        kgrid=self.second_projection_config.kgrid,
-                        user_kpoints_settings=self.second_projection_config.user_kpoints_settings,
+                        **projection_kpoints_kwargs(self.second_projection_config, structure_name, source),
                         force_2d=self.second_projection_config.force_2d,
                         force_1d=self.second_projection_config.force_1d,
                         reduction_mode=self.second_projection_config.reduction_mode,
                         overlap_only=self.second_projection_config.overlap_only,
                         write_dummy_hamiltonian=self.second_projection_config.write_dummy_hamiltonian,
                         n_workers=self.second_projection_config.n_workers,
+                        allow_undersampled_kgrid=self.second_projection_config.allow_undersampled_kgrid,
                         upstream_projection_output=projection_job.output,
                     )
                     second_projection_job = set_projection_job_name(
@@ -278,6 +280,8 @@ class GenerateTwoStepProjectedDeephInputs:
     name: str = "generate_two_step_projected_deeph_inputs"
 
     def make(self) -> Flow:
+        reject_kgrid_from_structure(self.first_projection_config, type(self).__name__)
+        reject_kgrid_from_structure(self.second_projection_config, type(self).__name__)
         deeph_inputs_root = Path(self.deeph_inputs_root)
         if not deeph_inputs_root.is_dir():
             raise ValueError(f"DeepH input root does not exist: {deeph_inputs_root}")
@@ -326,6 +330,7 @@ class GenerateTwoStepProjectedDeephInputs:
                     overlap_only=self.first_projection_config.overlap_only,
                     write_dummy_hamiltonian=self.first_projection_config.write_dummy_hamiltonian,
                     n_workers=self.first_projection_config.n_workers,
+                    allow_undersampled_kgrid=self.first_projection_config.allow_undersampled_kgrid,
                 ),
             )
             first_job = set_projection_job_name(
@@ -354,6 +359,7 @@ class GenerateTwoStepProjectedDeephInputs:
                     overlap_only=self.second_projection_config.overlap_only,
                     write_dummy_hamiltonian=self.second_projection_config.write_dummy_hamiltonian,
                     n_workers=self.second_projection_config.n_workers,
+                    allow_undersampled_kgrid=self.second_projection_config.allow_undersampled_kgrid,
                     upstream_projection_output=first_job.output,
                 ),
             )

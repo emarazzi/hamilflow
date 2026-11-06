@@ -10,6 +10,7 @@ __all__ = [
     "GenerateProjectedDeephInputs",
     "ProjectDeephInputsConfig",
     "ProjectionRemovalPlanConfig",
+    "projection_kpoints_kwargs",
     "resolve_projection_removal_plan",
 ]
 
@@ -27,6 +28,7 @@ from .jobs import (
     build_aims_dft_job,
     collect_aims_output,
     convert_aims_to_deeph_structure,
+    kgrid_from_properties,
     resolve_structure_removal_plan,
     run_projection_for_structure,
     set_projection_job_name,
@@ -83,7 +85,19 @@ class ProjectionRemovalPlanConfig:
 
 @dataclass(frozen=True, slots=True)
 class ProjectDeephInputsConfig:
-    """Configuration for projecting a DeepH-formatted directory tree."""
+    """
+    Configuration for projecting a DeepH-formatted directory tree.
+
+    ``kgrid_from_structure=True`` projects each structure on the grid stored in
+    its trajectory frame as ``info["k_grid"]`` (``force_2d``/``force_1d`` still
+    apply). It needs the structures, so it is only supported by the flows that
+    also run AIMS from ``structures_path`` (e.g. ``GenerateAimsToProjectedDeephData``);
+    ``kgrid`` is then ignored.
+
+    The projection raises any k-grid direction shorter than the span of the
+    stored R vectors to that span; ``allow_undersampled_kgrid=True`` keeps the
+    requested grid instead (see :class:`hamilflow.projection.models.ProjectionConfig`).
+    """
 
     output_root: str | Path
     removal_plan: RemovalPlanLike | ProjectionRemovalPlanConfig
@@ -96,6 +110,40 @@ class ProjectDeephInputsConfig:
     overlap_only: bool = False
     write_dummy_hamiltonian: bool = False
     n_workers: int | None = None
+    kgrid_from_structure: bool = False
+    allow_undersampled_kgrid: bool = False
+
+    def __post_init__(self):
+        if self.kgrid_from_structure and self.user_kpoints_settings not in (None, {}):
+            raise ValueError(
+                "kgrid_from_structure cannot be combined with user_kpoints_settings."
+            )
+
+
+def reject_kgrid_from_structure(config: ProjectDeephInputsConfig, flow_name: str) -> None:
+    """Projection-only flows start from a DeepH root, which has no trajectory info."""
+    if config.kgrid_from_structure:
+        raise ValueError(
+            f"{flow_name} starts from existing DeepH directories, which do not carry "
+            "info['k_grid']: kgrid_from_structure is only supported when the flow also runs "
+            "AIMS from structures_path (e.g. GenerateAimsToProjectedDeephData)."
+        )
+
+
+def projection_kpoints_kwargs(
+    config: ProjectDeephInputsConfig,
+    structure_name: str,
+    source: Structure | Path,
+) -> dict[str, Any]:
+    """``kgrid``/``user_kpoints_settings`` arguments of one projection job."""
+    if not config.kgrid_from_structure:
+        return {"kgrid": config.kgrid, "user_kpoints_settings": config.user_kpoints_settings}
+    if not isinstance(source, Structure):
+        raise TypeError(
+            f"[{structure_name}] kgrid_from_structure needs the structure, but this flow "
+            "collects existing runs (source_run_dirs)."
+        )
+    return {"kgrid": kgrid_from_properties(source, structure_name), "user_kpoints_settings": None}
 
 
 def resolve_projection_removal_plan(
@@ -359,6 +407,7 @@ class GenerateProjectedDeephInputs:
     name: str = "generate_projected_deeph_inputs"
 
     def make(self) -> Flow:
+        reject_kgrid_from_structure(self.projection_config, type(self).__name__)
         deeph_inputs_root = Path(self.deeph_inputs_root)
         if not deeph_inputs_root.is_dir():
             raise ValueError(f"DeepH input root does not exist: {deeph_inputs_root}")
@@ -393,6 +442,7 @@ class GenerateProjectedDeephInputs:
                 overlap_only=self.projection_config.overlap_only,
                 write_dummy_hamiltonian=self.projection_config.write_dummy_hamiltonian,
                 n_workers=self.projection_config.n_workers,
+                allow_undersampled_kgrid=self.projection_config.allow_undersampled_kgrid,
             )
             projection_job = set_projection_job_name(
                 projection_job,

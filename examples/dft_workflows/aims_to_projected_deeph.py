@@ -44,13 +44,15 @@ STRUCTURES_FILE = WORKDIR / "structures.extxyz"
 SCHUR_REMOVAL_PLAN = WORKDIR / "removal_plan_schur.json"
 TRUNCATE_REMOVAL_PLAN = WORKDIR / "removal_plan_truncate.json"
 
-# K-points of the projections, and of the AIMS runs unless KGRID_FROM_STRUCTURES.
+# K-points of the AIMS runs and of the projections.
 KPOINTS_SETTINGS = {"reciprocal_density": 1000}
 FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
-# True: each AIMS run uses the grid stored in its frame of STRUCTURES_FILE as
-# info["k_grid"], e.g. written with ``atoms.info["k_grid"] = [6, 6, 1]`` before
-# ``ase.io.write(..., format="extxyz")``. Every frame must carry one. FORCE_2D
-# still applies on top of it. The projections keep using KPOINTS_SETTINGS.
+# True: ignore KPOINTS_SETTINGS and use, for each structure, the grid stored in
+# its frame of STRUCTURES_FILE as info["k_grid"], e.g. written with
+# ``atoms.info["k_grid"] = [6, 6, 1]`` before ``ase.io.write(..., format="extxyz")``.
+# Every frame must carry one. FORCE_2D still applies on top of it.
+# The projections raise any grid direction shorter than the span of the stored R
+# vectors to that span (allow_undersampled_kgrid=True in their config keeps it).
 KGRID_FROM_STRUCTURES = False
 
 SLURM_ACCOUNT = "your_account"
@@ -60,8 +62,8 @@ PRE_RUN = "source /path/to/your/venv/bin/activate"
 
 convert_config = ConvertAimsToDeephConfig(output_dir=WORKDIR / "deeph_full")
 
-# K-point arguments of the AIMS runs (see KGRID_FROM_STRUCTURES).
-aims_kpoints = (
+# K-point arguments of the AIMS runs and of the projections (see KGRID_FROM_STRUCTURES).
+kpoints = (
     {"kgrid_from_structure": True}
     if KGRID_FROM_STRUCTURES
     else {"user_kpoints_settings": KPOINTS_SETTINGS}
@@ -81,7 +83,7 @@ aims_dft = GenerateAimsDFTData(
         "KS_method": "parallel",
         "collect_eigenvectors": "false",
     },
-    **aims_kpoints,
+    **kpoints,
     force_2d=FORCE_2D,
     collected_runs_root=WORKDIR / "aims_output",
     aims_to_deeph_config=convert_config,
@@ -93,7 +95,7 @@ schur_config = ProjectDeephInputsConfig(
     output_root=WORKDIR / "deeph_projected_schur",
     removal_plan=SCHUR_REMOVAL_PLAN,
     reduction_mode="schur",
-    user_kpoints_settings=KPOINTS_SETTINGS,
+    **kpoints,
     force_2d=FORCE_2D,
     n_workers=None,
 )
@@ -102,7 +104,7 @@ truncate_config = ProjectDeephInputsConfig(
     output_root=WORKDIR / "deeph_projected_truncated",
     removal_plan=TRUNCATE_REMOVAL_PLAN,
     reduction_mode="truncate",
-    user_kpoints_settings=KPOINTS_SETTINGS,
+    **kpoints,
     force_2d=FORCE_2D,
     n_workers=None,
 )

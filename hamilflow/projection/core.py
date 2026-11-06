@@ -57,15 +57,31 @@ def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
     return (int(config.kgrid[0]), int(config.kgrid[1]), int(config.kgrid[2]))
 
 
-def _warn_if_undersampled(kgrid: tuple[int, int, int], Rijk_list: np.ndarray, input_dir) -> None:
-    """Warn if `kgrid` cannot tell the stored R vectors apart: R and R' with R - R' a multiple of
-    the grid get the same phase at every k-point, so the inverse transform adds their blocks."""
-    needed = Rijk_list.max(axis=0) - Rijk_list.min(axis=0) + 1
-    if any(n < need for n, need in zip(kgrid, needed)):
+def _cover_r_span(
+    kgrid: tuple[int, int, int], Rijk_list: np.ndarray, input_dir, allow_undersampled: bool = False
+) -> tuple[int, int, int]:
+    """Return a k-grid that tells the stored R vectors apart.
+
+    R and R' with R - R' a multiple of the grid get the same phase at every k-point, so the
+    inverse transform adds their blocks: each direction needs at least ``max(R) - min(R) + 1``
+    points. Too small directions are raised to that span, or, with ``allow_undersampled``,
+    kept with a warning.
+    """
+    needed = tuple(int(n) for n in Rijk_list.max(axis=0) - Rijk_list.min(axis=0) + 1)
+    if all(n >= need for n, need in zip(kgrid, needed)):
+        return kgrid
+    if allow_undersampled:
         logger.warning(
             f"[projection] {input_dir}: k-grid {tuple(kgrid)} is too coarse for the stored R vectors, which need "
-            f"at least {tuple(int(n) for n in needed)}: blocks of different R are mixed in the output"
+            f"at least {needed}: blocks of different R are mixed in the output"
         )
+        return kgrid
+    raised = (max(kgrid[0], needed[0]), max(kgrid[1], needed[1]), max(kgrid[2], needed[2]))
+    logger.warning(
+        f"[projection] {input_dir}: k-grid {tuple(kgrid)} is too coarse for the stored R vectors, which need "
+        f"at least {needed}: using {raised} instead (allow_undersampled_kgrid=True keeps the requested grid)"
+    )
+    return raised
 
 
 def run_projection(
@@ -113,7 +129,12 @@ def run_projection(
 
     rm = sorted(set(rm))
 
-    resolved_kgrid = _resolve_projection_kgrid(config)
+    if obj.Rijk_list is None:
+        raise ValueError("Rijk_list is None")
+    requested_kgrid = _resolve_projection_kgrid(config)
+    resolved_kgrid = _cover_r_span(
+        requested_kgrid, obj.Rijk_list, config.input_dir, config.allow_undersampled_kgrid
+    )
     ks = build_uniform_kmesh(resolved_kgrid)
     nb = int(obj.orbits_quantity) * (2 if obj.spinful else 1)
     keep_global = [i for i in range(nb) if i not in rm]
@@ -121,10 +142,6 @@ def run_projection(
         f"[projection] {config.input_dir} -> {config.output_dir}: removing {len(rm)}/{nb} orbitals "
         f"({config.reduction_mode}{', overlap only' if config.overlap_only else ''}), k-grid {resolved_kgrid}"
     )
-
-    if obj.Rijk_list is None:
-        raise ValueError("Rijk_list is None")
-    _warn_if_undersampled(resolved_kgrid, obj.Rijk_list, config.input_dir)
 
     # Only the real-space entries that end up in the output files (plus their
     # Hermitian partners) are ever accumulated -- never a dense
@@ -187,6 +204,7 @@ def run_projection(
         "reduction_mode": config.reduction_mode,
         "overlap_only": config.overlap_only,
         "write_dummy_hamiltonian": config.write_dummy_hamiltonian,
+        "requested_kgrid": list(requested_kgrid),
         "resolved_kgrid": list(resolved_kgrid),
         "removed_global_indices": rm,
         "kept_global_indices": keep_global,

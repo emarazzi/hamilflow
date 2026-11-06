@@ -329,17 +329,35 @@ def test_kgrid_follows_the_config(tmp_path, options, expected):
     assert _resolve_projection_kgrid(config) == expected
 
 
-def run_with_kgrid(structure, tmp_path, kgrid):
-    config = ProjectionConfig(structure.path, tmp_path / "output", kgrid=kgrid, reduction_mode="truncate", n_workers=1)
+def run_with_kgrid(structure, tmp_path, kgrid, allow_undersampled_kgrid=False):
+    config = ProjectionConfig(
+        structure.path, tmp_path / "output", kgrid=kgrid, reduction_mode="truncate", n_workers=1,
+        allow_undersampled_kgrid=allow_undersampled_kgrid,
+    )
     return run_projection(config, REMOVE_P)
 
 
-@pytest.mark.parametrize("kgrid", [(2, 3, 1), (3, 2, 1), (2, 2, 1)])
-def test_grid_too_coarse_for_the_r_vectors_warns_but_still_runs(structure, tmp_path, caplog, kgrid):
-    """The fixture's R go from -1 to 1 in-plane, which needs 3 points per direction."""
+@pytest.mark.parametrize(
+    ("kgrid", "raised"),
+    [((2, 3, 1), (3, 3, 1)), ((3, 2, 1), (3, 3, 1)), ((2, 2, 1), (3, 3, 1)), ((1, 5, 2), (3, 5, 2))],
+)
+def test_grid_too_coarse_for_the_r_vectors_is_raised_to_their_span(structure, tmp_path, caplog, kgrid, raised):
+    """The fixture's R go from -1 to 1 in-plane, which needs 3 points per direction; the other
+    directions keep the requested size."""
     with caplog.at_level("WARNING", logger="hamilflow.projection.core"):
         result = run_with_kgrid(structure, tmp_path, kgrid)
+    assert f"which need at least (3, 3, 1): using {raised} instead" in caplog.text
+    assert result.metadata["requested_kgrid"] == list(kgrid)
+    assert result.metadata["resolved_kgrid"] == list(raised)
+
+
+@pytest.mark.parametrize("kgrid", [(2, 3, 1), (3, 2, 1), (2, 2, 1)])
+def test_undersampled_grid_is_kept_when_allowed(structure, tmp_path, caplog, kgrid):
+    with caplog.at_level("WARNING", logger="hamilflow.projection.core"):
+        result = run_with_kgrid(structure, tmp_path, kgrid, allow_undersampled_kgrid=True)
     assert "too coarse for the stored R vectors, which need at least (3, 3, 1)" in caplog.text
+    assert "instead" not in caplog.text
+    assert result.metadata["resolved_kgrid"] == list(kgrid)
     assert result.overlap_path.exists()
 
 
@@ -357,8 +375,11 @@ def test_warning_is_right_about_what_it_warns_of(structure, tmp_path):
     H0 = structure.Sk_and_Hk(k)[1][keep]
     exact = run_with_kgrid(structure, tmp_path / "a", (3, 3, 1))
     np.testing.assert_allclose(SparseHamiltonianObj(exact.output_dir).Sk_and_Hk(k)[1], H0, atol=1e-10)
-    coarse = run_with_kgrid(structure, tmp_path / "b", (2, 2, 1))
+    coarse = run_with_kgrid(structure, tmp_path / "b", (2, 2, 1), allow_undersampled_kgrid=True)
     assert np.abs(SparseHamiltonianObj(coarse.output_dir).Sk_and_Hk(k)[1] - H0).max() > 1e-3
+    # By default the coarse request is raised to the span, so the output is exact again.
+    raised = run_with_kgrid(structure, tmp_path / "c", (2, 2, 1))
+    np.testing.assert_allclose(SparseHamiltonianObj(raised.output_dir).Sk_and_Hk(k)[1], H0, atol=1e-10)
 
 
 def test_user_kpoint_settings_go_through_the_real_sampling_function(structure, tmp_path):

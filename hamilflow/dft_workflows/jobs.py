@@ -305,6 +305,7 @@ def run_projection_for_structure(
     overlap_only: bool = False,
     write_dummy_hamiltonian: bool = False,
     n_workers: int | None = None,
+    allow_undersampled_kgrid: bool = False,
     deeph_conversion_output: dict[str, Any] | None = None,
     upstream_projection_output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -361,6 +362,7 @@ def run_projection_for_structure(
                 overlap_only=overlap_only,
                 write_dummy_hamiltonian=write_dummy_hamiltonian,
                 n_workers=n_workers,
+                allow_undersampled_kgrid=allow_undersampled_kgrid,
             ),
             removal_plan=removal_plan,
         )
