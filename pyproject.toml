@@ -29,6 +29,7 @@ dependencies = [
   "typing-extensions",
   "average-minimum-distance",
   "scikit-learn",
+  "seekpath",
   "tomli-w",
 ]
 
@@ -37,6 +38,9 @@ dependencies = [
 # machine with another CUDA major version, install the matching wheel instead (e.g. cupy-cuda11x).
 gpu = ["cupy-cuda12x"]
 test = ["pytest>=8", "pytest-cov"]
+
+[project.scripts]
+hamilflow-bands = "hamilflow.band_structures.batch:main"
 
 [project.urls]
 Repository = "https://github.com/emarazzi/hamilflow"

@@ -10,7 +10,7 @@ from deepx_dock.CONSTANT import DEEPX_OVERLAP_FILENAME
 from scipy.sparse.linalg import eigsh
 
 from ..cpus import available_cpu_count
-from .eigensolver import eigh_generalized
+from .eigensolver import eigh_generalized, eigh_generalized_sparse
 from .ill_conditioned import (
     _tracking_linalg_failures,
     _warn_linalg_failures,
@@ -151,6 +151,7 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         bands_only: bool = True,
         ill_handler=None,
         kept_orbitals: list[int] | None = None,
+        sparse_assembly: bool = False,
         **kwargs,
     ):
         """
@@ -177,13 +178,25 @@ class SparseHamiltonianObj(SparseAOMatrixObj):
         the slots without an eigenpair (projected-out combinations or removed orbitals) hold
         ``fill_value`` in ``vals`` (sorted after the real eigenvalues, as the default 1e4 is) and a
         zero vector in ``vecs``.
+
+        With ``sparse_assembly=True`` (full diagonalization, i.e. ``sparse_calc=False``, and no
+        ``ill_handler``/``kept_orbitals``) Hk/Sk are built as scipy sparse matrices and solved with
+        ``eigh_generalized_sparse``: on a GPU they are densified on the device only, so the host
+        never holds a dense (Nb, Nb) array; on the CPU this is the same as the default path.
         """
+        if sparse_assembly and (sparse_calc or ill_handler is not None or kept_orbitals is not None):
+            raise ValueError("sparse_assembly=True is for the full diagonalization only: it cannot be combined "
+                             "with sparse_calc, ill_handler or kept_orbitals.")
         if n_jobs < 0:
             n_jobs = available_cpu_count()
         if not hasattr(ks, "__len__"):  # e.g. a generator: counted below for the worker count
             ks = list(ks)
 
         def process_k(k):
+            if sparse_assembly:
+                Sk = self._s_obj._sparse_k(k)
+                Hk = self._sparse_k(k)
+                return eigh_generalized_sparse(Hk, Sk, eigvals_only=bands_only)
             if sparse_calc and ill_handler is None and kept_orbitals is None:
                 Sk = self._s_obj._sparse_k(k).tocsc()
                 Hk = self._sparse_k(k).tocsc()

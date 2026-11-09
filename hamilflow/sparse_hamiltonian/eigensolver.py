@@ -35,6 +35,26 @@ def eigh_generalized(H: np.ndarray, S: np.ndarray, eigvals_only: bool = False):
     return w, be.solve_triangular(L, v, trans="C")
 
 
+def eigh_generalized_sparse(H, S, eigvals_only: bool = False):
+    """
+    `eigh_generalized` for H and S given as SciPy sparse matrices (e.g. from
+    ``SparseAOMatrixObj._sparse_k``), without a dense (n, n) array on the host when a GPU is used.
+
+    On a GPU (see `dense_backend`) the sparse matrices are uploaded as they are (only their nonzeros
+    cross the bus) and densified on the device, where the cuSOLVER reduction of `eigh_generalized`
+    runs; only the eigenvalues (and eigenvectors, if asked) come back. On the CPU they are densified
+    on the host and passed to `eigh_generalized`. Returns NumPy arrays either way.
+    """
+    be = get_backend(H.shape[0])
+    if be.name == "gpu":
+        import cupyx.scipy.sparse as csp
+
+        # no local names for the device arrays, so that `_eigh_generalized_gpu` can drop them
+        return _eigh_generalized_gpu(be, csp.csr_matrix(H.tocsr()).toarray(), csp.csr_matrix(S.tocsr()).toarray(),
+                                     eigvals_only)
+    return eigh_generalized(H.toarray(), S.toarray(), eigvals_only=eigvals_only)
+
+
 def _eigh_generalized_gpu(be, H: np.ndarray, S: np.ndarray, eigvals_only: bool):
     """`eigh_generalized` with at most four n x n matrices on the device at once (L, the reduced
     matrix and its copy, eigh's output and workspace), so that large problems, or several

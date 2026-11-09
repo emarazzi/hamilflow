@@ -45,6 +45,7 @@ class SparseBandDataGenerator(BandDataGenerator):
         ill_threshold=None,
         window_emin=None,
         window_emax=None,
+        sparse_assembly: bool = False,
     ):
         """
         Diagonalize along the high-symmetry path and store ``self.band_data``
@@ -65,6 +66,10 @@ class SparseBandDataGenerator(BandDataGenerator):
             None, 'window_regularization' or 'orbital_removal' (dense path only).
         ill_threshold, window_emin, window_emax : float or None
             Forwarded to ``IllConditionedHandler``; see the base class.
+        sparse_assembly : bool
+            Full diagonalization (``sparse_calc=False``, ``ill_method=None``) with Hk/Sk built as
+            sparse matrices: on a GPU they are densified on the device only (see
+            ``SparseHamiltonianObj.diag``), so the host never holds a dense (Nb, Nb) array.
         """
         if ill_method == "none":
             ill_method = None
@@ -131,6 +136,7 @@ class SparseBandDataGenerator(BandDataGenerator):
             sparse_calc=sparse_calc,
             bands_only=True,
             ill_handler=ill_handler,
+            sparse_assembly=sparse_assembly,
             **kwargs,
         )
         if sparse_calc:
