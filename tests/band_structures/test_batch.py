@@ -139,3 +139,34 @@ def test_gpu_sparse_upload_matches_cpu(synthetic_structure, monkeypatch):
     np.testing.assert_allclose(eigh_generalized_sparse(H, S, eigvals_only=True), ref, atol=1e-10)
     vals, vecs = eigh_generalized_sparse(H, S)
     np.testing.assert_allclose(H.toarray() @ vecs, S.toarray() @ vecs * vals, atol=1e-10)
+
+
+def test_joints_listed_once_breaks_kept(parent):
+    """GAMMA-X-Y|GAMMA-Y: X joins two segments and is listed once; the break between Y and GAMMA keeps
+    both points."""
+    from hamilflow.band_structures.band_data_generator import SparseBandDataGenerator
+    from hamilflow.band_structures.kpath import labels_kpath, structure_cell
+
+    obj = SparseHamiltonianObj(parent / "structure_0")
+    cell = structure_cell(obj.lattice, obj.frac_coords, obj.elements)
+    points = {"GAMMA": [0, 0, 0], "X": [0.5, 0, 0], "Y": [0, 0.5, 0]}
+    spell = labels_kpath(cell, "GAMMA-X-Y|GAMMA-Y", points=points)
+    conf = {"k_list_spell": spell}
+    raw = SparseBandDataGenerator(obj, conf)
+    merged = SparseBandDataGenerator(obj, conf, merge_joints=True)
+
+    assert merged.kpoints_quantity == raw.kpoints_quantity - 1  # only X merged, not the break Y|GAMMA
+    assert sum(merged.k_path_density_list) == merged.kpoints_quantity
+    assert len(merged.kpoints_distance_list) == merged.kpoints_quantity
+    k = np.array(merged.kpoints_frac_list)
+    consecutive_equal = [i for i in range(1, len(k)) if np.allclose(k[i], k[i - 1])]
+    assert consecutive_equal == []
+    # the break keeps both ends, at the same distance
+    n0, n1 = merged.k_path_density_list[:2]
+    np.testing.assert_allclose(k[n0 + n1 - 1], points["Y"])
+    np.testing.assert_allclose(k[n0 + n1], points["GAMMA"])
+    np.testing.assert_allclose(merged.hsk_distance_list, raw.hsk_distance_list)
+    # remaining points and distances are those of the raw list, minus the duplicate
+    drop = raw.k_path_density_list[0]
+    np.testing.assert_allclose(k, np.delete(np.array(raw.kpoints_frac_list), drop, axis=0))
+    np.testing.assert_allclose(merged.kpoints_distance_list, np.delete(raw.kpoints_distance_list, drop))

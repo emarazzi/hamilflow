@@ -26,15 +26,40 @@ class SparseBandDataGenerator(BandDataGenerator):
     The constructor fails fast on a non-sparse Hamiltonian instead of
     silently accepting an object that would OOM by materializing a dense
     ``HR``/``SR``.
+
+    ``merge_joints=True`` lists once the k-point where a segment starts at the
+    end of the previous one (e.g. M in GAMMA-M-K), which the base class lists
+    twice; points either side of a break in the path (``|``) are kept. Then
+    ``k_path_density_list[i]`` is the number of points listed for segment i
+    (one less than requested for a merged segment), so that it still sums to
+    ``kpoints_quantity``.
     """
 
-    def __init__(self, obj_H: SparseHamiltonianObj, band_conf):
+    def __init__(self, obj_H: SparseHamiltonianObj, band_conf, merge_joints: bool = False):
         if not isinstance(obj_H, SparseHamiltonianObj):
             raise TypeError(
                 "SparseBandDataGenerator requires a SparseHamiltonianObj "
                 f"(e.g. from hamilflow.band_structures.get_hamiltonian), got {type(obj_H).__name__}."
             )
+        self.merge_joints = merge_joints
         super().__init__(obj_H, band_conf)
+
+    def _gen_all_k_list(self):
+        super()._gen_all_k_list()
+        if not self.merge_joints:
+            return
+        keep = np.ones(self.kpoints_quantity, dtype=bool)
+        counts = list(self.k_path_density_list)
+        start = 0
+        for i_path, n_kp in enumerate(self.k_path_density_list):
+            if i_path > 0 and np.allclose(self.hsk_vector_list[i_path][0], self.hsk_vector_list[i_path - 1][1]):
+                keep[start] = False
+                counts[i_path] -= 1
+            start += n_kp
+        self.kpoints_frac_list = [k for k, kept in zip(self.kpoints_frac_list, keep, strict=True) if kept]
+        self.kpoints_distance_list = self.kpoints_distance_list[keep]
+        self.k_path_density_list = counts
+        self.kpoints_quantity = len(self.kpoints_frac_list)
 
     def calc_band_data(
         self,

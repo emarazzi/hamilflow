@@ -125,7 +125,7 @@ def compute_band_structure(case_dir: str | Path, options: BandOptions | None = N
         num_band = min(50, obj_H._mat_dim - 2)
     band_conf = {"k_list_spell": k_list_spell, "num_band": num_band, "lowest_band_energy": options.emin,
                  "maxiter": options.maxiter}
-    bd_gen = SparseBandDataGenerator(obj_H, band_conf)
+    bd_gen = SparseBandDataGenerator(obj_H, band_conf, merge_joints=True)
     logger.info(f"{case_dir}: Nb = {obj_H._mat_dim}, {bd_gen.kpoints_quantity} k-points, solver '{solver}'"
                 + (f" ({num_band} bands)" if num_band else " (all bands)"))
 
