@@ -35,8 +35,14 @@ SCHUR_REMOVAL_PLAN = WORKDIR / "removal_plan_schur.json"
 TRUNCATE_REMOVAL_PLAN = WORKDIR / "removal_plan_truncate.json"
 
 # K-points of the AIMS runs and of the projections.
-KPOINTS_SETTINGS = {"reciprocal_density": 1000}
-FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
+# "kspacing": uniform linear spacing in 1/Å (2π included), k_i = ceil(|b_i| / kspacing),
+# so bulk, slabs, wires and molecules get the same density along their periodic axes.
+# "vacuum_gap" (Å, default 8.3): k_i = 1 along every axis with a gap larger than this
+# (slabs, wires, molecules in a box); None turns the detection off. Other options:
+# {"reciprocal_density": 1000}, {"grid_density": 1000} (both accept "vacuum_gap" too)
+# or {"k_grid": [6, 6, 1]}.
+KPOINTS_SETTINGS = {"kspacing": 0.16, "vacuum_gap": 8.3}
+FORCE_2D = False  # True forces k_z = 1 on top of the vacuum detection
 # True: ignore KPOINTS_SETTINGS and use, for each structure, the grid stored in
 # its frame of STRUCTURES_FILE as info["k_grid"], e.g. written with
 # ``atoms.info["k_grid"] = [6, 6, 1]`` before ``ase.io.write(..., format="extxyz")``.

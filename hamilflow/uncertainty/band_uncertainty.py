@@ -121,8 +121,8 @@ class BandUncertaintyCalculator:
     - `kpoints_settings`: alternative to the fixed `grid_mesh`. If given, it is passed as
       `kpoints_updates` to `dft_workflows.kpoints.get_ksampling` with each structure's cell, so
       the mesh is chosen per structure, e.g. {"grid_density": 1000},
-      {"reciprocal_density": 100} or {"k_grid": [4, 4, 4]}. It must resolve to a k_grid (not a
-      line path or explicit k-points). `grid_mesh` is then ignored; the mesh actually used is
+      {"reciprocal_density": 100}, {"kspacing": 0.16} or {"k_grid": [4, 4, 4]}. It must
+      resolve to a k_grid (not a line path or explicit k-points). `grid_mesh` is then ignored; the mesh actually used is
       stored with every structure's output as "grid_mesh".
     - `kpoints_force_2d` / `kpoints_force_1d`: forwarded to `get_ksampling` as `force_2d` /
       `force_1d` (mutually exclusive): the resolved k_grid is set to 1 along c (2D) or along
