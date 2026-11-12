@@ -5,11 +5,9 @@ import math
 from typing import Any, cast
 
 import numpy as np
-
 from pymatgen.core import Structure
 from pymatgen.io.vasp.inputs import Kpoints
 from pymatgen.symmetry.bandstructure import HighSymmKpath
-
 
 DEFAULT_VACUUM_GAP = 8.3
 """Default vacuum threshold in Å for :func:`detect_vacuum_axes`.
