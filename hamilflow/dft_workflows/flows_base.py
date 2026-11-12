@@ -94,15 +94,16 @@ class ProjectDeephInputsConfig:
     also run AIMS from ``structures_path`` (e.g. ``GenerateAimsToProjectedDeephData``);
     ``kgrid`` is then ignored.
 
-    The projection raises any k-grid direction shorter than the span of the
-    stored R vectors to that span; ``allow_undersampled_kgrid=True`` keeps the
-    requested grid instead (see :class:`hamilflow.projection.models.ProjectionConfig`).
+    With ``kgrid=None`` and no ``user_kpoints_settings`` (the default), each
+    structure is projected on the span of its stored R vectors,
+    ``max(R) - min(R) + 1`` per direction. An explicit grid is used exactly as
+    given, with a warning (see :class:`hamilflow.projection.models.ProjectionConfig`).
     """
 
     output_root: str | Path
     removal_plan: RemovalPlanLike | ProjectionRemovalPlanConfig
     structure_pattern: str = "*"
-    kgrid: tuple[int, int, int] = (4, 4, 4)
+    kgrid: tuple[int, int, int] | None = None
     user_kpoints_settings: dict[str, Any] | Any | None = None
     force_2d: bool = False
     force_1d: bool = False
@@ -111,7 +112,6 @@ class ProjectDeephInputsConfig:
     write_dummy_hamiltonian: bool = False
     n_workers: int | None = None
     kgrid_from_structure: bool = False
-    allow_undersampled_kgrid: bool = False
 
     def __post_init__(self):
         if self.kgrid_from_structure and self.user_kpoints_settings not in (None, {}):
@@ -442,7 +442,6 @@ class GenerateProjectedDeephInputs:
                 overlap_only=self.projection_config.overlap_only,
                 write_dummy_hamiltonian=self.projection_config.write_dummy_hamiltonian,
                 n_workers=self.projection_config.n_workers,
-                allow_undersampled_kgrid=self.projection_config.allow_undersampled_kgrid,
             )
             projection_job = set_projection_job_name(
                 projection_job,

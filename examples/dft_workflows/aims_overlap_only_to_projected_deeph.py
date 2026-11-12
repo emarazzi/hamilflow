@@ -34,7 +34,7 @@ STRUCTURES_FILE = WORKDIR / "structures.extxyz"
 SCHUR_REMOVAL_PLAN = WORKDIR / "removal_plan_schur.json"
 TRUNCATE_REMOVAL_PLAN = WORKDIR / "removal_plan_truncate.json"
 
-# K-points of the AIMS runs and of the projections.
+# K-points of the AIMS runs.
 # "kspacing": uniform linear spacing in 1/Å (2π included), k_i = ceil(|b_i| / kspacing),
 # so bulk, slabs, wires and molecules get the same density along their periodic axes.
 # "vacuum_gap" (Å, default 8.3): k_i = 1 along every axis with a gap larger than this
@@ -47,8 +47,6 @@ FORCE_2D = False  # True forces k_z = 1 on top of the vacuum detection
 # its frame of STRUCTURES_FILE as info["k_grid"], e.g. written with
 # ``atoms.info["k_grid"] = [6, 6, 1]`` before ``ase.io.write(..., format="extxyz")``.
 # Every frame must carry one. FORCE_2D still applies on top of it.
-# The projections raise any grid direction shorter than the span of the stored R
-# vectors to that span (allow_undersampled_kgrid=True in their config keeps it).
 KGRID_FROM_STRUCTURES = False
 
 SLURM_ACCOUNT = "your_account"
@@ -58,7 +56,7 @@ PRE_RUN = "source /path/to/your/venv/bin/activate"
 
 convert_config = ConvertAimsToDeephConfig(output_dir=WORKDIR / "deeph_full_ovl")
 
-# K-point arguments of the AIMS runs and of the projections (see KGRID_FROM_STRUCTURES).
+# K-point arguments of the AIMS runs (see KGRID_FROM_STRUCTURES).
 kpoints = (
     {"kgrid_from_structure": True}
     if KGRID_FROM_STRUCTURES
@@ -67,12 +65,15 @@ kpoints = (
 
 # n_workers=None: automatic. For Schur, one worker using all cores in BLAS when
 # many orbitals (>= 128) are removed, otherwise one worker per core.
+# The projections need no k-points: by default each structure is projected on the
+# smallest grid that tells its stored R vectors apart, max(R) - min(R) + 1 per
+# direction. Passing kgrid, user_kpoints_settings or kgrid_from_structure here
+# overrides it: that grid is used as given, with a warning (a grid coarser than the
+# span mixes the blocks of different R in the output).
 schur_config = ProjectDeephInputsConfig(
     output_root=WORKDIR / "deeph_projected_schur_ovl",
     removal_plan=SCHUR_REMOVAL_PLAN,
     reduction_mode="schur",
-    **kpoints,
-    force_2d=FORCE_2D,
     overlap_only=True,
     write_dummy_hamiltonian=True,
     n_workers=None,
@@ -82,8 +83,6 @@ truncate_config = ProjectDeephInputsConfig(
     output_root=WORKDIR / "deeph_projected_truncated_ovl",
     removal_plan=TRUNCATE_REMOVAL_PLAN,
     reduction_mode="truncate",
-    **kpoints,
-    force_2d=FORCE_2D,
     overlap_only=True,
     write_dummy_hamiltonian=True,
     n_workers=None,

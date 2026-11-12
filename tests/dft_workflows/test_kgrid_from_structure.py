@@ -130,18 +130,15 @@ def test_projection_only_flow_rejects_kgrid_from_structure(tmp_path):
         flow.make()
 
 
-def test_allow_undersampled_kgrid_reaches_the_projection_jobs(tmp_path):
+def test_projection_jobs_default_to_no_kgrid(tmp_path):
+    """Without kgrid or user_kpoints_settings, the jobs leave the grid to the projection (R span)."""
     from hamilflow.dft_workflows.flows_base import GenerateProjectedDeephInputs
 
     (tmp_path / "deeph" / "s0").mkdir(parents=True)
-    flows = {
-        allow: GenerateProjectedDeephInputs(
-            deeph_inputs_root=tmp_path / "deeph",
-            projection_config=_projection_config(
-                tmp_path, "p1", "schur", allow_undersampled_kgrid=allow
-            ),
-        ).make()
-        for allow in (False, True)
-    }
-    for allow, flow in flows.items():
-        assert flow.jobs[0].function_kwargs["allow_undersampled_kgrid"] is allow
+    flow = GenerateProjectedDeephInputs(
+        deeph_inputs_root=tmp_path / "deeph",
+        projection_config=_projection_config(tmp_path, "p1", "schur"),
+    ).make()
+    kwargs = flow.jobs[0].function_kwargs
+    assert kwargs["kgrid"] is None
+    assert kwargs["user_kpoints_settings"] is None

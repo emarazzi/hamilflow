@@ -297,7 +297,7 @@ def run_projection_for_structure(
     deeph_inputs_root: str | Path,
     projected_root: str | Path,
     removal_plan: RemovalPlanLike,
-    kgrid: tuple[int, int, int] = (4, 4, 4),
+    kgrid: tuple[int, int, int] | None = None,
     user_kpoints_settings: dict[str, Any] | Any | None = None,
     force_2d: bool = False,
     force_1d: bool = False,
@@ -305,7 +305,6 @@ def run_projection_for_structure(
     overlap_only: bool = False,
     write_dummy_hamiltonian: bool = False,
     n_workers: int | None = None,
-    allow_undersampled_kgrid: bool = False,
     deeph_conversion_output: dict[str, Any] | None = None,
     upstream_projection_output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -346,9 +345,11 @@ def run_projection_for_structure(
         projected_root = Path(projected_root)
         output_dir = projected_root / structure_name
 
-        if len(kgrid) != 3:
-            raise ValueError(f"kgrid must contain exactly three integers, got: {kgrid}")
-        kgrid_3: tuple[int, int, int] = (int(kgrid[0]), int(kgrid[1]), int(kgrid[2]))
+        kgrid_3: tuple[int, int, int] | None = None
+        if kgrid is not None:
+            if len(kgrid) != 3:
+                raise ValueError(f"kgrid must contain exactly three integers, got: {kgrid}")
+            kgrid_3 = (int(kgrid[0]), int(kgrid[1]), int(kgrid[2]))
 
         result = run_projection(
             config=ProjectionConfig(
@@ -362,7 +363,6 @@ def run_projection_for_structure(
                 overlap_only=overlap_only,
                 write_dummy_hamiltonian=write_dummy_hamiltonian,
                 n_workers=n_workers,
-                allow_undersampled_kgrid=allow_undersampled_kgrid,
             ),
             removal_plan=removal_plan,
         )

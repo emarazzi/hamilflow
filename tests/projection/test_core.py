@@ -329,57 +329,84 @@ def test_kgrid_follows_the_config(tmp_path, options, expected):
     assert _resolve_projection_kgrid(config) == expected
 
 
-def run_with_kgrid(structure, tmp_path, kgrid, allow_undersampled_kgrid=False):
+@pytest.mark.parametrize("options", [{}, {"force_2d": True}, {"user_kpoints_settings": {}}])
+def test_no_grid_requested_leaves_the_default(tmp_path, options):
+    assert _resolve_projection_kgrid(ProjectionConfig(tmp_path, tmp_path, **options)) is None
+
+
+@pytest.mark.parametrize("mode", ["schur", "truncate"])
+def test_default_grid_is_the_r_span(structure, tmp_path, caplog, mode):
+    """Without kgrid or user_kpoints_settings, both modes use max(R) - min(R) + 1 and do not warn;
+    the output matches the one of the explicit span grid."""
+    with caplog.at_level("WARNING", logger="hamilflow.projection.core"):
+        default = run_projection(
+            ProjectionConfig(structure.path, tmp_path / "d", reduction_mode=mode, n_workers=1), REMOVE_P
+        )
+    assert "k-grid" not in caplog.text
+    assert default.metadata["requested_kgrid"] is None
+    assert default.metadata["resolved_kgrid"] == [3, 3, 1]
+    explicit = run_projection(
+        ProjectionConfig(structure.path, tmp_path / "e", kgrid=(3, 3, 1), reduction_mode=mode, n_workers=1),
+        REMOVE_P,
+    )
+    for name in (DEEPX_HAMILTONIAN_FILENAME, DEEPX_OVERLAP_FILENAME):
+        a, b = read_h5(default.output_dir / name), read_h5(explicit.output_dir / name)
+        assert a.keys() == b.keys()
+        for key in a:
+            np.testing.assert_array_equal(a[key], b[key])
+
+
+def run_with_kgrid(structure, tmp_path, kgrid):
     config = ProjectionConfig(
-        structure.path, tmp_path / "output", kgrid=kgrid, reduction_mode="truncate", n_workers=1,
-        allow_undersampled_kgrid=allow_undersampled_kgrid,
+        structure.path, tmp_path / "output", kgrid=kgrid, reduction_mode="truncate", n_workers=1
     )
     return run_projection(config, REMOVE_P)
 
 
-@pytest.mark.parametrize(
-    ("kgrid", "raised"),
-    [((2, 3, 1), (3, 3, 1)), ((3, 2, 1), (3, 3, 1)), ((2, 2, 1), (3, 3, 1)), ((1, 5, 2), (3, 5, 2))],
-)
-def test_grid_too_coarse_for_the_r_vectors_is_raised_to_their_span(structure, tmp_path, caplog, kgrid, raised):
-    """The fixture's R go from -1 to 1 in-plane, which needs 3 points per direction; the other
-    directions keep the requested size."""
+@pytest.mark.parametrize("kgrid", [(3, 3, 1), (4, 5, 2)])
+def test_explicit_grid_warns_but_is_used(structure, tmp_path, caplog, kgrid):
     with caplog.at_level("WARNING", logger="hamilflow.projection.core"):
         result = run_with_kgrid(structure, tmp_path, kgrid)
-    assert f"which need at least (3, 3, 1): using {raised} instead" in caplog.text
+    assert f"using the requested k-grid {kgrid} as given, instead of the default (3, 3, 1)" in caplog.text
+    assert "mixed" not in caplog.text
     assert result.metadata["requested_kgrid"] == list(kgrid)
-    assert result.metadata["resolved_kgrid"] == list(raised)
+    assert result.metadata["resolved_kgrid"] == list(kgrid)
 
 
-@pytest.mark.parametrize("kgrid", [(2, 3, 1), (3, 2, 1), (2, 2, 1)])
-def test_undersampled_grid_is_kept_when_allowed(structure, tmp_path, caplog, kgrid):
+@pytest.mark.parametrize("kgrid", [(2, 3, 1), (3, 2, 1), (2, 2, 1), (1, 5, 2)])
+def test_grid_coarser_than_the_r_span_is_used_as_given(structure, tmp_path, caplog, kgrid):
+    """The fixture's R go from -1 to 1 in-plane, which needs 3 points per direction: a coarser
+    explicit grid is not raised, only warned about."""
     with caplog.at_level("WARNING", logger="hamilflow.projection.core"):
-        result = run_with_kgrid(structure, tmp_path, kgrid, allow_undersampled_kgrid=True)
-    assert "too coarse for the stored R vectors, which need at least (3, 3, 1)" in caplog.text
-    assert "instead" not in caplog.text
+        result = run_with_kgrid(structure, tmp_path, kgrid)
+    assert f"using the requested k-grid {kgrid} as given" in caplog.text
+    assert "blocks of different R are mixed in the output" in caplog.text
     assert result.metadata["resolved_kgrid"] == list(kgrid)
     assert result.overlap_path.exists()
 
 
-@pytest.mark.parametrize("kgrid", [(3, 3, 1), (4, 5, 2)])
-def test_grid_that_separates_the_r_vectors_does_not_warn(structure, tmp_path, caplog, kgrid):
+def test_user_kpoints_settings_warn_but_are_used(structure, tmp_path, caplog):
+    config = ProjectionConfig(
+        structure.path, tmp_path / "u", user_kpoints_settings={"k_grid": [2, 2, 1]},
+        reduction_mode="truncate", n_workers=1,
+    )
     with caplog.at_level("WARNING", logger="hamilflow.projection.core"):
-        run_with_kgrid(structure, tmp_path, kgrid)
-    assert "too coarse" not in caplog.text
+        result = run_projection(config, REMOVE_P)
+    assert "using the requested k-grid (2, 2, 1) as given" in caplog.text
+    assert result.metadata["resolved_kgrid"] == [2, 2, 1]
 
 
-def test_warning_is_right_about_what_it_warns_of(structure, tmp_path):
-    """Below the limit the output really is wrong, and at the limit it is exact."""
+def test_coarse_grid_warning_is_right_about_what_it_warns_of(structure, tmp_path):
+    """Below the span the output really is wrong, and at the span (the default) it is exact."""
     k = np.array(KPOINTS[1])
     keep = np.ix_([0, 4, 5], [0, 4, 5])
     H0 = structure.Sk_and_Hk(k)[1][keep]
-    exact = run_with_kgrid(structure, tmp_path / "a", (3, 3, 1))
-    np.testing.assert_allclose(SparseHamiltonianObj(exact.output_dir).Sk_and_Hk(k)[1], H0, atol=1e-10)
-    coarse = run_with_kgrid(structure, tmp_path / "b", (2, 2, 1), allow_undersampled_kgrid=True)
+    default = run_projection(
+        ProjectionConfig(structure.path, tmp_path / "a", reduction_mode="truncate", n_workers=1), REMOVE_P
+    )
+    np.testing.assert_allclose(SparseHamiltonianObj(default.output_dir).Sk_and_Hk(k)[1], H0, atol=1e-10)
+    coarse = run_with_kgrid(structure, tmp_path / "b", (2, 2, 1))
     assert np.abs(SparseHamiltonianObj(coarse.output_dir).Sk_and_Hk(k)[1] - H0).max() > 1e-3
-    # By default the coarse request is raised to the span, so the output is exact again.
-    raised = run_with_kgrid(structure, tmp_path / "c", (2, 2, 1))
-    np.testing.assert_allclose(SparseHamiltonianObj(raised.output_dir).Sk_and_Hk(k)[1], H0, atol=1e-10)
 
 
 def test_user_kpoint_settings_go_through_the_real_sampling_function(structure, tmp_path):

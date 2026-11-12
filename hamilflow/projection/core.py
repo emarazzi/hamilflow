@@ -30,7 +30,8 @@ from .removal import coerce_removal_plan, resolve_indices_from_rules
 logger = logging.getLogger(__name__)
 
 
-def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
+def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int] | None:
+    """Grid requested through the config, or None when the R-span default applies."""
     if config.user_kpoints_settings not in (None, {}):
         from ..dft_workflows.kpoints import get_ksampling
 
@@ -50,6 +51,8 @@ def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
             raise ValueError(f"Resolved k_grid must contain three integers, got: {k_grid}")
         return (int(k_grid[0]), int(k_grid[1]), int(k_grid[2]))
 
+    if config.kgrid is None:
+        return None
     if config.force_2d:
         return (int(config.kgrid[0]), int(config.kgrid[1]), 1)
     if config.force_1d:
@@ -57,31 +60,9 @@ def _resolve_projection_kgrid(config: ProjectionConfig) -> tuple[int, int, int]:
     return (int(config.kgrid[0]), int(config.kgrid[1]), int(config.kgrid[2]))
 
 
-def _cover_r_span(
-    kgrid: tuple[int, int, int], Rijk_list: np.ndarray, input_dir, allow_undersampled: bool = False
-) -> tuple[int, int, int]:
-    """Return a k-grid that tells the stored R vectors apart.
-
-    R and R' with R - R' a multiple of the grid get the same phase at every k-point, so the
-    inverse transform adds their blocks: each direction needs at least ``max(R) - min(R) + 1``
-    points. Too small directions are raised to that span, or, with ``allow_undersampled``,
-    kept with a warning.
-    """
-    needed = tuple(int(n) for n in Rijk_list.max(axis=0) - Rijk_list.min(axis=0) + 1)
-    if all(n >= need for n, need in zip(kgrid, needed)):
-        return kgrid
-    if allow_undersampled:
-        logger.warning(
-            f"[projection] {input_dir}: k-grid {tuple(kgrid)} is too coarse for the stored R vectors, which need "
-            f"at least {needed}: blocks of different R are mixed in the output"
-        )
-        return kgrid
-    raised = (max(kgrid[0], needed[0]), max(kgrid[1], needed[1]), max(kgrid[2], needed[2]))
-    logger.warning(
-        f"[projection] {input_dir}: k-grid {tuple(kgrid)} is too coarse for the stored R vectors, which need "
-        f"at least {needed}: using {raised} instead (allow_undersampled_kgrid=True keeps the requested grid)"
-    )
-    return raised
+def _r_span_kgrid(Rijk_list: np.ndarray) -> tuple[int, int, int]:
+    """Smallest grid that tells the stored R vectors apart: ``max(R) - min(R) + 1`` per direction."""
+    return tuple(int(n) for n in Rijk_list.max(axis=0) - Rijk_list.min(axis=0) + 1)  # type: ignore[return-value]
 
 
 def run_projection(
@@ -132,9 +113,22 @@ def run_projection(
     if obj.Rijk_list is None:
         raise ValueError("Rijk_list is None")
     requested_kgrid = _resolve_projection_kgrid(config)
-    resolved_kgrid = _cover_r_span(
-        requested_kgrid, obj.Rijk_list, config.input_dir, config.allow_undersampled_kgrid
-    )
+    r_span = _r_span_kgrid(obj.Rijk_list)
+    if requested_kgrid is None:
+        resolved_kgrid = r_span
+    else:
+        resolved_kgrid = requested_kgrid
+        coarse = any(n < need for n, need in zip(requested_kgrid, r_span))
+        logger.warning(
+            f"[projection] {config.input_dir}: using the requested k-grid {requested_kgrid} as given, "
+            f"instead of the default {r_span} (the span max(R) - min(R) + 1 of the stored R vectors); "
+            + (
+                "it is coarser than that span along some direction, so blocks of different R are "
+                "mixed in the output"
+                if coarse
+                else "leave kgrid and user_kpoints_settings unset to use the default"
+            )
+        )
     ks = build_uniform_kmesh(resolved_kgrid)
     nb = int(obj.orbits_quantity) * (2 if obj.spinful else 1)
     keep_global = [i for i in range(nb) if i not in rm]
@@ -204,7 +198,7 @@ def run_projection(
         "reduction_mode": config.reduction_mode,
         "overlap_only": config.overlap_only,
         "write_dummy_hamiltonian": config.write_dummy_hamiltonian,
-        "requested_kgrid": list(requested_kgrid),
+        "requested_kgrid": list(requested_kgrid) if requested_kgrid is not None else None,
         "resolved_kgrid": list(resolved_kgrid),
         "removed_global_indices": rm,
         "kept_global_indices": keep_global,

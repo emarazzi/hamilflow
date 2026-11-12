@@ -126,7 +126,6 @@ class GenerateAimsToProjectedDeephData:
                     overlap_only=self.projection_config.overlap_only,
                     write_dummy_hamiltonian=self.projection_config.write_dummy_hamiltonian,
                     n_workers=self.projection_config.n_workers,
-                    allow_undersampled_kgrid=self.projection_config.allow_undersampled_kgrid,
                     deeph_conversion_output=dft_outputs["deeph"],
                 )
                 projection_job = set_projection_job_name(
@@ -157,7 +156,6 @@ class GenerateAimsToProjectedDeephData:
                         overlap_only=self.second_projection_config.overlap_only,
                         write_dummy_hamiltonian=self.second_projection_config.write_dummy_hamiltonian,
                         n_workers=self.second_projection_config.n_workers,
-                        allow_undersampled_kgrid=self.second_projection_config.allow_undersampled_kgrid,
                         upstream_projection_output=projection_job.output,
                     )
                     second_projection_job = set_projection_job_name(
@@ -330,7 +328,6 @@ class GenerateTwoStepProjectedDeephInputs:
                     overlap_only=self.first_projection_config.overlap_only,
                     write_dummy_hamiltonian=self.first_projection_config.write_dummy_hamiltonian,
                     n_workers=self.first_projection_config.n_workers,
-                    allow_undersampled_kgrid=self.first_projection_config.allow_undersampled_kgrid,
                 ),
             )
             first_job = set_projection_job_name(
@@ -359,7 +356,6 @@ class GenerateTwoStepProjectedDeephInputs:
                     overlap_only=self.second_projection_config.overlap_only,
                     write_dummy_hamiltonian=self.second_projection_config.write_dummy_hamiltonian,
                     n_workers=self.second_projection_config.n_workers,
-                    allow_undersampled_kgrid=self.second_projection_config.allow_undersampled_kgrid,
                     upstream_projection_output=first_job.output,
                 ),
             )

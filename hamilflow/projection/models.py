@@ -28,18 +28,22 @@ class RemovalPlan:
 class ProjectionConfig:
     """Runtime configuration for the k->R reduction projection.
 
-    If ``user_kpoints_settings`` is provided, the projection core resolves the
-    k-mesh from the POSCAR stored in ``input_dir`` and ignores ``kgrid``.
+    By default (``kgrid=None`` and no ``user_kpoints_settings``) the projection
+    uses the smallest grid that tells the stored R vectors apart,
+    ``max(R) - min(R) + 1`` along each direction, for both reduction modes.
+    R and R' with R - R' a multiple of the grid get the same phase at every
+    k-point, so a coarser grid mixes their blocks in the output.
 
-    A k-grid smaller, along some direction, than the span of the stored R vectors
-    (``max(R) - min(R) + 1``) mixes the blocks of different R in the output. By
-    default the grid is raised to that span along such directions;
-    ``allow_undersampled_kgrid=True`` keeps the requested grid (with a warning).
+    An explicit ``kgrid`` or ``user_kpoints_settings`` is used exactly as given,
+    with a warning (which also says when it is coarser than the span). If
+    ``user_kpoints_settings`` is provided, the projection core resolves the
+    k-mesh from the POSCAR stored in ``input_dir`` and ignores ``kgrid``;
+    ``force_2d``/``force_1d`` only apply to explicit grids.
     """
 
     input_dir: Path
     output_dir: Path
-    kgrid: tuple[int, int, int] = (4, 4, 4)
+    kgrid: tuple[int, int, int] | None = None
     user_kpoints_settings: dict[str, Any] | Any | None = None
     force_2d: bool = False
     force_1d: bool = False
@@ -51,7 +55,6 @@ class ProjectionConfig:
     # Schur reductions, otherwise one worker per CPU. Always capped by the
     # available memory and the number of k-points.
     n_workers: int | None = None
-    allow_undersampled_kgrid: bool = False
 
     def __post_init__(self) -> None:
         if self.force_2d and self.force_1d:

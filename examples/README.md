@@ -98,10 +98,13 @@ inference inputs with FHI-aims.
   only (short, loosely converged AIMS runs), e.g. to prepare inputs for DeepH
   inference on new structures.
 
-  Both scripts set the k-points of the AIMS runs and of the projections from
-  `KPOINTS_SETTINGS`, or, with `KGRID_FROM_STRUCTURES = True`, from each
-  frame's `info["k_grid"]` in the extxyz file (`kgrid_from_structure=True` in
-  the flow and in the projection configs).
+  Both scripts set the k-points of the AIMS runs from `KPOINTS_SETTINGS`, or,
+  with `KGRID_FROM_STRUCTURES = True`, from each frame's `info["k_grid"]` in
+  the extxyz file (`kgrid_from_structure=True` in the flow). The projections
+  use their default grid, the span `max(R) - min(R) + 1` of the stored R
+  vectors per direction; an explicit `kgrid`, `user_kpoints_settings` or
+  `kgrid_from_structure` in a projection config is used as given instead, with
+  a warning.
 - `removal_plan_schur.json`, `removal_plan_truncate.json`: example removal
   plans for MoS2 (core shells folded out with the Schur complement, then
   high-l polarisation shells truncated). Their `_comment` keys explain the
@@ -114,6 +117,10 @@ disk (e.g. the `deeph_full/` folder written by `dft_workflows/`).
 
 - `two_step_projection.py`: Schur projection followed by truncation, for H and S.
 - `two_step_projection_overlap_only.py`: the same for S only.
+
+  Both project on the default k-grid, the span `max(R) - min(R) + 1` of each
+  structure's stored R vectors; an explicit `kgrid` or `user_kpoints_settings`
+  is used as given, with a warning.
 - `removal_plan_schur.json`, `removal_plan_truncate.json`: copies of the
   example plans in `dft_workflows/`.
 

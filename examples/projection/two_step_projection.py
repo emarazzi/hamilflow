@@ -29,8 +29,12 @@ DEEPH_INPUTS_ROOT = WORKDIR / "deeph_full"  # one subfolder per structure
 SCHUR_REMOVAL_PLAN = WORKDIR / "removal_plan_schur.json"
 TRUNCATE_REMOVAL_PLAN = WORKDIR / "removal_plan_truncate.json"
 
-KPOINTS_SETTINGS = {"reciprocal_density": 1000}
-FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
+# K-points: by default each structure is projected on the smallest grid that tells
+# its stored R vectors apart, max(R) - min(R) + 1 per direction (k = 1 along vacuum
+# directions, where all R are 0), which is what you want in almost every case.
+# To use your own grid, pass kgrid=(6, 6, 1) or user_kpoints_settings={...} (with
+# force_2d / force_1d) to the configs below: it is used as given, with a warning;
+# a grid coarser than the span mixes the blocks of different R in the output.
 
 SLURM_ACCOUNT = "your_account"
 JOBFLOW_PROJECT = "your_project"
@@ -46,8 +50,6 @@ schur_config = ProjectDeephInputsConfig(
     removal_plan=SCHUR_REMOVAL_PLAN,
     structure_pattern="*",  # glob on the structure folder names
     reduction_mode="schur",
-    user_kpoints_settings=KPOINTS_SETTINGS,
-    force_2d=FORCE_2D,
     n_workers=None,
 )
 
@@ -55,8 +57,6 @@ truncate_config = ProjectDeephInputsConfig(
     output_root=WORKDIR / "deeph_projected_truncated",
     removal_plan=TRUNCATE_REMOVAL_PLAN,
     reduction_mode="truncate",
-    user_kpoints_settings=KPOINTS_SETTINGS,
-    force_2d=FORCE_2D,
     n_workers=None,
 )
 
