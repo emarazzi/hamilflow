@@ -5,7 +5,7 @@ import os
 import re
 import time
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     import plotly.graph_objects as go
 
 from .plotting import fit_mds, plot_mds
+from .quota import GroupQuotaSelection, select_by_group_quota
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,33 @@ class CandidateSelector:
                            f"selecting {len(selected)} structures")
 
         return np.array(selected)
+
+    def quota_selection(
+        self,
+        descriptors: Sequence | np.ndarray,
+        group_labels: Sequence[Hashable],
+        n_total: int,
+        **kwargs,
+    ) -> GroupQuotaSelection:
+        """Per-group quota selection with this selector's ``seed``: split
+        ``n_total`` over the groups given by ``group_labels`` (one label per
+        candidate) and run k-means within each group, optionally after a
+        per-group score filter. See
+        :func:`hamilflow.candidate_selection.quota.select_by_group_quota` for
+        the keyword arguments (``weights``, ``fixed``, ``min_per_group``,
+        ``group_order``, ``scores``, ``top_fraction``/``top_n``, ``pick``,
+        ``sample_weight``, ``candidate_idx``, ``n_init``).
+
+        Example::
+
+            traj, labels = selector.load_trajectory("md.extxyz")
+            amds = selector.compute_amds(traj)
+            groups = [lbl.rsplit("-", 1)[0] for lbl in labels]  # e.g. one group per MD run
+            res = selector.quota_selection(amds, groups, n_total=50, min_per_group=2)
+            chosen = [labels[i] for i in res.selected_idx]
+        """
+        kwargs.setdefault("seed", self.seed)
+        return select_by_group_quota(descriptors, group_labels, n_total, **kwargs)
 
     # -- high-level orchestration -----------------------------------------
 

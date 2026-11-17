@@ -83,6 +83,11 @@ Pick which structures to compute with DFT.
   farthest-point sampling, k-means, or a regex on the frame labels. Writes the
   selected structures (`selected.extxyz`, ready for `dft_workflows/`) and an
   interactive 2D MDS map of the dataset.
+- `select_by_group_quota.py`: selects N structures split over groups (a regex
+  on the frame labels, e.g. one group per MD run or parent structure) by
+  per-group quotas with optional weights, optionally keeps the most uncertain
+  frames of each group, then picks diverse ones by k-means on the AMDs
+  (`CandidateSelector.quota_selection`).
 - `uncertainty_map.py`: colors that 2D map by the ensemble band uncertainty
   from `uncertainty/ensemble_band_uncertainty.py`, to see which regions of
   structure space the models are unsure about.
