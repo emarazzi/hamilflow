@@ -2,10 +2,8 @@
   "rules": [
     {
       "target_elements": ["C"],
-      "remove_shells": ["1g"],
+      "remove_shells": ["1d"],
       "remove_orbitals": []
     }
   ]
 }
-
-
