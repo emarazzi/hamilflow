@@ -58,9 +58,11 @@ target-version = "py312"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # importlib mode: tests/ mirrors the package, so test files in different folders can share a name
-addopts = "--import-mode=importlib --strict-markers"
+# The aims tests run the real FHI-aims executable: deselected here, select them with `pytest -m aims`
+addopts = "--import-mode=importlib --strict-markers -m 'not aims'"
 markers = [
   "slow: takes more than a few seconds",
   "gpu: needs a working GPU backend, skipped otherwise",
   "integration: exercises several modules together",
+  "aims: runs the FHI-aims executable set in the atomate2 config (AIMS_CMD), deselected by default",
 ]
