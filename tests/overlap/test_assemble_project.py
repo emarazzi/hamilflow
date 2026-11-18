@@ -123,3 +123,20 @@ def test_path_b_matches_path_a(table, structure, tmp_path, n_terms, tol):
     ia, ib = (json.loads((d / "info.json").read_text()) for d in (a_dir, __import__("pathlib").Path(b_dir)))
     assert ia["elements_orbital_map"] == ib["elements_orbital_map"] == {"C": [0]}
     assert ia["occupation"] == ib["occupation"] and ia["orbits_quantity"] == ib["orbits_quantity"]
+
+
+def test_reorder_like(table, structure, tmp_path):
+    from hamilflow.overlap.io import reorder_like
+
+    assemble_overlap(structure, table, tmp_path / "a")
+    ap, bounds, _ = read_layout(tmp_path / "a" / "overlap.h5")
+    perm = np.random.default_rng(1).permutation(len(ap))
+    with h5py.File(tmp_path / "ref.h5", "w") as f:
+        f.create_dataset("atom_pairs", data=ap[perm])
+    reorder_like(tmp_path / "a" / "overlap.h5", tmp_path / "ref.h5", tmp_path / "b.h5", chunk_pairs=5)
+    ap2, b2, _ = read_layout(tmp_path / "b.h5")
+    np.testing.assert_array_equal(ap2, ap[perm])
+    with h5py.File(tmp_path / "a" / "overlap.h5") as fa, h5py.File(tmp_path / "b.h5") as fb:
+        ea, eb = fa["entries"][:], fb["entries"][:]
+    for k_new, k_old in enumerate(perm):
+        np.testing.assert_array_equal(eb[b2[k_new]:b2[k_new + 1]], ea[bounds[k_old]:bounds[k_old + 1]])

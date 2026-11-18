@@ -205,3 +205,33 @@ def deeph_paths(d: Path | str) -> dict[str, Path]:
         "overlap": d / DEEPX_OVERLAP_FILENAME,
         "hamiltonian": d / DEEPX_HAMILTONIAN_FILENAME,
     }
+
+
+def reorder_like(src: Path | str, ref: Path | str, out: Path | str, chunk_pairs: int = 4096) -> Path:
+    """Write the matrix file ``src`` to ``out`` with its blocks in the ``atom_pairs`` order of
+    ``ref`` (same pair set required). Readers that pair H and S (``SparseHamiltonianObj``) need
+    both files in the same order, e.g. a built S next to H predicted on the production layout."""
+    ap_s, b_s, sh_s = read_layout(src)
+    with h5py.File(ref, "r") as f:
+        ap_r = np.asarray(f["atom_pairs"][:], dtype=np.int64)
+    pos = {tuple(p): k for k, p in enumerate(ap_s.tolist())}
+    try:
+        order = np.array([pos[tuple(p)] for p in ap_r.tolist()], dtype=np.int64)
+    except KeyError as err:
+        raise ValueError(f"pair {err} of {ref} is not in {src}") from err
+    if len(order) != len(ap_s):
+        raise ValueError(f"{src} has {len(ap_s)} pairs, {ref} has {len(ap_r)}")
+    shapes = sh_s[order]
+    bounds = np.zeros(len(order) + 1, dtype=np.int64)
+    np.cumsum(shapes[:, 0] * shapes[:, 1], out=bounds[1:])
+    with h5py.File(src, "r") as fs, h5py.File(out, "w") as fo:
+        fo.create_dataset("atom_pairs", data=ap_r.astype(fs["atom_pairs"].dtype))
+        fo.create_dataset("chunk_boundaries", data=bounds)
+        fo.create_dataset("chunk_shapes", data=shapes.astype(fs["chunk_shapes"].dtype))
+        dst = fo.create_dataset("entries", shape=(int(bounds[-1]),), dtype=fs["entries"].dtype)
+        ent = fs["entries"]
+        for p0 in range(0, len(order), chunk_pairs):
+            idx = order[p0:p0 + chunk_pairs]
+            dst[bounds[p0]:bounds[p0 + len(idx)]] = np.concatenate(
+                [np.asarray(ent[b_s[k]:b_s[k + 1]]) for k in idx])
+    return Path(out)
