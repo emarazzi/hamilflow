@@ -184,11 +184,20 @@ def test_stage_that_gets_worse_has_no_gain_and_keeps_the_cumulative_best(tmp_pat
     assert stages[1].cumulative_best_val == 1.0
 
 
-def test_new_job_is_a_new_stage_but_not_a_reduction(tmp_path):
-    first = write_log(tmp_path / "1.log", [1.0, 1.0], scale=[1.0, 1.0])
-    second = write_log(tmp_path / "2.log", [1.0, 1.0], scale=[1.0, 1.0])
+def test_new_job_at_the_same_scale_stays_in_the_stage(tmp_path):
+    first = write_log(tmp_path / "1.log", [1.0, 1.0, 1.0], val=[4.0, 3.0, 3.0], scale=[1.0, 0.5, 0.5])
+    second = write_log(tmp_path / "2.log", [1.0, 1.0, 1.0], val=[2.9, 2.0, 2.0], scale=[0.5, 0.5, 0.25])
     stages = lr_stages(read_training_curve([first, second]))
-    assert [(s.start, s.end, s.restart) for s in stages] == [(1, 2, False), (3, 4, True)]
+    assert [(s.start, s.end, s.jobs, s.restart) for s in stages] == [(1, 1, 1, False), (2, 5, 2, False),
+                                                                      (6, 6, 1, False)]
+    assert stages[1].gain == pytest.approx(1.0)  # 4.0 / 2.0 - 1, over both jobs
+
+
+def test_stage_starting_with_a_new_job_is_marked_restart(tmp_path):
+    first = write_log(tmp_path / "1.log", [1.0, 1.0], scale=[1.0, 1.0])
+    second = write_log(tmp_path / "2.log", [1.0, 1.0], scale=[0.5, 0.5])
+    stages = lr_stages(read_training_curve([first, second]))
+    assert [(s.start, s.end, s.restart, s.jobs) for s in stages] == [(1, 2, False, 1), (3, 4, True, 1)]
 
 
 def test_scale_lowered_exactly_at_a_join_is_not_counted_as_a_reduction(tmp_path):

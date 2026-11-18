@@ -92,7 +92,9 @@ class TrainingCurve:
 
 @dataclass
 class LRStage:
-    """A stretch of epochs at one LR scale; a new job also starts a new stage."""
+    """A stretch of epochs at one LR scale. A new job that continues at the same scale does not
+    start a new stage (``jobs`` counts the jobs the stage spans): splitting there would judge the
+    convergence on fragments, whose gains are each a part of the stage's gain."""
 
     scale: float
     start: int
@@ -103,7 +105,8 @@ class LRStage:
     gain: float  # relative improvement over the best of the previous stages; nan on the first one
     val_over_train: float  # median over the last 10 epochs of the stage
     running: bool
-    restart: bool
+    restart: bool  # the stage starts with a new job
+    jobs: int = 1  # number of jobs the stage spans
 
 
 @dataclass
@@ -233,10 +236,12 @@ def _reduction_indices(curve: TrainingCurve) -> np.ndarray:
 
 def lr_stages(curve: TrainingCurve) -> list[LRStage]:
     """Split the curve at every change of the LR scale (reductions, or a reset when continuing with
-    ``new_optimizer = true``) and at every new job, with per-stage statistics on the val loss."""
+    ``new_optimizer = true``), with per-stage statistics on the val loss. A new job at the same scale
+    stays in the stage (``jobs`` > 1)."""
     scale = curve.scale
     changes = np.nonzero(np.diff(scale) != 0)[0] + 1
-    edges = sorted({0, len(scale)} | set(changes.tolist()) | set(curve.joins.tolist()))
+    edges = sorted({0, len(scale)} | set(changes.tolist()))
+    joins = set(curve.joins.tolist())
     stages, cumulative = [], np.inf
     for a, b in itertools.pairwise(edges):
         best = curve.val[a:b].min()
@@ -253,7 +258,8 @@ def lr_stages(curve: TrainingCurve) -> list[LRStage]:
                 gain=float(previous / cumulative - 1) if np.isfinite(previous) else float("nan"),
                 val_over_train=float(np.median(curve.val[tail] / curve.train[tail])),
                 running=b == len(scale),
-                restart=a in curve.joins,
+                restart=a in joins,
+                jobs=1 + sum(a < j < b for j in joins),
             )
         )
     return stages
@@ -593,6 +599,7 @@ def format_report(analysis: TrainingAnalysis) -> str:
                 f"  {s.scale:9.2e} {s.start:5d}-{s.end:<5d} {s.n_epochs:4d} {s.best_val:9.2e} "
                 f"{s.cumulative_best_val:9.2e} {gain:>7s} {s.val_over_train:9.2f}"
                 f"{'  (running)' if s.running else ''}{'  (restart)' if s.restart else ''}"
+                f"{f'  ({s.jobs} jobs)' if s.jobs > 1 else ''}"
             )
         if m.converged:
             verdict = (f"converged since epoch {m.converged_since} ({m.converged_reason}; "
