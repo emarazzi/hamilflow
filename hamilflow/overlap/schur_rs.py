@@ -21,6 +21,11 @@ accumulated only on the stored pairs (A, B, R), and Hermitized as the production
 ``0.5 (M(R) + M(-R)^T)``. Products ``U E`` that would land on (i, C, R) pairs beyond the stored
 pair set are dropped: those involve the tails of two functions at > 11 Å apart and are ~0.
 
+Evaluation: ``E`` is applied with one batched block product per (pair, E pair) row. The
+correction is computed per output atom B: all outputs ``(R, A, B)`` share the list of pairs
+``q = (Rq, B, C)``, so their terms are gathered into one matrix and reduced by a single GEMM
+(see `correction_blocks`). ``max_rows`` bounds the rows of each step (memory), not the result.
+
 Single element (all atoms with the same orbital list).
 """
 
@@ -122,23 +127,47 @@ def _segment_sum(values: np.ndarray, seg: np.ndarray) -> tuple[np.ndarray, np.nd
     return keys, np.asarray(W @ values.reshape(n, -1)).reshape((len(keys),) + values.shape[1:])
 
 
+def _row_capped_ranges(rows_per_item: np.ndarray, max_rows: int) -> list[tuple[int, int]]:
+    """Consecutive ``[i0, i1)`` ranges of items whose ``rows_per_item`` sum to at most
+    ``max_rows`` (at least one item per range)."""
+    cum = np.concatenate([[0], np.cumsum(rows_per_item, dtype=np.int64)])
+    n, out, i0 = len(rows_per_item), [], 0
+    while i0 < n:
+        i1 = int(np.searchsorted(cum, cum[i0] + max_rows, side="right")) - 1
+        i1 = min(max(i1, i0 + 1), n)
+        out.append((i0, i1))
+        i0 = i1
+    return out
+
+
+def _grouped(idx: np.ndarray, key: np.ndarray, n_keys: int) -> tuple[np.ndarray, np.ndarray]:
+    """``idx`` stable-sorted by ``key`` and the start of each key's run (n_keys + 1)."""
+    order = np.argsort(key, kind="stable")
+    return idx[order], np.searchsorted(key[order], np.arange(n_keys + 1))
+
+
+def _expand(starts: np.ndarray, counts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """For items with runs ``[starts, starts + counts)``: the owner item of every expanded row
+    and the row's position in the run."""
+    owner = np.repeat(np.arange(len(counts)), counts)
+    offs = np.arange(int(counts.sum())) - np.repeat(np.cumsum(counts) - counts, counts)
+    return owner, np.repeat(starts, counts) + offs
+
+
 def _apply_E(V: np.ndarray, pairs: np.ndarray, index: _PairIndex, E: np.ndarray, e_idx: np.ndarray,
-             chunk: int) -> np.ndarray:
+             max_rows: int) -> np.ndarray:
     """``(V E)_p = sum_e V_q E_e`` over the E pairs ``e = (Re, C', C)`` ending at the atom C of
-    ``p = (R, i, C)``, with ``q = (R - Re, i, C')`` (dropped when not stored)."""
+    ``p = (R, i, C)``, with ``q = (R - Re, i, C')`` (dropped when not stored). Pairs are taken
+    in ranges of at most ``max_rows`` expanded (p, e) rows."""
     out = np.zeros_like(V)
-    by_target = np.argsort(pairs[e_idx, 4], kind="stable")
-    e_sorted = e_idx[by_target]
-    tgt = pairs[e_sorted, 4]
-    starts = np.searchsorted(tgt, np.arange(index.n_atoms + 1))
+    e_sorted, starts = _grouped(e_idx, pairs[e_idx, 4], index.n_atoms)
     counts = np.diff(starts)
-    for p0 in range(0, len(pairs), chunk):
-        p = np.arange(p0, min(p0 + chunk, len(pairs)))
+    for p0, p1 in _row_capped_ranges(counts[pairs[:, 4]], max_rows):
+        p = np.arange(p0, p1)
         c = pairs[p, 4]
-        rep = counts[c]
-        p_rep = np.repeat(p, rep)
-        offs = np.arange(rep.sum()) - np.repeat(np.cumsum(rep) - rep, rep)
-        e = e_sorted[np.repeat(starts[c], rep) + offs]
+        owner, pos = _expand(starts[c], counts[c])
+        p_rep = p[owner]
+        e = e_sorted[pos]
         q = index.lookup(pairs[p_rep, :3] - pairs[e, :3], pairs[p_rep, 3], pairs[e, 3])
         ok = q >= 0
         contrib = np.einsum("nkm,nml->nkl", V[q[ok]], E[e[ok]])
@@ -147,41 +176,66 @@ def _apply_E(V: np.ndarray, pairs: np.ndarray, index: _PairIndex, E: np.ndarray,
     return out
 
 
+def neumann_X(pairs: np.ndarray, U: np.ndarray, Emm: np.ndarray, index: _PairIndex, n_terms: int,
+              max_rows: int = 1 << 18) -> np.ndarray:
+    """``X = U (I - E + E^2 - ...)`` with ``n_terms`` terms, on the stored pairs."""
+    e_idx = np.flatnonzero(np.abs(Emm).reshape(len(Emm), -1).max(axis=1) > 0)
+    X = U.copy()
+    term = U
+    for t in range(1, n_terms):
+        term = _apply_E(term, pairs, index, Emm, e_idx, max_rows)
+        X = X + (-1) ** t * term
+    return X
+
+
+def correction_blocks(pairs: np.ndarray, X: np.ndarray, U: np.ndarray, index: _PairIndex, out_idx: np.ndarray,
+                      max_rows: int = 1 << 18) -> np.ndarray:
+    """``corr(o) = sum_q X_p U_q^T`` (len(out_idx), nk, nk) for the output pairs ``o = (R, A, B)``
+    of ``out_idx``: q = (Rq, B, C) runs over the pairs of B with a nonzero U block, p = (Rq + R,
+    A, C) (a zero block when not stored). This is the term set of the sum over C in the module
+    docstring (zero blocks add exact zeros).
+
+    Outputs are grouped by B, which share the q list: for a group, the X blocks are gathered as
+    ``G[(q, m), (o, k)]`` and ``corr`` is one GEMM ``U_B^T G``. ``max_rows`` caps the gathered
+    (o, q) rows per GEMM (``nm * nk * 8`` B each, plus ~60 B of index arrays)."""
+    n_pairs, nk, nm = U.shape
+    Xt = np.zeros((n_pairs + 1, nm, nk))  # row n_pairs: the zero block of absent pairs
+    Xt[:n_pairs] = np.swapaxes(X, 1, 2)
+    nz_u = np.flatnonzero(np.abs(U).reshape(n_pairs, -1).max(axis=1) > 0)
+    u_sorted, ustart = _grouped(nz_u, pairs[nz_u, 3], index.n_atoms)
+    out_idx = np.asarray(out_idx, dtype=np.int64)
+    o_sorted, ostart = _grouped(np.arange(len(out_idx)), pairs[out_idx, 4], index.n_atoms)
+    result = np.zeros((len(out_idx), nk, nk))
+    for B in range(index.n_atoms):
+        q = u_sorted[ustart[B]:ustart[B + 1]]
+        loc_all = o_sorted[ostart[B]:ostart[B + 1]]
+        if len(q) == 0 or len(loc_all) == 0:
+            continue
+        UB = np.swapaxes(U[q], 1, 2).reshape(len(q) * nm, nk)
+        Rq, Cq = pairs[q, :3], pairs[q, 4]
+        step = max(1, max_rows // len(q))
+        for a0 in range(0, len(loc_all), step):
+            loc = loc_all[a0:a0 + step]
+            o = out_idx[loc]
+            # p[t, o] for q_t, o
+            p = index.lookup(Rq[:, None, :] + pairs[o, :3][None, :, :], pairs[o, 3][None, :], Cq[:, None])
+            p[p < 0] = n_pairs
+            G = Xt[p]  # (n_q, n_o, nm, nk)
+            G = np.swapaxes(G, 1, 2).reshape(len(q) * nm, len(o) * nk)
+            M = UB.T @ G  # M[l, (o, k)] = corr(o)[k, l]
+            result[loc] = np.swapaxes(M.reshape(nk, len(o), nk), 0, 1).swapaxes(1, 2)
+    return result
+
+
 def schur_correction(pairs: np.ndarray, U: np.ndarray, Emm: np.ndarray, n_atoms: int, n_terms: int = 2,
-                     chunk: int = 20000) -> np.ndarray:
+                     max_rows: int = 1 << 18) -> np.ndarray:
     """``sum_C X U^T`` on the stored pairs (n_pairs, nk, nk); see the module docstring.
 
     ``U`` (n_pairs, nk, nm), ``Emm`` (n_pairs, nm, nm): ``S_mm`` blocks minus the identity on
     the on-site pairs. ``n_terms``: number of terms of the Neumann series (1: S_mm = I)."""
     index = _PairIndex(pairs, n_atoms)
-    nonzero_U = np.flatnonzero(np.abs(U).reshape(len(U), -1).max(axis=1) > 0)
-    e_idx = np.flatnonzero(np.abs(Emm).reshape(len(Emm), -1).max(axis=1) > 0)
-    X = U.copy()
-    term = U
-    for t in range(1, n_terms):
-        term = _apply_E(term, pairs, index, Emm, e_idx, chunk)
-        X = X + (-1) ** t * term
-    nonzero_X = np.flatnonzero(np.abs(X).reshape(len(X), -1).max(axis=1) > 0)
-
-    nk = U.shape[1]
-    acc = np.zeros((len(pairs), nk, nk))
-    # group by the removed-orbital atom C = pairs[:, 4]
-    for C in range(n_atoms):
-        px = nonzero_X[pairs[nonzero_X, 4] == C]
-        qu = nonzero_U[pairs[nonzero_U, 4] == C]
-        if len(px) == 0 or len(qu) == 0:
-            continue
-        step = max(1, chunk // len(qu))
-        for a0 in range(0, len(px), step):
-            pa = px[a0:a0 + step]
-            P = np.repeat(pa, len(qu))
-            Q = np.tile(qu, len(pa))
-            o = index.lookup(pairs[P, :3] - pairs[Q, :3], pairs[P, 3], pairs[Q, 3])
-            ok = o >= 0
-            contrib = np.einsum("nkm,nlm->nkl", X[P[ok]], U[Q[ok]])
-            keys, sums = _segment_sum(contrib, o[ok])
-            acc[keys] += sums
-    return acc
+    X = neumann_X(pairs, U, Emm, index, n_terms, max_rows)
+    return correction_blocks(pairs, X, U, index, np.arange(len(pairs)), max_rows)
 
 
 def _hermitize_in_place(out: np.ndarray, pairs: np.ndarray, n_atoms: int, chunk: int) -> None:
@@ -209,14 +263,16 @@ def project_overlap_rs(
     n_terms: int = 2,
     chunk_pairs: int = 4096,
     write_dummy_hamiltonian: bool = True,
+    max_rows: int = 1 << 18,
 ) -> dict[str, Any]:
     """Real-space path B: full-basis DeepH directory -> Schur-reduced, then truncated, overlap
     (same pairs, ``info.json`` as the production stages write it, ``POSCAR`` copied, zero
     ``hamiltonian.h5``).
 
-    Memory: one (n_pairs, n_kept, n_kept) float64 array (the output; ~1.9 GB for a 216-atom
-    tight-C cell, 29 kept orbitals) plus the removed-orbital columns (n_pairs, n_kept, n_removed)
-    and chunk temporaries. The full-basis S is streamed."""
+    Memory: one (n_pairs, n_kept, n_kept) float64 array (the output; ~1.6 GB for a 216-atom
+    tight-C cell, 234k pairs, 29 kept orbitals), the removed-orbital columns U and X
+    (n_pairs, n_kept, n_removed each) and per-step temporaries bounded by ``max_rows`` (~0.1 GB
+    at the default 2^18). The full-basis S is streamed. ``max_rows`` does not change the result."""
     t0 = time.monotonic()
     input_dir, output_dir = Path(input_dir), Path(output_dir)
     info = read_info(input_dir)
@@ -238,7 +294,7 @@ def project_overlap_rs(
     Emm = _read_columns(s_path, bounds, shapes, rm, rm, chunk_pairs)
     onsite = (pairs[:, 3] == pairs[:, 4]) & ~pairs[:, :3].any(axis=1)
     Emm[onsite] -= np.eye(len(rm))
-    out = schur_correction(pairs, U, Emm, n_atoms, n_terms=n_terms)
+    out = schur_correction(pairs, U, Emm, n_atoms, n_terms=n_terms, max_rows=max_rows)
     del U, Emm
 
     # out = S_kk - correction, in place, streaming S_kk

@@ -140,3 +140,37 @@ def test_reorder_like(table, structure, tmp_path):
         ea, eb = fa["entries"][:], fb["entries"][:]
     for k_new, k_old in enumerate(perm):
         np.testing.assert_array_equal(eb[b2[k_new]:b2[k_new + 1]], ea[bounds[k_old]:bounds[k_old + 1]])
+
+
+def _naive_correction(pairs, X, U):
+    """``corr(R, A, B) = sum X_(Rp, A, C) U_(Rq, B, C)^T`` over Rp - Rq = R, by brute force."""
+    index = {tuple(p): k for k, p in enumerate(pairs.tolist())}
+    out = np.zeros((len(pairs), X.shape[1], U.shape[1]))
+    for kp, p in enumerate(pairs.tolist()):
+        for kq, q in enumerate(pairs.tolist()):
+            if p[4] != q[4]:
+                continue
+            o = index.get((p[0] - q[0], p[1] - q[1], p[2] - q[2], p[3], q[3]))
+            if o is not None:
+                out[o] += X[kp] @ U[kq].T
+    return out
+
+
+@pytest.mark.parametrize("max_rows", [1, 37, 1 << 18])
+def test_schur_correction_matches_brute_force(table, structure, tmp_path, max_rows):
+    from hamilflow.overlap.schur_rs import _PairIndex, neumann_X, schur_correction
+
+    assemble_overlap(structure, table, tmp_path / "full")
+    pairs, bounds, _ = read_layout(tmp_path / "full" / "overlap.h5")
+    with h5py.File(tmp_path / "full" / "overlap.h5") as f:
+        blocks = f["entries"][:].reshape(-1, 5, 5)
+    U = blocks[:, 1:2, 0:1].copy()  # kept: the diffuse s; removed: the tight s
+    E = blocks[:, 0:1, 0:1].copy()
+    E[(pairs[:, 3] == pairs[:, 4]) & ~pairs[:, :3].any(axis=1)] -= 1.0
+    assert ((pairs[:, 3] == pairs[:, 4]) & pairs[:, :3].any(axis=1)).any()  # self-images present
+    for n_terms in (1, 2, 3):
+        X = neumann_X(pairs, U, E, _PairIndex(pairs, 3), n_terms, max_rows)
+        ref = _naive_correction(pairs, X, U)
+        got = schur_correction(pairs, U, E, 3, n_terms=n_terms, max_rows=max_rows)
+        assert np.abs(ref).max() > 1e-2
+        np.testing.assert_allclose(got, ref, rtol=0, atol=1e-14)
