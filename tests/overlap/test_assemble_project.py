@@ -161,7 +161,7 @@ def test_schur_correction_matches_brute_force(table, structure, tmp_path, max_ro
     from hamilflow.overlap.schur_rs import _PairIndex, neumann_X, schur_correction
 
     assemble_overlap(structure, table, tmp_path / "full")
-    pairs, bounds, _ = read_layout(tmp_path / "full" / "overlap.h5")
+    pairs, _, _ = read_layout(tmp_path / "full" / "overlap.h5")
     with h5py.File(tmp_path / "full" / "overlap.h5") as f:
         blocks = f["entries"][:].reshape(-1, 5, 5)
     U = blocks[:, 1:2, 0:1].copy()  # kept: the diffuse s; removed: the tight s
