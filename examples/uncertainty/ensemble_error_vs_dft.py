@@ -9,7 +9,7 @@ same structures, it tells how well the ensemble spread tracks the true error
 
 Run ``ensemble_band_uncertainty.py`` first with the same settings: it prepares
 the model folders and writes the averaged Hamiltonians reused here. Keep
-KPOINTS_SETTINGS, FORCE_2D and ILL_METHOD identical in both scripts, so that
+KPOINTS_SETTINGS, FORCE_2D, ILL_METHOD and ILL_THRESHOLD identical in both scripts, so that
 error and uncertainty refer to the same states.
 
 The error is always computed by diagonalizing the averaged and the DFT
@@ -43,21 +43,27 @@ DFT_ROOT = Path("/path/to/your/test_set/dft")
 AVERAGE_HAM_DIR = ENSEMBLE_ROOT / "avg_ham"
 STRUCTURE_PATTERN = "*"  # glob on the structure folder names, e.g. "twisted_*"
 # k-point mesh, chosen per structure from its cell (see
-# dft_workflows.kpoints.get_ksampling). Must resolve to a k_grid, e.g.
-# {"reciprocal_density": 100}, {"grid_density": 1000} or {"k_grid": [3, 3, 1]}.
-KPOINTS_SETTINGS = {"reciprocal_density": 100}
-FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
-# Treatment of an ill-conditioned overlap: "orbital_removal" removes orbitals
-# until S(k) is well conditioned on the k-grid; "canonical" cuts, at each k-point,
-# the eigen-directions of S(k) below ILL_THRESHOLD instead (less distorting, and
-# far cheaper overall since there is no greedy orbital selection, though each
-# diagonalization costs ~2x a plain one; use ILL_THRESHOLD = 3e-3 for the carbon
-# tight projected basis); None = no treatment. The uncertainty run
-# (ensemble_band_uncertainty.py) and the error run (ensemble_error_vs_dft.py)
-# must use the same ILL_METHOD and ILL_THRESHOLD: UncertaintyCalibrator's
-# consistency check rejects a mismatch.
-ILL_METHOD = "orbital_removal"
-ILL_THRESHOLD = 1e-3
+# dft_workflows.kpoints.get_ksampling): a uniform linear spacing in 1/Angstrom
+# (2*pi included), k_i = ceil(|b_i| / kspacing), with k_i = 1 along every axis
+# found to be vacuum (gaps >= vacuum_gap Angstrom; slabs, wires, molecules).
+# A coarser spacing than the DFT's is usually enough for the error statistics.
+# Other forms: {"reciprocal_density": 100}, {"grid_density": 1000}, {"k_grid": [3, 3, 1]}.
+KPOINTS_SETTINGS = {"kspacing": 0.3, "vacuum_gap": 8.3}
+FORCE_2D = False  # force k_z = 1 on top of the vacuum detection (rarely needed now)
+# Treatment of an ill-conditioned overlap: "canonical" cuts, at each k-point, the
+# eigen-directions of S(k) with eigenvalue below ILL_THRESHOLD (S-only, so the
+# DFT and all members are solved in the same subspace). 3e-3 is the value tested
+# for the carbon tight projected basis: it removes the eV-scale "ghost" states
+# that model errors along near-singular directions of S produce, while moving the
+# DFT bands by tens of meV near the gap (see IllConditionedHandler). It needs no
+# orbital selection, so it is far cheaper overall than "orbital_removal" (which
+# removes whole orbitals until S(k) is well conditioned on the k-grid, distorting
+# the bands much more), though each diagonalization costs ~2x a plain one.
+# None = no treatment. The uncertainty run (ensemble_band_uncertainty.py) and the
+# error run (ensemble_error_vs_dft.py) must use the same ILL_METHOD and
+# ILL_THRESHOLD: UncertaintyCalibrator's consistency check rejects a mismatch.
+ILL_METHOD = "canonical"
+ILL_THRESHOLD = 3e-3
 OUTPUT_JSON = "error_vs_dft.json"
 # -----------------------------------------------------------------------------
 

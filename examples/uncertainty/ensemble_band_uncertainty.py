@@ -33,9 +33,9 @@ METHOD picks how the members' band energies are obtained:
   Only the window bands are written (same JSON layout; ``vbm_index`` counts
   from the window's first band, ``first_band_index`` gives its position).
   A member state that enters the window from outside it, such as a spurious
-  in-gap state, is not seen, so keep ILL_METHOD = "orbital_removal". For
-  band-edge-weighted statistics, the window should cover e_cut plus a few tau
-  on both sides of the gap: WINDOW_E sets it by energy (the same distance from
+  in-gap state, is not seen, so keep an ILL_METHOD ("canonical" suppresses
+  such states). For band-edge-weighted statistics, the window should cover
+  e_cut plus a few tau on both sides of the gap: WINDOW_E sets it by energy (the same distance from
   the VBM and from the CBM, like e_cut), so the number of bands follows each
   structure's band density (otherwise N_BANDS_BELOW / N_BANDS_ABOVE count bands). With DOWNFOLD the coupling to
   all the bands outside the window (up to tens of eV above the gap, which no
@@ -51,9 +51,9 @@ already in it. Summarize it with
 
 One structure is computed per allocated CPU at a time, as long as their estimated memory fits
 the job's (see ``compute_parallel``). With CuPy installed (``pip install -e .[gpu]``, or the
-cupy-cudaXXx wheel matching your CUDA) the orbital removal and the diagonalizations run on the
-GPU, shared by all of them: request one GPU and a few CPUs (2-4) per job, which then do the
-rest (loading, projection); large structures keep the GPU busy with 2. Set HAMILFLOW_GPU=1 to
+cupy-cudaXXx wheel matching your CUDA) the dense diagonalizations (and the ill-conditioning
+treatment) run on the GPU, shared by all of them: request one GPU and a few CPUs (2-4) per job,
+which then do the rest (loading, projection); large structures keep the GPU busy with 2. Set HAMILFLOW_GPU=1 to
 stop with an error rather than silently falling back to the CPU if the GPU cannot be used,
 HAMILFLOW_GPU=0 to stay on the CPU.
 ``job_gpu.sh`` is a SLURM job script for this setup.
@@ -79,21 +79,27 @@ INFERENCE_INPUTS_DIR = Path("/path/to/your/inference/inputs/dft")
 AVERAGE_HAM_DIR = ENSEMBLE_ROOT / "avg_ham"
 STRUCTURE_PATTERN = "*"  # glob on the structure folder names, e.g. "twisted_*"
 # k-point mesh, chosen per structure from its cell (see
-# dft_workflows.kpoints.get_ksampling). Must resolve to a k_grid, e.g.
-# {"reciprocal_density": 100}, {"grid_density": 1000} or {"k_grid": [3, 3, 1]}.
-KPOINTS_SETTINGS = {"reciprocal_density": 100}
-FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
-# Treatment of an ill-conditioned overlap: "orbital_removal" removes orbitals
-# until S(k) is well conditioned on the k-grid; "canonical" cuts, at each k-point,
-# the eigen-directions of S(k) below ILL_THRESHOLD instead (less distorting, and
-# far cheaper overall since there is no greedy orbital selection, though each
-# diagonalization costs ~2x a plain one; use ILL_THRESHOLD = 3e-3 for the carbon
-# tight projected basis); None = no treatment. The uncertainty run
-# (ensemble_band_uncertainty.py) and the error run (ensemble_error_vs_dft.py)
-# must use the same ILL_METHOD and ILL_THRESHOLD: UncertaintyCalibrator's
-# consistency check rejects a mismatch.
-ILL_METHOD = "orbital_removal"
-ILL_THRESHOLD = 1e-3
+# dft_workflows.kpoints.get_ksampling): a uniform linear spacing in 1/Angstrom
+# (2*pi included), k_i = ceil(|b_i| / kspacing), with k_i = 1 along every axis
+# found to be vacuum (gaps >= vacuum_gap Angstrom; slabs, wires, molecules).
+# A coarser spacing than the DFT's is usually enough for the error statistics.
+# Other forms: {"reciprocal_density": 100}, {"grid_density": 1000}, {"k_grid": [3, 3, 1]}.
+KPOINTS_SETTINGS = {"kspacing": 0.3, "vacuum_gap": 8.3}
+FORCE_2D = False  # force k_z = 1 on top of the vacuum detection (rarely needed now)
+# Treatment of an ill-conditioned overlap: "canonical" cuts, at each k-point, the
+# eigen-directions of S(k) with eigenvalue below ILL_THRESHOLD (S-only, so the
+# DFT and all members are solved in the same subspace). 3e-3 is the value tested
+# for the carbon tight projected basis: it removes the eV-scale "ghost" states
+# that model errors along near-singular directions of S produce, while moving the
+# DFT bands by tens of meV near the gap (see IllConditionedHandler). It needs no
+# orbital selection, so it is far cheaper overall than "orbital_removal" (which
+# removes whole orbitals until S(k) is well conditioned on the k-grid, distorting
+# the bands much more), though each diagonalization costs ~2x a plain one.
+# None = no treatment. The uncertainty run (ensemble_band_uncertainty.py) and the
+# error run (ensemble_error_vs_dft.py) must use the same ILL_METHOD and
+# ILL_THRESHOLD: UncertaintyCalibrator's consistency check rejects a mismatch.
+ILL_METHOD = "canonical"
+ILL_THRESHOLD = 3e-3
 # "exact" (diagonalize every member) or "projected" (see the docstring above).
 METHOD = "exact"
 # With METHOD = "projected": the window by energy (eV below the VBM and above the
