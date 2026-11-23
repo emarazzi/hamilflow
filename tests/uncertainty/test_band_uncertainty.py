@@ -271,6 +271,82 @@ def test_orbital_removal_computes_all_spectra_in_the_same_reduced_basis(small_st
     assert np.array(result["kpoints"]["k0"]["eigvals_avg_ham_eV"]).max() < 1000  # no fill value left
 
 
+# ---------------------------------- canonical orthogonalization ----------------------------------
+
+
+def canonical_eigvals_at(structure, H_R, k, threshold):
+    """Eigenvalues of H(k) in the span of the S(k) eigenvectors above `threshold`, by hand."""
+    phase = np.exp(2j * np.pi * (structure.Rs @ np.asarray(k)))
+    Sk, Hk = np.tensordot(phase, structure.S_R, axes=1), np.tensordot(phase, H_R, axes=1)
+    lam, U = np.linalg.eigh(Sk)
+    X = U[:, lam > threshold] / np.sqrt(lam[lam > threshold])
+    return np.linalg.eigvalsh(X.conj().T @ Hk @ X)
+
+
+def test_canonical_computes_the_spectra_in_the_kept_subspace_of_each_k_point(small_structure, tmp_path):
+    model_dirs, members = make_ensemble(small_structure, tmp_path, random_deltas(small_structure))
+    threshold = ill_threshold_for(small_structure)
+    result = compute(model_dirs, tmp_path, ill_method="canonical", ill_threshold=threshold)[NAME]
+    assert result["ill_method"] == "canonical"
+    assert result["ill_threshold"] == threshold
+    assert result["n_kept_orbitals"] is None
+    kept = [canonical_eigvals_at(small_structure, members[0], e["k_frac"], threshold)
+            for e in result["kpoints"].values()]
+    assert result["n_kept_min"] == min(len(v) for v in kept) < 6
+    assert result["n_bands"] == result["n_kept_min"]
+    eigvals = per_k(result, "eigvals_avg_ham_eV")
+    assert np.isfinite(eigvals).all() and np.abs(eigvals).max() < 1000  # no fill value left
+    assert np.isfinite(per_k(result, "sigma_eV")).all()
+    # the stored eigenvalues are the averaged Hamiltonian's in the kept subspace, up to the common shift
+    avg = np.stack([v[: result["n_bands"]] for v in (
+        canonical_eigvals_at(small_structure, np.mean(members, axis=0), e["k_frac"], threshold)
+        for e in result["kpoints"].values())], axis=1)
+    np.testing.assert_allclose(eigvals - eigvals[0, 0], avg - avg[0, 0], atol=1e-9)
+
+
+def test_canonical_below_every_overlap_eigenvalue_is_no_treatment(small_structure, tmp_path):
+    model_dirs, _ = make_ensemble(small_structure, tmp_path, random_deltas(small_structure))
+    plain = compute(model_dirs, tmp_path)[NAME]
+    canonical = compute(model_dirs, tmp_path, ill_method="canonical", ill_threshold=1e-3)[NAME]
+    assert canonical["n_kept_min"] == plain["n_bands"] == 6
+    for key in ("eigvals_avg_ham_eV", "sigma_eV", "member_deviation_eV"):
+        np.testing.assert_allclose(per_k(canonical, key), per_k(plain, key), atol=1e-9)
+
+
+def test_projected_with_canonical_reproduces_exact_where_every_kept_band_is_in_the_window(small_structure,
+                                                                                        tmp_path):
+    """A k-point keeping more directions than the common band count has its extra top bands outside the
+    window, downfolded only: there projected is close to exact, elsewhere equal."""
+    model_dirs, members = make_ensemble(small_structure, tmp_path, random_deltas(small_structure))
+    threshold = ill_threshold_for(small_structure)
+    options = {"ill_method": "canonical", "ill_threshold": threshold}
+    exact = compute(model_dirs, tmp_path, **options)[NAME]
+    projected = compute(model_dirs, tmp_path, method="projected", **options)[NAME]
+    assert projected["n_bands"] == exact["n_bands"] == exact["n_kept_min"] == projected["n_kept_min"]
+    n_kept = np.array([len(canonical_eigvals_at(small_structure, members[0], e["k_frac"], threshold))
+                       for e in exact["kpoints"].values()])
+    whole = n_kept == exact["n_bands"]
+    assert whole.any() and not whole.all()
+    sigma_p, sigma_e = per_k(projected, "sigma_eV"), per_k(exact, "sigma_eV")
+    np.testing.assert_allclose(sigma_p[:, whole], sigma_e[:, whole], atol=1e-9)
+    np.testing.assert_allclose(sigma_p, sigma_e, atol=1e-3)
+
+
+def test_canonical_average_that_is_dft_plus_a_rigid_shift_has_no_error(small_structure, tmp_path):
+    """DFT and the average share S(k), so canonical orthogonalization solves both in the same subspace,
+    where H + c S has the eigenvalues of H shifted by c."""
+    root = tmp_path / "dft"
+    root.mkdir()
+    shutil.copytree(small_structure.path, root / NAME)
+    model_dirs, _ = make_ensemble(small_structure, tmp_path, [c * small_structure.S_R for c in (1.0, 2.0, 3.0)])
+    threshold = ill_threshold_for(small_structure)
+    result = compare(model_dirs, root, tmp_path, ill_method="canonical", ill_threshold=threshold)[NAME]
+    assert result["ill_method"] == "canonical" and result["n_kept_orbitals"] is None
+    assert result["n_bands"] == result["n_kept_min"] < 6
+    np.testing.assert_allclose(per_k(result, "abs_err_eV"), 0.0, atol=1e-9)
+    assert result["avg_vs_dft_rigid_shift_eV"] == pytest.approx(2.0, abs=1e-9)
+
+
 def test_ill_method_none_given_as_text_means_no_treatment():
     assert BandUncertaintyCalculator(ill_method="none").ill_method is None
 
@@ -712,6 +788,8 @@ def test_gamma_band_edges_use_the_anchor_but_the_gap_stays_on_the_grid():
     [
         ({"align_mode": "other"}, "align_mode"),
         ({"ill_method": "window_regularization"}, "ill_method"),
+        ({"ill_method": "canonical_orthogonalization"}, "ill_method"),
+        ({"ill_method": "canonical", "ill_threshold": 0.0}, "ill_threshold > 0"),
         ({"method": "other"}, "method must be"),
         ({"method": "projected", "align_mode": "grid"}, "needs align_mode='matrix'"),
         ({"window_e": 1.0, "n_bands_below": 2}, "not both"),
@@ -727,6 +805,11 @@ def test_invalid_settings_are_rejected(options, message):
 def test_settings_of_the_exact_method_stay_minimal():
     settings = BandUncertaintyCalculator().settings()
     assert settings == {"align_mode": "matrix", "ill_method": None, "ill_threshold": None}
+
+
+def test_settings_record_the_canonical_method_and_threshold():
+    settings = BandUncertaintyCalculator(ill_method="canonical", ill_threshold=3e-3).settings()
+    assert settings == {"align_mode": "matrix", "ill_method": "canonical", "ill_threshold": 3e-3}
 
 
 def test_settings_of_the_projected_method_include_the_window():

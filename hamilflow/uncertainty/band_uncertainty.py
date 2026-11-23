@@ -73,7 +73,10 @@ WINDOW_EDGE_MIN_GAP = 0.01
 # the projected method keeps the averaged Hamiltonian's eigenvectors (measured 10.4-11.5 at
 # n_k = 1); the exact method and the comparison to DFT only eigenvalues (7.4-9.3, the exact
 # method assumed alike). GPU: orbital removal keeps S(k) and its Cholesky factor for every
-# k-point, plus CuPy's Cholesky and eigh copies and workspaces (7.2-8.8, both methods).
+# k-point, plus CuPy's Cholesky and eigh copies and workspaces (7.2-8.8, both methods). Canonical
+# orthogonalization (not measured) keeps nothing across k-points, only ~4-5 n x n matrices for
+# the k-point being diagonalized (X, H X / X^dag H X, solver copy, eigenvectors and workspace),
+# so it should stay within this estimate.
 HOST_MATRICES = {"eigenvectors": (2, 10), "eigenvalues": (2, 7)}
 GPU_MATRICES = (2, 7)
 # Fixed memory of each structure's process: host (interpreter and libraries; CuPy and CUDA add
@@ -109,15 +112,26 @@ class BandUncertaintyCalculator:
       are also written there (`model_<k>/<structure>/` for the members in `compute`,
       `average_to_dft/<structure>/` for the average in `compare_averaged_to_dft`), with the shift
       stored as an attribute. Not needed for the uncertainty itself; off by default.
-    - `ill_method`: None or "orbital_removal" -- handling of an ill-conditioned overlap,
-      applied to every diagonalization (members, averaged Hamiltonian, DFT). Orbitals are removed
-      (`sparse_hamiltonian.ill_conditioned.global_orbital_truncation`) until the smallest
-      eigenvalue of S(k) on the k-grid exceeds `ill_threshold`. The choice depends on S only, so
-      it is made once per structure and all spectra of a structure are computed in the same
-      reduced basis; the removed eigenvalue slots are dropped. "window_regularization" (also
-      offered by `IllConditionedHandler`) is not supported: its energy window would have to be
-      placed relative to the Fermi energy in info.json, which is copied from the DFT calculation
-      and is not the Fermi level of a predicted Hamiltonian.
+    - `ill_method`: None, "orbital_removal" or "canonical" -- handling of an ill-conditioned
+      overlap, applied to every diagonalization (members, averaged Hamiltonian, DFT). Both depend
+      on S only, so all spectra of a structure are computed in the same reduced basis; the removed
+      eigenvalue slots are dropped (bands are counted from the bottom, and only the bands real at
+      every k-point in every spectrum are kept). "orbital_removal": orbitals are removed
+      (`sparse_hamiltonian.ill_conditioned.global_orbital_truncation`), once per structure, until
+      the smallest eigenvalue of S(k) on the k-grid exceeds `ill_threshold`; the number of kept
+      orbitals is stored as "n_kept_orbitals". "canonical": canonical orthogonalization
+      (`sparse_hamiltonian.ill_conditioned.canonical_orthogonalization_eig`), at each k-point the
+      eigen-directions of S(k) with eigenvalue <= `ill_threshold` are cut instead of whole
+      orbitals, so the kept dimension varies between k-points; its minimum over the k-grid is
+      stored as "n_kept_min" ("n_kept_orbitals" is None); with `method="projected"`, the bands a
+      k-point keeps above that count are outside the window. It distorts the reference bands much
+      less than orbital removal and is far cheaper overall, having no greedy orbital selection,
+      although each diagonalization costs ~2x a plain generalized one (eigh(S) is redone for every
+      spectrum). For the carbon FHI-aims tight (projected) basis use `ill_threshold=3e-3` (see
+      `IllConditionedHandler`).
+      "window_regularization" (also offered by `IllConditionedHandler`) is not supported: its
+      energy window would have to be placed relative to the Fermi energy in info.json, which is
+      copied from the DFT calculation and is not the Fermi level of a predicted Hamiltonian.
     - `kpoints_settings`: alternative to the fixed `grid_mesh`. If given, it is passed as
       `kpoints_updates` to `dft_workflows.kpoints.get_ksampling` with each structure's cell, so
       the mesh is chosen per structure, e.g. {"grid_density": 1000},
@@ -191,8 +205,10 @@ class BandUncertaintyCalculator:
             raise ValueError(f"align_mode must be 'matrix', 'grid' or 'gamma', got {self.align_mode!r}")
         if self.ill_method == "none":
             self.ill_method = None
-        if self.ill_method not in (None, "orbital_removal"):
-            raise ValueError(f"ill_method must be None or 'orbital_removal', got {self.ill_method!r}")
+        if self.ill_method not in (None, "orbital_removal", "canonical"):
+            raise ValueError(f"ill_method must be None, 'orbital_removal' or 'canonical', got {self.ill_method!r}")
+        if self.ill_method == "canonical" and not self.ill_threshold > 0:
+            raise ValueError(f"ill_method='canonical' needs ill_threshold > 0, got {self.ill_threshold}")
         if self.method not in ("exact", "projected"):
             raise ValueError(f"method must be 'exact' or 'projected', got {self.method!r}")
         if self.method == "projected" and self.align_mode != "matrix":
@@ -221,7 +237,8 @@ class BandUncertaintyCalculator:
         """`IllConditionedHandler` for one structure, or None if `ill_method` is None.
 
         Only S(k) of `h_obj` is used (shared by all spectra of the structure); no energy
-        information from info.json enters.
+        information from info.json enters. Orbital removal selects the orbitals here; canonical
+        orthogonalization needs no preparation (each k-point is treated as it is diagonalized).
         """
         if self.ill_method is None:
             return None
@@ -233,8 +250,9 @@ class BandUncertaintyCalculator:
             fill_value=self._ILL_FILL_VALUE,
             verbose=False,
         )
-        handler.prepare_orbital_truncation(h_obj.get_all_Sk(ks, n_jobs=n_jobs, parallel_k=parallel_k),
-                                           n_jobs=n_jobs, parallel_k=parallel_k)
+        if self.ill_method == IllConditionedHandler.METHOD_ORBITAL:
+            handler.prepare_orbital_truncation(h_obj.get_all_Sk(ks, n_jobs=n_jobs, parallel_k=parallel_k),
+                                               n_jobs=n_jobs, parallel_k=parallel_k)
         return handler
 
     @staticmethod
@@ -242,6 +260,15 @@ class BandUncertaintyCalculator:
         if ill_handler is None or ill_handler.kept_orbitals is None:
             return None
         return len(ill_handler.kept_orbitals)
+
+    def n_kept(self, ill_handler) -> dict:
+        """Size of the kept basis, for a structure's output: "n_kept_orbitals" (None unless
+        orbital removal), plus, with canonical orthogonalization only, "n_kept_min" (the smallest
+        kept dimension over the k-points diagonalized with `ill_handler`)."""
+        out = {"n_kept_orbitals": self.n_kept_orbitals(ill_handler)}
+        if self.ill_method == "canonical":
+            out["n_kept_min"] = ill_handler.n_kept_min
+        return out
 
     def common_bands(self, *eigvals: np.ndarray) -> list[np.ndarray]:
         """Cut every `(n_bands, n_k)` array to the bands that are real (not an ill-conditioning
@@ -531,7 +558,7 @@ class BandUncertaintyCalculator:
             "n_bands": stop - first,
             "n_bands_total": n_bands,
             "first_band_index": first,
-            "n_kept_orbitals": self.n_kept_orbitals(ill_handler),
+            **self.n_kept(ill_handler),
             "occupation": ref_obj.occupation,
             "vbm_index": homo_w,
             "per_model_shift_eV": [float(avg_ham_shift - r["c_eV"]) for r in rigid],
@@ -617,7 +644,7 @@ class BandUncertaintyCalculator:
             "grid_mesh": list(mesh),
             "n_irreducible_kpoints": n_irr,
             "n_bands": int(avg_raw.shape[0]),
-            "n_kept_orbitals": self.n_kept_orbitals(ill_handler),
+            **self.n_kept(ill_handler),
             "occupation": ref_obj.occupation,
             "vbm_index": self.homo_lumo_indices(ref_obj)[0],
             "per_model_shift_eV": [float(s) for s in shifts],
@@ -1050,7 +1077,7 @@ class BandUncertaintyCalculator:
             **({"avg_vs_dft_rigid_shift_eV": rigid["c_eV"],
                 "avg_vs_dft_rigid_shift_residual": rigid["residual"]} if rigid else {}),
             "n_bands": int(avg_raw.shape[0]),
-            "n_kept_orbitals": self.n_kept_orbitals(ill_handler),
+            **self.n_kept(ill_handler),
             "gap_avg_ham_eV": self.gap(avg_raw, dft_obj),
             "gap_dft_eV": self.gap(dft_raw, dft_obj),
             "occupation": dft_obj.occupation,
