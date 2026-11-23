@@ -2,12 +2,15 @@
 Handling of an ill-conditioned overlap in the generalized eigenproblem H psi = E S psi.
 
 Adapted from ``deepx_dock.compute.eigen.ill_conditioned`` (deepx-dock 0.9.11,
-GPL-3.0-or-later), with the same interface. Two methods:
+GPL-3.0-or-later), with the same interface. Three methods:
 
 1. Window regularization: projects out the nearly linearly dependent
    combinations of the eigenvectors in an energy window.
 2. Orbital removal: removes, globally over all k-points, the orbitals that make
    S(k) ill-conditioned.
+3. Canonical orthogonalization (hamilflow only, not in deepx-dock): removes, at
+   each k-point, the eigen-directions of S(k) below the threshold (see
+   `canonical_orthogonalization_eig`).
 
 ``global_orbital_truncation`` selects the same orbitals as the deepx-dock
 version, at a fraction of the cost: it computes only the lowest eigenpair of
@@ -442,24 +445,116 @@ def eig_with_orbital_mask(
         return eigvals, (np.zeros((norb_total, 0), dtype=Hk.dtype) if return_vecs else None)
 
 
+def canonical_orthogonalization_eig(
+    Hk: np.ndarray, Sk: np.ndarray, ill_threshold: float, fill_value: float = 1e4, return_vecs: bool = False
+) -> tuple[np.ndarray, np.ndarray | None, int | None]:
+    """
+    Eigenvalues of (Hk, Sk) by canonical orthogonalization (Loewdin): with S = U diag(lam) U^dag,
+    the eigenvectors of S with lam > `ill_threshold` span the kept subspace, X = U_keep
+    lam_keep^-1/2 is an S-orthonormal basis of it, and X^dag H X v = E v is solved as an ordinary
+    Hermitian problem. The N_kept eigenvalues (ascending) are followed by the cut directions'
+    slots, filled with `fill_value`. The eigenvectors, if requested, are C = X v, (Norb, N_kept):
+    rows in the full orbital basis, column j paired with eigenvalue j, S-orthonormal, with
+    C^dag H C = diag(E) (H C = S C E only holds in the kept subspace, i.e. up to the cut
+    directions). With every eigenvalue of S above the threshold this is the plain generalized
+    problem.
+
+    Unlike orbital removal it cuts eigen-directions of S(k), not whole orbitals, at each k-point
+    separately, so the kept dimension N_kept can vary between k-points; the kept subspace depends
+    on S(k) only. Spectra sharing S(k) (DFT and predicted Hamiltonians) are solved in the same
+    subspace without caching it: the same Sk with the same BLAS thread count gives a bitwise
+    identical eigh(S). Caching X(k) instead would hold n N_kept numbers per k-point to save one
+    eigh(S) per spectrum, so each call costs ~2x a plain generalized solve (eigh(S) and eigh(A)).
+    Runs on the GPU for large problems (see `dense_backend`).
+
+    Returns (eigvals, eigvecs or None, N_kept); N_kept is None if the diagonalization failed
+    (LinAlgError, or non-finite values, which cuSOLVER returns instead of raising), in which case
+    every eigenvalue is `fill_value`.
+    """
+    norb = Hk.shape[0]
+
+    def all_fill(n_kept):
+        no_vecs = np.zeros((norb, 0), dtype=np.result_type(Hk, Sk)) if return_vecs else None
+        return np.full(norb, fill_value), no_vecs, n_kept
+
+    def failed():
+        _linalg_failure("Canonical orthogonalization failed (LinAlgError or non-finite eigenvalues)",
+                        f"all eigenvalues set to fill_value={fill_value}")
+        return all_fill(None)
+
+    be = get_backend(norb)
+    xp = be.xp
+    try:
+        lam, U = be.eigh(be.to_device(Sk))
+        if not bool(xp.isfinite(lam).all()):
+            return failed()
+        n_cut = int(xp.count_nonzero(lam <= ill_threshold))  # eigh sorts lam ascending
+        n_kept = norb - n_cut
+        if n_kept == 0:
+            return all_fill(0)
+        X = U[:, n_cut:] / xp.sqrt(lam[n_cut:])
+        del U
+        A = be.to_device(Hk) @ X
+        A = X.conj().T @ A  # H X freed once the product is done
+        if be.name == "cpu":  # cuSOLVER's heevd reads only the lower triangle
+            A = 0.5 * (A + A.conj().T)
+        # LAPACK's evr with eigenvectors can return zeros, not NaN, for a non-finite matrix
+        if not bool(xp.isfinite(A).all()):
+            return failed()
+        if return_vecs:
+            w, v = be.eigh(A)
+            del A
+            vecs = be.to_host(X @ v)
+        else:
+            w, vecs = be.eigvalsh(A), None
+        w = be.to_host(w)
+    except LinAlgError:
+        return failed()
+    if not np.isfinite(w).all():
+        return failed()
+
+    # not re-sorted: column j of vecs stays paired with eigenvalue j even above fill_value
+    eigvals = np.full(norb, fill_value)
+    eigvals[:n_kept] = w
+    return eigvals, vecs, n_kept
+
+
 class IllConditionedHandler:
     """
-    Ill-conditioning treatment of the generalized eigenproblem, by window regularization or
-    orbital removal (same interface as deepx-dock's `IllConditionedHandler`).
+    Ill-conditioning treatment of the generalized eigenproblem, by window regularization,
+    orbital removal or canonical orthogonalization (same interface as deepx-dock's
+    `IllConditionedHandler`, which has the first two).
 
-    - `method`: "window_regularization" or "orbital_removal".
-    - `ill_threshold`: threshold on the quality-matrix (window) or S(k) (orbital removal)
-      eigenvalues.
+    - `method`: "window_regularization", "orbital_removal" or "canonical".
+    - `ill_threshold`: threshold on the quality-matrix (window) or S(k) (orbital removal,
+      canonical) eigenvalues.
     - `window_emin`, `window_emax`: window relative to `fermi_energy` (eV), window
       regularization only.
     - `fill_value`: value of the removed eigenvalue slots.
 
     With orbital removal, call `prepare_orbital_truncation` with S(k) on the whole k-grid
-    before `process_k`.
+    before `process_k`. Canonical orthogonalization (`canonical_orthogonalization_eig`) needs
+    no preparation: each `process_k` cuts the eigen-directions of its own S(k) below
+    `ill_threshold`; `n_kept_min` is the smallest kept dimension seen so far.
+
+    Canonical vs orbital removal: both depend on S only, so spectra sharing S(k) (e.g. DFT and a
+    predicted Hamiltonian) are solved in the same basis. Orbital removal drops whole orbitals,
+    the same at every k-point; canonical drops only the near-null eigen-directions of each S(k),
+    so its kept dimension varies between k-points and the bands are to be counted from the
+    bottom (the fill slots are at the top), which keeps the low-lying and band-edge bands
+    consistent across k. For the carbon FHI-aims tight (projected) basis, whose S(k) goes down
+    to ~3e-5, use `ill_threshold` = 3e-3. DFT bands vs no treatment on 3 reference crystals, max
+    |dE| for occupied bands within 5 eV of the VBM / unoccupied within 3 eV of the CBM:
+    canonical, 3e-3: 27-67 / 82-164 meV; 1e-3: 25-43 / 64-82 meV, but the eV-scale ghost-state
+    outliers of predicted Hamiltonians only disappear at 3e-3 (actual error ~ first-order error
+    there). Orbital removal, 1e-3: 110-205 / 190-235 meV (13-20% of orbitals removed); 3e-3 or
+    1e-2: 0.6-2.4 / 0.3-1.9 eV.
     """
 
     METHOD_WINDOW = "window_regularization"
     METHOD_ORBITAL = "orbital_removal"
+    METHOD_CANONICAL = "canonical"
+    METHODS = (METHOD_WINDOW, METHOD_ORBITAL, METHOD_CANONICAL)
 
     def __init__(
         self,
@@ -471,8 +566,10 @@ class IllConditionedHandler:
         fill_value: float = 1e4,
         verbose: bool = True,
     ):
-        if method not in (self.METHOD_WINDOW, self.METHOD_ORBITAL):
-            raise ValueError(f"Unknown method: {method}. Choose from '{self.METHOD_WINDOW}' or '{self.METHOD_ORBITAL}'")
+        if method not in self.METHODS:
+            raise ValueError(f"Unknown method: {method}. Choose from {', '.join(repr(m) for m in self.METHODS)}")
+        if method == self.METHOD_CANONICAL and not ill_threshold > 0:
+            raise ValueError(f"Canonical orthogonalization needs ill_threshold > 0, got {ill_threshold}")
 
         self.method = method
         self.ill_threshold = ill_threshold
@@ -482,11 +579,28 @@ class IllConditionedHandler:
         self.verbose = verbose
 
         self._kept_orbitals: list[int] | None = None
+        self._n_kept_min: int | None = None
+        self._lock = threading.Lock()  # process_k runs in k-point threads
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        del state["_lock"]  # not picklable; recreated by __setstate__
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
 
     @property
     def kept_orbitals(self) -> list[int] | None:
         """Indices of the orbitals kept by `prepare_orbital_truncation`."""
         return self._kept_orbitals
+
+    @property
+    def n_kept_min(self) -> int | None:
+        """Canonical orthogonalization: the smallest kept dimension over the `process_k` calls so
+        far (None before any, and for the other methods)."""
+        return self._n_kept_min
 
     def prepare_orbital_truncation(
         self, Sk_list: list[np.ndarray], n_jobs: int = -1, parallel_k: bool = True
@@ -507,6 +621,14 @@ class IllConditionedHandler:
             eigvals, eigvecs = window_regularization_eig(
                 Hk, Sk, self.window_emin, self.window_emax, self.ill_threshold, self.fill_value, return_vecs
             )
+        elif self.method == self.METHOD_CANONICAL:
+            eigvals, eigvecs, n_kept = canonical_orthogonalization_eig(
+                Hk, Sk, self.ill_threshold, self.fill_value, return_vecs
+            )
+            if n_kept is not None:
+                with self._lock:
+                    if self._n_kept_min is None or n_kept < self._n_kept_min:
+                        self._n_kept_min = n_kept
         else:
             if self._kept_orbitals is None:
                 raise RuntimeError("Orbital removal mode requires calling prepare_orbital_truncation() first")
@@ -517,7 +639,8 @@ class IllConditionedHandler:
         return eigvals
 
     def get_info(self) -> dict:
-        """Method parameters and, after orbital removal, the kept orbitals."""
+        """Method parameters and, after orbital removal, the kept orbitals (canonical
+        orthogonalization: the smallest kept dimension so far)."""
         info = {
             "method": self.method,
             "ill_threshold": self.ill_threshold,
@@ -528,4 +651,6 @@ class IllConditionedHandler:
         if self._kept_orbitals is not None:
             info["n_kept_orbitals"] = len(self._kept_orbitals)
             info["kept_orbitals"] = self._kept_orbitals
+        if self._n_kept_min is not None:
+            info["n_kept_min"] = self._n_kept_min
         return info

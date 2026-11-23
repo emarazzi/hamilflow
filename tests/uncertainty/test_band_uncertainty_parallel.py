@@ -72,6 +72,24 @@ def test_parallel_compute_matches_serial(structure, tmp_path, method):
     assert_same_results(serial, parallel)
 
 
+@pytest.mark.parametrize("method", ["exact", "projected"])
+def test_parallel_compute_with_canonical_matches_serial(structure, tmp_path, method):
+    """Threaded k-points (n_jobs > 1) and forked workers give the serial results and kept dimension."""
+    names = (NAME, "tMoS2-002")
+    model_dirs = make_ensemble(structure, tmp_path, names)
+    ks = [(a / 2, b / 2, 0.0) for a in range(2) for b in range(2)]
+    phases = [np.exp(2j * np.pi * (structure.Rs @ np.array(k))) for k in ks]
+    lams = [np.linalg.eigvalsh(np.tensordot(p, structure.S_R, axes=1)) for p in phases]
+    threshold = min(lam[0] for lam in lams) + 0.01  # cuts directions at some k-points
+    calc = BandUncertaintyCalculator(grid_mesh=MESH, method=method, ill_method="canonical", ill_threshold=threshold)
+    serial = calc.compute(model_dirs, tmp_path / "average", n_jobs=1)
+    threaded = calc.compute(model_dirs, tmp_path / "average", n_jobs=4)
+    parallel = calc.compute_parallel(model_dirs, tmp_path / "average", max_workers=2, memory_gb=100)
+    assert_same_results(serial, threaded)
+    assert_same_results(serial, parallel)
+    assert serial[NAME]["n_kept_min"] == min(int(np.sum(lam > threshold)) for lam in lams) < len(lams[0])
+
+
 def test_parallel_comparison_matches_serial(structure, tmp_path):
     names = (NAME, "tMoS2-002")
     model_dirs = make_ensemble(structure, tmp_path, names)

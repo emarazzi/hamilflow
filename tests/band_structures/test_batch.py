@@ -170,3 +170,20 @@ def test_joints_listed_once_breaks_kept(parent):
     drop = raw.k_path_density_list[0]
     np.testing.assert_allclose(k, np.delete(np.array(raw.kpoints_frac_list), drop, axis=0))
     np.testing.assert_allclose(merged.kpoints_distance_list, np.delete(raw.kpoints_distance_list, drop))
+
+
+def test_band_data_with_canonical_orthogonalization(parent):
+    from hamilflow.band_structures.band_data_generator import SparseBandDataGenerator
+    from hamilflow.band_structures.kpath import labels_kpath, structure_cell
+    from hamilflow.sparse_hamiltonian.ill_conditioned import canonical_orthogonalization_eig
+
+    obj = SparseHamiltonianObj(parent / "structure_0")
+    cell = structure_cell(obj.lattice, obj.frac_coords, obj.elements)
+    points = {"GAMMA": [0, 0, 0], "X": [0.5, 0, 0]}
+    gen = SparseBandDataGenerator(obj, {"k_list_spell": labels_kpath(cell, "GAMMA-X", points=points)})
+    ks = np.array(gen.kpoints_frac_list)
+    threshold = min(np.linalg.eigvalsh(obj.Sk_and_Hk(k)[0])[0] for k in ks) + 0.01
+    gen.calc_band_data(n_jobs=1, ill_method="canonical", ill_threshold=threshold)
+    expected = np.stack([canonical_orthogonalization_eig(*obj.Sk_and_Hk(k)[::-1], threshold)[0] for k in ks], axis=1)
+    assert np.any(expected == 1e4)  # something is cut
+    np.testing.assert_allclose(gen.band_data, expected - gen.fermi_energy_before_shift, atol=1e-9)

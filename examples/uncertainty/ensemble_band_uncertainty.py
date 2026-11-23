@@ -84,8 +84,16 @@ STRUCTURE_PATTERN = "*"  # glob on the structure folder names, e.g. "twisted_*"
 KPOINTS_SETTINGS = {"reciprocal_density": 100}
 FORCE_2D = True  # set k_z = 1 (slabs / 2D materials)
 # Treatment of an ill-conditioned overlap: "orbital_removal" removes orbitals
-# until S(k) is well conditioned on the k-grid; None = no treatment.
+# until S(k) is well conditioned on the k-grid; "canonical" cuts, at each k-point,
+# the eigen-directions of S(k) below ILL_THRESHOLD instead (less distorting, and
+# far cheaper overall since there is no greedy orbital selection, though each
+# diagonalization costs ~2x a plain one; use ILL_THRESHOLD = 3e-3 for the carbon
+# tight projected basis); None = no treatment. The uncertainty run
+# (ensemble_band_uncertainty.py) and the error run (ensemble_error_vs_dft.py)
+# must use the same ILL_METHOD and ILL_THRESHOLD: UncertaintyCalibrator's
+# consistency check rejects a mismatch.
 ILL_METHOD = "orbital_removal"
+ILL_THRESHOLD = 1e-3
 # "exact" (diagonalize every member) or "projected" (see the docstring above).
 METHOD = "exact"
 # With METHOD = "projected": the window by energy (eV below the VBM and above the
@@ -129,6 +137,7 @@ calc = BandUncertaintyCalculator(
     kpoints_settings=KPOINTS_SETTINGS,
     kpoints_force_2d=FORCE_2D,
     ill_method=ILL_METHOD,
+    ill_threshold=ILL_THRESHOLD,
     method=METHOD,
     n_bands_below=N_BANDS_BELOW,
     n_bands_above=N_BANDS_ABOVE,

@@ -88,7 +88,7 @@ class SparseBandDataGenerator(BandDataGenerator):
             shift-invert ``eigsh``; Hk/Sk are never densified. Requires
             ``ill_method=None`` (ill-conditioning handling needs dense matrices).
         ill_method : str or None
-            None, 'window_regularization' or 'orbital_removal' (dense path only).
+            None, 'window_regularization', 'orbital_removal' or 'canonical' (dense path only).
         ill_threshold, window_emin, window_emax : float or None
             Forwarded to ``IllConditionedHandler``; see the base class.
         sparse_assembly : bool
