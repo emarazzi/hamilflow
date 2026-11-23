@@ -1,7 +1,7 @@
 #!/bin/bash
 # SLURM job for ensemble_band_uncertainty.py (or ensemble_error_vs_dft.py) on one GPU.
 #
-# The orbital removal and the dense diagonalizations run on the GPU, shared by the structures
+# The dense diagonalizations (and the ill-conditioning treatment) run on the GPU, shared by the structures
 # computed at once (one per allocated CPU); the CPUs load the Hamiltonians and do the projection.
 # A few CPUs per GPU keep it busy: on an A100, up to 4 for ~800-orbital structures, 2 for larger
 # ones. Needs CuPy in the environment: `pip install -e .[gpu]` installs cupy-cuda12x; on CUDA 11
