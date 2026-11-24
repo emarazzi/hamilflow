@@ -41,6 +41,7 @@ test = ["pytest>=8", "pytest-cov"]
 
 [project.scripts]
 hamilflow-bands = "hamilflow.band_structures.batch:main"
+hamilflow-train-supervisor = "hamilflow.training.supervisor.cli:main"
 
 [project.urls]
 Repository = "https://github.com/emarazzi/hamilflow"

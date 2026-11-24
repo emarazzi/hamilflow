@@ -150,6 +150,14 @@ Run in this order:
   `train_{j}/<infer_name>/infer.toml` per fold, pointing to the model of the
   most recent training run of that fold (with a warning if there are several).
 
+Or, instead of writing the train TOMLs and launching the jobs yourself:
+
+- `supervised_training.py`: submits the whole training of a cycle through
+  jobflow-remote, in rounds: each member's `deeph-train` runs under a watchdog,
+  and between rounds the supervisor resumes, retunes, restarts or stops each
+  member. Follow and steer it with `hamilflow-train-supervisor` (see the main
+  README, "Supervised ensemble training").
+
 Independent of that order, while training runs or after it:
 
 - `analyze_training_logs.py`: from the training logs, the LR reductions of each

@@ -26,6 +26,13 @@ is only meaningful up to the first actual reduction):
 4. cooldown: median post-reduction transient measured on actual reductions in the logs when there
    are any, otherwise patience // 2 (heuristic).
 
+Chained jobs: a member resumed over several jobs is read as one curve. A job continued with
+``new_optimizer = true`` logs its scale relative to its own ``initial learning rate`` (it restarts
+at 1.0), so ``TrainingCurve.scale`` is normalized to the first log's initial LR,
+``scale x lr0_job / lr0_first``, and the stages, reductions and convergence use it; the scale as
+logged stays in ``raw_scale`` for the per-job replay of the scheduler. ``min_scale`` and
+``done_scale`` are relative to the first log's initial LR too.
+
 Convergence: for every LR stage of each member, the best val loss reached and its gain over the
 best of the previous stages. A member is converged when its last ``conv_stages`` completed
 reduced-LR stages each improved the best val loss by less than ``conv_tol``, or when the LR scale
@@ -37,13 +44,15 @@ import itertools
 import re
 import warnings
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
 
+# a number, or nan / inf as Python prints them (any case, signed): a diverged epoch must stay a row
+_NUMBER = r"([\d.eE+-]+|[+-]?(?i:nan|inf(?:inity)?))"
 _EPOCH_RE = re.compile(
-    r"Epoch (\d+) \| Time ([\d.]+) s \| Train-Loss ([\d.eE+-]+) \| Val-Loss ([\d.eE+-]+) \| Scale ([\d.eE+-]+)"
+    rf"Epoch (\d+) \| Time ([\d.]+) s \| Train-Loss {_NUMBER} \| Val-Loss {_NUMBER} \| Scale {_NUMBER}"
 )
 _HEADER_RE = {
     "n_train": r"Train size: `(\d+)`",
@@ -55,12 +64,62 @@ _HEADER_RE = {
     "cooldown": r"cooldown `(\d+)`",
     "accumulation_size": r"accumulation size `(\d+)`",
 }
+# ``[model] We are loading the `best` model inside `<run dir>`. We are using the origin training dataset, and
+# applying new optimizer.`` (DeepH-pack 1.0.6, new_optimizer = true). The other variants (new training data,
+# optimizer kept) were not seen in a real log: the wording after the run dir is matched loosely.
+_CONTINUED_RE = re.compile(r"We are loading the `(\w+)` model inside `([^`]*)`\.?([^\n]*)")
+# case-insensitive: the real line with the optimizer kept says "... and NOT applying new optimizer."
+_NEW_OPTIMIZER_RE = re.compile(r"\bnew optimizer", re.IGNORECASE)
+_NOT_NEW_OPTIMIZER_RE = re.compile(
+    r"\b(?:not|without|no)\b[^.,]*\bnew optimizer|\b(?:origin|original|old|previous) optimizer", re.IGNORECASE
+)
+_TRAINING_DATA_RE = re.compile(r"\b(origin|original|new) training data", re.IGNORECASE)
 _MONITORS = ("train", "val", "mean")
+_SETTINGS = ("n_train", "batch_size", "factor", "patience", "rtol", "cooldown", "accumulation_size")
+# relative difference below which a job's first normalized scale continues the previous job's last one (the
+# initial learning rate is printed with limited precision in the log)
+_JOIN_RTOL = 1e-3
+
+
+@dataclass
+class JobLog:
+    """One log of a member (one job): its scheduler settings and how it was started."""
+
+    path: str
+    start: int  # index of its first epoch in the curve
+    n_epochs: int
+    lr0: float | None
+    settings: dict  # header values of this log, None when missing (keys: _SETTINGS)
+    continued_from: str | None = None  # run dir it was loaded from; None for a run started from scratch
+    load_model_type: str | None = None  # "best" / "latest"
+    new_optimizer: bool | None = None  # None without a continuation line
+    new_training_data: bool | None = None  # None when the line does not say
+    # raw (logged) scale x lr_ratio = scale relative to the first log's lr0
+    lr_ratio: float = 1.0
+    # epochs before this job cut from the curve, the dead branch this job's model does not descend
+    # from: after the previous log's best val when this job loaded `best`, the trailing epochs at a
+    # lower scale than this job starts with when it kept the optimizer, and whole logs (``dropped``)
+    # between the log it continues and itself (see _cut_abandoned)
+    n_abandoned: int = 0
+    index: int = 0  # position of the log in the paths given; logs dropped whole leave gaps
+    dropped: list = field(default_factory=list)  # (index, n_epochs) of the logs before it dropped whole
+
+    @property
+    def number(self) -> int:
+        """1-based job number, as in the report: the position among the logs given."""
+        return self.index + 1
+
+    @property
+    def stop(self) -> int:
+        return self.start + self.n_epochs
 
 
 @dataclass
 class TrainingCurve:
-    """One ensemble member, possibly over several jobs; the settings are those of the last log."""
+    """One ensemble member, possibly over several jobs; the settings are those of the last log.
+
+    ``scale`` is relative to the first log's initial LR (continuous across a ``new_optimizer``
+    restart), ``raw_scale`` is the scale as logged, relative to each job's own initial LR."""
 
     name: str
     epoch: np.ndarray
@@ -77,6 +136,24 @@ class TrainingCurve:
     cooldown: int
     accumulation_size: int  # optimizer steps per scheduler check
     lr0: float | None
+    raw_scale: np.ndarray | None = None  # as logged; None: same as scale
+    jobs: list[JobLog] = field(default_factory=list)
+    raw_epoch: np.ndarray | None = None  # epoch numbers as logged (a kept optimizer continues them); None: epoch
+
+    def __post_init__(self):
+        if self.raw_scale is None:
+            self.raw_scale = self.scale
+        if self.raw_epoch is None:
+            self.raw_epoch = self.epoch
+
+    @property
+    def current_learning_rate(self) -> float | None:
+        """LR in effect at the last epoch: the last log's lr0 x its last logged scale. Without lr0 in
+        the last log, its scale is taken as relative to the first log's lr0, as for ``scale``."""
+        if self.lr0 is not None:
+            return self.lr0 * float(self.raw_scale[-1])
+        lr0_first = self.jobs[0].lr0 if self.jobs else None
+        return None if lr0_first is None else lr0_first * float(self.scale[-1])
 
     @property
     def steps_per_epoch(self) -> int:
@@ -128,6 +205,9 @@ class MemberAnalysis:
     check_loss: np.ndarray
     check_epoch: np.ndarray
     epochs_per_replay_check: int
+    # its initial-LR segment is too short to judge (shorter than 2 x max(window, smooth)): left out of
+    # the pooled patience scan, where "never reduces" would count it as "later than the end of its log"
+    segment_too_short: bool = False
 
     @property
     def converged(self) -> bool:
@@ -178,23 +258,198 @@ def _read_log(path) -> tuple[np.ndarray, dict]:
     rows = np.array([[float(x) for x in m.groups()] for m in _EPOCH_RE.finditer(text)])
     if not len(rows):
         raise ValueError(f"No epoch lines in {path}")
+    _carry_scale_forward(rows[:, 4])
     header = {}
     for key, pattern in _HEADER_RE.items():
         match = re.search(pattern, text)
         header[key] = float(match.group(1)) if match else None
+    continued = _parse_continuation(text)
+    header["optimizer_stated"] = continued.pop("optimizer_stated")
+    header["continued"] = continued
     return rows, header
+
+
+def has_epochs(path) -> bool:
+    """Whether ``path`` is a log with at least one epoch line (False for a missing file)."""
+    path = Path(path)
+    return path.is_file() and _EPOCH_RE.search(path.read_text()) is not None
+
+
+def _carry_scale_forward(scale: np.ndarray) -> None:
+    """In place: a nan/inf scale (a diverged epoch) takes the last finite one, 1.0 before any, so
+    that it neither splits a stage nor looks like a reduction."""
+    last = 1.0
+    for i, value in enumerate(scale):
+        if np.isfinite(value):
+            last = value
+        else:
+            scale[i] = last
+
+
+def _parse_continuation(text: str) -> dict:
+    """``continued_from``, ``load_model_type``, ``new_optimizer``, ``new_training_data`` from the
+    continuation line; all None for a run started from scratch."""
+    match = _CONTINUED_RE.search(text)
+    if match is None:
+        return {"continued_from": None, "load_model_type": None, "new_optimizer": None, "new_training_data": None,
+                "optimizer_stated": False}
+    load_type, run_dir, rest = match.groups()
+    data = _TRAINING_DATA_RE.search(rest)
+    new, not_new = bool(_NEW_OPTIMIZER_RE.search(rest)), bool(_NOT_NEW_OPTIMIZER_RE.search(rest))
+    return {
+        "continued_from": run_dir,
+        "load_model_type": load_type,
+        "new_optimizer": new and not not_new,
+        "new_training_data": None if data is None else data.group(1).lower() == "new",
+        # whether the line says anything about the optimizer: if not, "kept" is only inferred
+        "optimizer_stated": new or not_new,
+    }
+
+
+def _kept_optimizer(header: dict, previous: dict) -> bool:
+    """Whether a job continued the previous job's optimizer (and scheduler) state: its continuation
+    line says so, or, without a continuation line, its lr0 is the previous one's (or unknown)."""
+    new_optimizer = header["continued"]["new_optimizer"]
+    if new_optimizer is not None:
+        return not new_optimizer
+    return header["lr0"] is None or previous["lr0"] is None or header["lr0"] == previous["lr0"]
+
+
+def _cut_abandoned(paths: list, logs: list[tuple[np.ndarray, dict]]) -> tuple[list[int], list, list[int], list]:
+    """Drop the dead branches before each job, the epochs the model of the new job does not descend
+    from. Keeping them would show a redone reduction and a spurious flat stage.
+
+    0. The job's continuation line names the run dir of an earlier log than the previous one (a run
+       that crashed and was started again as before): the logs in between are dead branches and are
+       left out whole; the rules below then apply to the named log.
+    1. The job loaded the `best` model: the epochs of the log it continues after its best val
+       (nanargmin within that log) are dead.
+    2. The job kept the optimizer and its first scale (on the first log's lr0) is above the last one
+       of the log it continues: it loaded a checkpoint saved before reductions it now redoes
+       (``latest``, saved every ``latest_interval`` epochs, or ``best``), so that log's trailing
+       epochs at a scale below its first one are dead. Model-free: works whatever checkpoint was loaded.
+
+    Run dirs are compared by name only (paths differ between the cluster and a local copy). Returns
+    the indices of the logs kept, those logs (cut), and per log kept the number of epochs left out
+    before it (all rules together) and the ``(index, n_epochs)`` of the logs dropped whole before it."""
+    rows = [r for r, _ in logs]
+    headers = [header for _, header in logs]
+    lr0_first = headers[0]["lr0"]
+
+    def ratio(header):
+        return 1.0 if lr0_first is None or header["lr0"] is None else header["lr0"] / lr0_first
+
+    n_logged = [len(r) for r in rows]
+    kept = [0]
+    n_abandoned, dropped = {0: 0}, {0: []}
+    for j in range(1, len(logs)):
+        continued = headers[j]["continued"]
+        run_name = None if continued["continued_from"] is None else Path(continued["continued_from"].rstrip("/")).name
+        m = kept[-1]  # the log this job continues: by default the previous one kept
+        if run_name is not None and run_name != Path(paths[m]).parent.name:
+            match = [k for k in kept[:-1] if Path(paths[k]).parent.name == run_name]
+            if match:
+                m = match[-1]
+        # a log dropped whole takes along the logs it had dropped itself
+        dropped[j] = sorted(entry for k in kept[kept.index(m) + 1 :] for entry in [(k, n_logged[k]), *dropped[k]])
+        kept = kept[: kept.index(m) + 1]
+        previous = rows[m]
+        if continued["load_model_type"] == "best" and not np.isnan(previous[:, 3]).all():
+            if run_name != Path(paths[m]).parent.name:
+                warnings.warn(
+                    f"{paths[j]} loads the best model of run {run_name!r}, but the previous log is in "
+                    f"{Path(paths[m]).parent.name!r}: cutting the previous log after its best val anyway",
+                    stacklevel=3,
+                )
+            previous = previous[: int(np.nanargmin(previous[:, 3])) + 1]
+        if _kept_optimizer(headers[j], headers[m]):
+            before = len(previous)
+            first_epoch = rows[j][0, 0]
+            if first_epoch > rows[m][0, 0]:
+                # DeepH continues the epoch numbers when the optimizer is kept (it loaded the checkpoint of
+                # epoch first_epoch - 1): the previous log's epochs from first_epoch on are dead, exactly
+                previous = previous[previous[:, 0] < first_epoch]
+                how = f"its epochs from {int(first_epoch)} on (the new log continues from there) are cut"
+            else:
+                # the numbering does not continue (an older DeepH?): fall back on the scale, a resume that
+                # starts at a higher LR than the previous log ended with redoes reductions
+                first = rows[j][0, 4] * ratio(headers[j])
+                scale = previous[:, 4] * ratio(headers[m])
+                if first > scale[-1] * (1 + _JOIN_RTOL):
+                    keep = len(scale)
+                    while keep > 1 and scale[keep - 1] < first * (1 - _JOIN_RTOL):
+                        keep -= 1
+                    previous = previous[:keep]
+                    warnings.warn(
+                        f"the epoch numbers of {paths[j]} do not continue those of {paths[m]} although the optimizer "
+                        "was kept: the previous log's trailing epochs at a lower LR than the new one starts with "
+                        "are cut (scale heuristic)",
+                        stacklevel=3,
+                    )
+                how = "the previous log's trailing epochs at a lower LR are cut"
+            if len(previous) < before and not headers[j]["optimizer_stated"]:
+                warnings.warn(
+                    f"{paths[j]} does not say whether it kept the optimizer: taken as a resume of {paths[m]}; {how}",
+                    stacklevel=3,
+                )
+        # all the logged epochs of the dropped logs, and those of the log continued that are gone (also
+        # by the cuts of the dropped logs, which are now part of this dead branch)
+        n_abandoned[j] = n_logged[m] - len(previous) + sum(n for _, n in dropped[j])
+        rows[m] = previous
+        kept.append(j)
+    return kept, [(rows[k], headers[k]) for k in kept], [n_abandoned[k] for k in kept], [dropped[k] for k in kept]
+
+
+def _job_logs(paths: list, logs: list[tuple[np.ndarray, dict]], n_abandoned: list[int], indices: list[int],
+              dropped: list) -> list[JobLog]:
+    """Per log: settings, continuation and the factor that puts its scale on the first log's lr0. A
+    job whose normalized scale starts within ``_JOIN_RTOL`` of where the previous one ended is
+    snapped onto it, so the limited precision of the printed lr0 does not split a stage."""
+    lr0_first = logs[0][1]["lr0"]
+    if lr0_first is None and len(paths) > 1:
+        warnings.warn(f"No initial learning rate in {paths[0]}: the scales of all the logs are taken as "
+                      "relative to the same initial LR", stacklevel=3)
+    jobs, start, previous_last = [], 0, None
+    for path, (rows, header), cut, index, gone in zip(paths, logs, n_abandoned, indices, dropped, strict=True):
+        if lr0_first is None:
+            ratio = 1.0
+        elif header["lr0"] is None:
+            warnings.warn(f"No initial learning rate in {path}: its scale is taken as relative to the "
+                          "first log's initial LR", stacklevel=3)
+            ratio = 1.0
+        else:
+            ratio = header["lr0"] / lr0_first
+        raw_first, raw_last = rows[0, 4], rows[-1, 4]
+        if previous_last is not None and raw_first > 0 and np.isclose(raw_first * ratio, previous_last,
+                                                                      rtol=_JOIN_RTOL, atol=0):
+            ratio = previous_last / raw_first
+        jobs.append(JobLog(
+            path=str(path), start=start, n_epochs=len(rows), lr0=header["lr0"],
+            settings={key: header[key] for key in _SETTINGS}, lr_ratio=float(ratio), n_abandoned=cut,
+            index=index, dropped=gone, **header["continued"],
+        ))
+        start, previous_last = start + len(rows), float(raw_last * ratio)
+    return jobs
 
 
 def read_training_curve(paths) -> TrainingCurve:
     """Read one member from its log, or from the logs of its consecutive jobs (a sequence of paths,
-    in order, for ``[process.train.continued]``); epochs are renumbered consecutively."""
+    in order, for ``[process.train.continued]``); epochs are renumbered consecutively, and the
+    scale is put on the first log's initial LR (see the module docstring). Before a job that
+    loaded the `best` model, the previous log's epochs after its best val are left out
+    (``JobLog.n_abandoned``), so the curve follows the lineage of the model; a log that is a dead
+    branch as a whole (a crashed run started again as before) is left out of ``jobs`` and listed
+    in the next job's ``dropped``."""
     paths = [paths] if isinstance(paths, str | Path) else list(paths)
     logs = [_read_log(p) for p in paths]
     header = logs[-1][1]
     missing = [k for k in ("n_train", "factor", "patience", "rtol", "cooldown") if header[k] is None]
     if missing:
         raise ValueError(f"No {', '.join(missing)} in {paths[-1]}: is it a reduce_on_plateau training log?")
-    _, time, train, val, scale = np.concatenate([rows for rows, _ in logs]).T
+    indices, logs, n_abandoned, dropped = _cut_abandoned(paths, logs)
+    raw_epoch, time, train, val, raw_scale = np.concatenate([rows for rows, _ in logs]).T
+    jobs = _job_logs([paths[k] for k in indices], logs, n_abandoned, indices, dropped)
+    scale = np.concatenate([raw_scale[job.start : job.stop] * job.lr_ratio for job in jobs])
     name = str(paths[0]) if len(paths) == 1 else f"{paths[0]} (+{len(paths) - 1})"
     batch_size = int(header["batch_size"] or 1)
     steps_per_epoch = max(1, round(header["n_train"] / batch_size))
@@ -205,7 +460,10 @@ def read_training_curve(paths) -> TrainingCurve:
         train=train,
         val=val,
         scale=scale,
-        joins=np.cumsum([len(rows) for rows, _ in logs])[:-1],
+        raw_scale=raw_scale,
+        raw_epoch=raw_epoch.astype(int),
+        jobs=jobs,
+        joins=np.array([job.start for job in jobs[1:]], dtype=int),
         n_train=int(header["n_train"]),
         batch_size=batch_size,
         factor=header["factor"],
@@ -229,23 +487,35 @@ def _member_labels(specs: list[list[str]]) -> list[str]:
 
 
 def _reduction_indices(curve: TrainingCurve) -> np.ndarray:
-    """Indices of the first epoch at each lower LR scale; a new job's scale is not a reduction."""
+    """Indices of the first epoch at each lower LR scale (normalized); a lower scale at the start of a
+    new job is a change of the settings, not a reduction by the scheduler."""
     indices = np.nonzero(np.diff(curve.scale) < 0)[0] + 1
     return indices[~np.isin(indices, curve.joins)]
 
 
+def _nanmin(x: np.ndarray) -> float:
+    """Min ignoring nan; nan (no warning) when all are nan."""
+    x = x[~np.isnan(x)]
+    return float(x.min()) if len(x) else float("nan")
+
+
+def _nanmedian(x: np.ndarray) -> float:
+    x = x[~np.isnan(x)]
+    return float(np.median(x)) if len(x) else float("nan")
+
+
 def lr_stages(curve: TrainingCurve) -> list[LRStage]:
-    """Split the curve at every change of the LR scale (reductions, or a reset when continuing with
-    ``new_optimizer = true``), with per-stage statistics on the val loss. A new job at the same scale
-    stays in the stage (``jobs`` > 1)."""
+    """Split the curve at every change of the normalized LR scale (reductions, or a new job started at
+    another LR), with per-stage statistics on the val loss. A new job at the same LR stays in the stage
+    (``jobs`` > 1), also when it restarts the optimizer with its initial LR set to the carried-over LR."""
     scale = curve.scale
     changes = np.nonzero(np.diff(scale) != 0)[0] + 1
     edges = sorted({0, len(scale)} | set(changes.tolist()))
     joins = set(curve.joins.tolist())
     stages, cumulative = [], np.inf
     for a, b in itertools.pairwise(edges):
-        best = curve.val[a:b].min()
-        previous, cumulative = cumulative, min(cumulative, best)
+        best = _nanmin(curve.val[a:b])  # a nan epoch (diverged) does not count
+        previous, cumulative = cumulative, float(np.fmin(cumulative, best))
         tail = slice(max(a, b - 10), b)
         stages.append(
             LRStage(
@@ -256,7 +526,7 @@ def lr_stages(curve: TrainingCurve) -> list[LRStage]:
                 best_val=float(best),
                 cumulative_best_val=float(cumulative),
                 gain=float(previous / cumulative - 1) if np.isfinite(previous) else float("nan"),
-                val_over_train=float(np.median(curve.val[tail] / curve.train[tail])),
+                val_over_train=_nanmedian(curve.val[tail] / curve.train[tail]),
                 running=b == len(scale),
                 restart=a in joins,
                 jobs=1 + sum(a < j < b for j in joins),
@@ -320,10 +590,27 @@ def _first_reduction(scale: np.ndarray) -> int | None:
     return int(indices[0]) if len(indices) else None
 
 
+def _job_curve(curve: TrainingCurve, job: JobLog) -> TrainingCurve:
+    """One job of ``curve`` on its own: its raw (logged) scale and its own scheduler settings (falling
+    back to the last log's when its header lacks one)."""
+    a, b = job.start, job.stop
+    settings = {key: value for key, value in job.settings.items() if value is not None}
+    for key in ("n_train", "batch_size", "patience", "cooldown", "accumulation_size"):
+        if key in settings:
+            settings[key] = int(settings[key])
+    if "accumulation_size" not in settings and "n_train" in settings:
+        settings["accumulation_size"] = max(1, round(settings["n_train"] / settings.get("batch_size", 1)))
+    return replace(curve, epoch=curve.epoch[a:b], time=curve.time[a:b], train=curve.train[a:b],
+                   val=curve.val[a:b], scale=curve.raw_scale[a:b], raw_scale=curve.raw_scale[a:b],
+                   raw_epoch=curve.raw_epoch[a:b],
+                   joins=np.array([], dtype=int), jobs=[job], lr0=job.lr0, **settings)
+
+
 def _replay_mismatch(curve: TrainingCurve, k: int, min_scale: float) -> dict[str, int | None]:
     """Per monitor, the first epoch where the replay differs from the logged scale (None: never).
-    A job only starts a fresh scheduler with ``new_optimizer = true``: a job continuing the previous
-    optimizer state is expected to mismatch."""
+    ``curve`` is one job, with its raw scale and ``min_scale`` in the same units. A job only starts a
+    fresh scheduler with ``new_optimizer = true``: a job continuing the previous optimizer state is
+    expected to mismatch."""
     mismatch = {}
     for monitor in _MONITORS:
         values, epochs = _checks(curve, monitor, k)
@@ -403,9 +690,10 @@ def analyze_training_logs(
     trained over several jobs. ``rtols`` are the values to scan (default: the one in the logs, plus
     0.01, 0.02, 0.05, 0.1). ``patience_grid`` is in epochs, ``smooth`` and ``window`` too; ``k`` sets
     the onset, at progress over ``window`` < ``k`` x noise. ``min_scale`` is
-    ``min_learning_rate_scale`` (not in the logs), only used to replay and to estimate the length of
-    the whole training. ``walltime_h`` adds that length in jobs to the report. See the module
-    docstring for the method; ``format_report`` turns the result into text.
+    ``min_learning_rate_scale`` (not in the logs) relative to the first log's initial LR, only used to
+    replay and to estimate the length of the whole training; ``done_scale`` is relative to it too.
+    ``walltime_h`` adds that length in jobs to the report. See the module docstring for the method;
+    ``format_report`` turns the result into text.
     """
     if monitor not in _MONITORS:
         raise ValueError(f"monitor must be one of {_MONITORS}, got {monitor!r}")
@@ -423,19 +711,24 @@ def analyze_training_logs(
         values, epochs = _checks(curve, monitor, checks_k)
         cut = _first_reduction(curve.scale)
         n_const = (cut if cut is not None else len(curve.train)) // checks_k
-        too_short &= n_const < 2 * max(window, smooth) // checks_k
+        member_short = n_const < 2 * max(window, smooth) // checks_k
+        too_short &= member_short
 
-        log_values = np.log10(values[:n_const])
+        # a diverged (nan/inf) check is left out of the noise and onset, which a single one would void;
+        # the replays keep it, as the scheduler does (it is no improvement)
+        finite = np.isfinite(values[:n_const]) & (values[:n_const] > 0)
+        log_values, finite_epochs = np.log10(values[:n_const][finite]), epochs[:n_const][finite]
+        n_finite = len(log_values)
         noise, onset = float("nan"), None
-        if n_const >= 2:
+        if n_finite >= 2:
             smoothed = _running_median(log_values, max(1, smooth // checks_k))
-            noise = float(np.std((log_values - smoothed)[n_const // 2 :]))
+            noise = float(np.std((log_values - smoothed)[n_finite // 2 :]))
             w = max(1, window // checks_k)
-            progress = np.full(n_const, np.inf)
+            progress = np.full(n_finite, np.inf)
             progress[w:] = smoothed[:-w] - smoothed[w:]
             burn = max(w, smooth // checks_k)  # skip the steep initial transient and the edge
-            below = np.nonzero((progress < k * noise) & (np.arange(n_const) >= burn))[0]
-            onset = int(epochs[below[0]]) if len(below) else None
+            below = np.nonzero((progress < k * noise) & (np.arange(n_finite) >= burn))[0]
+            onset = int(finite_epochs[below[0]]) if len(below) else None
 
         patience = max(1, round(curve.patience * curve.epochs_per_check / checks_k))
         cooldown = round(curve.cooldown * curve.epochs_per_check / checks_k)
@@ -443,15 +736,14 @@ def analyze_training_logs(
             replay_reduce_on_plateau(values, patience, cooldown, curve.rtol, curve.factor, min_scale=min_scale)
         )
 
+        # per job on the raw scale: the scheduler of a job counts from that job's own initial LR
         replay_mismatch = {}
-        bounds = [0, *curve.joins.tolist(), len(curve.scale)]
-        for j, (a, b) in enumerate(itertools.pairwise(bounds)):
-            job_scale = curve.scale[a:b]
-            if _first_reduction(job_scale) is None:
+        for job_log in curve.jobs:
+            if _first_reduction(curve.raw_scale[job_log.start : job_log.stop]) is None:
                 continue
-            job = replace(curve, epoch=curve.epoch[a:b], time=curve.time[a:b], train=curve.train[a:b],
-                          val=curve.val[a:b], scale=job_scale, joins=np.array([], dtype=int))
-            replay_mismatch[f"job {j + 1}"] = _replay_mismatch(job, checks_k, min_scale)
+            job = _job_curve(curve, job_log)
+            job_k = checks_k if job.epochs_per_check == curve.epochs_per_check else _epochs_per_replay_check(job)
+            replay_mismatch[f"job {job_log.number}"] = _replay_mismatch(job, job_k, min_scale / job_log.lr_ratio)
 
         stages = lr_stages(curve)
         since, reason, overfitting = _convergence(curve, stages, conv_tol, conv_stages, done_scale, overfit)
@@ -471,16 +763,21 @@ def analyze_training_logs(
                 check_loss=values[:n_const],
                 check_epoch=epochs[:n_const],
                 epochs_per_replay_check=checks_k,
+                segment_too_short=member_short,
             )
         )
 
+    # the pooled scan judges the members whose initial-LR segment is long enough (at least one, else
+    # segments_too_short); a short one (e.g. stopped early by another member's STOP_ROUND) would never
+    # reduce within its segment and, with an even count, push the median to "never"
+    scanned = [m for m in members if not m.segment_too_short] or members
     onsets = [m.onset for m in members if m.onset is not None]
     target = float(np.median(onsets)) if onsets else None
     first: dict[tuple[float, int], list[int | None]] = {}
     for rtol in rtols:
         for patience in patience_grid:
             first[rtol, patience] = []
-            for m in members:
+            for m in scanned:
                 checks = max(1, patience // m.epochs_per_replay_check)
                 f = _first_reduction(replay_reduce_on_plateau(m.check_loss, checks, 0, rtol, reference.factor))
                 first[rtol, patience].append(None if f is None else int(m.check_epoch[f]))
@@ -517,7 +814,7 @@ def analyze_training_logs(
                 cooldown_measured=bool(transients),
                 first_reduction=first_epoch,
                 first_reduction_range=(min(reached), max(reached)),
-                n_never=len(members) - len(reached),
+                n_never=len(scanned) - len(reached),
                 min_total_epochs=first_epoch + (n_reductions - 1) * (patience + cooldown),
             )
         )
@@ -557,14 +854,41 @@ def _format_mismatch(mismatch: dict[str, dict[str, int | None]]) -> list[str]:
     return lines
 
 
+def _format_jobs(curve: TrainingCurve) -> list[str]:
+    """One line per continued job, when the chain restarts the optimizer or changes the initial LR:
+    what the normalized scales of the report mean."""
+    if not any(job.new_optimizer or job.lr_ratio != 1.0 or job.n_abandoned for job in curve.jobs[1:]):
+        return []
+    lines = []
+    for previous, job in itertools.pairwise(curve.jobs):
+        how = "new optimizer" if job.new_optimizer else "optimizer kept"
+        if job.new_optimizer is None:
+            how = "no continuation line"
+        tail = job.n_abandoned - sum(n for _, n in job.dropped)
+        cut = "".join(f", job {k + 1} ({n} epochs) left out: dead branch" for k, n in job.dropped)
+        cut += f", last {tail} epochs of job {previous.number} left out (dead branch)" if tail else ""
+        lines.append(f"  job {job.number} from epoch {job.start + 1}: {how}"
+                     f"{f', loads {job.load_model_type}' if job.load_model_type else ''}{cut}, "
+                     f"lr0 {job.lr0} = {job.lr_ratio:.4g} x first lr0 (logged scale x {job.lr_ratio:.4g})")
+    return lines
+
+
+def _format_lr0(curve: TrainingCurve) -> str:
+    """The first job's lr0, which the scales of the report are relative to, and the last one's if it differs."""
+    first = curve.jobs[0].lr0 if curve.jobs else curve.lr0
+    last = f", {curve.lr0} (last job)" if curve.lr0 != first else ""
+    return f"lr0 {first} (first job){last}"
+
+
 def format_report(analysis: TrainingAnalysis) -> str:
-    """Human-readable text of an ``analyze_training_logs`` result."""
+    """Human-readable text of an ``analyze_training_logs`` result. Scales are relative to each member's
+    first initial LR (as logged unless a job changed it, which the report lists)."""
     members = analysis.members
     r0 = members[0].curve
     lines = [
         (f"{len(members)} members | train {r0.n_train} structures, batch {r0.batch_size} -> "
          f"{r0.steps_per_epoch} steps/epoch | current: patience {r0.patience}, cooldown {r0.cooldown}, "
-         f"rtol {r0.rtol}, factor {r0.factor}, accumulation {r0.accumulation_size}, lr0 {r0.lr0}"),
+         f"rtol {r0.rtol}, factor {r0.factor}, accumulation {r0.accumulation_size}, {_format_lr0(r0)}"),
         f"monitored loss: {analysis.monitor}",
         "",
         "---- LR reductions ----",
@@ -575,10 +899,11 @@ def format_report(analysis: TrainingAnalysis) -> str:
         c = m.curve
         replayed = "none" if m.replayed_first_reduction is None else m.replayed_first_reduction
         lines.append(
-            f"{m.label:14s} {len(c.train):6d} {np.median(c.time):6.0f} {c.val.min():9.2e} "
+            f"{m.label:14s} {len(c.train):6d} {np.median(c.time):6.0f} {_nanmin(c.val):9.2e} "
             f"{10**m.noise - 1:6.1%} {m.onset!s:>5s} {len(m.reductions):10d} "
             f"{m.reductions[0] if m.reductions else 'none':>10} {replayed:>10}"
         )
+        lines.extend(f"{m.label}{line}" for line in _format_jobs(c))
         if m.replay_mismatch:
             lines.extend(f"{m.label}{line}" for line in _format_mismatch(m.replay_mismatch))
 
@@ -615,7 +940,7 @@ def format_report(analysis: TrainingAnalysis) -> str:
     reductions = [len(m.reductions) for m in members]
     lines.append("")
     lines.append(f"ensemble: reductions per member {reductions}, current scale "
-                 f"{', '.join(f'{m.curve.scale[-1]:.1e}' for m in members)}")
+                 f"{', '.join(f'{m.curve.scale[-1]:.1e}' for m in members)} (of each member's first lr0)")
     if max(reductions) - min(reductions) > 1 and not analysis.all_converged:
         lines.append("  note: members are at different LR stages (normal while they run, e.g. started at different "
                      "times); stop them all at a common stage, otherwise the ensemble spread mixes training stages")
