@@ -15,6 +15,7 @@ import datetime
 import os
 import re
 import signal
+import socket
 import subprocess
 import time
 import tomllib
@@ -169,6 +170,18 @@ def clean_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
 # ---------------------------------- the current log ----------------------------------
 
 
+def _gpu_description(env: dict | None = None) -> str:
+    """The GPU(s) this job got, for the journal (a mixed partition can hand out an 11 GB card): one
+    ``nvidia-smi`` query, bounded, never raising."""
+    visible = (env if env is not None else os.environ).get("CUDA_VISIBLE_DEVICES", "unset")
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=10, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = "nvidia-smi not available"
+    return f"{'; '.join(out.splitlines()) or 'none'} (CUDA_VISIBLE_DEVICES={visible})"
+
+
 class _LogTail:
     """Reads the current deepx.log incrementally: the epochs seen and their times."""
 
@@ -200,9 +213,11 @@ class _LogTail:
 
     @property
     def epoch_time(self) -> float | None:
-        """Median epoch time, without the first (it includes the JIT compilation)."""
-        times = self.times[1:] or self.times
-        return float(np.median(times)) if times else None
+        """Median epoch time, without the run's first epoch (JIT compilation: ~120 s against ~25 s on the
+        cluster, also on a resumed run). None until two later epochs are logged: an estimate from the
+        first one alone made the walltime window ~5x too wide."""
+        times = self.times[1:]
+        return float(np.median(times)) if len(times) >= 2 else None
 
 
 # ---------------------------------- the watchdog ----------------------------------
@@ -382,6 +397,7 @@ def run_supervised(
 
     command = [part.replace("{toml}", str(train_toml)) for part in cfg.train_command]
     out_path = cwd / f"{train_toml.stem}.out"
+    journal(f"node {socket.gethostname()}, GPU: {_gpu_description(env)}")
     journal(f"start: {command} in {cwd}, output in {out_path.name}")
     with open(out_path, "ab") as out:
         try:
@@ -448,7 +464,11 @@ def _supervise(proc, cfg, journal, outputs_dir, existing, deadline, logs_before,
                 wait_until = deadline if wait_until is None else min(wait_until, deadline)
                 if tail is not None and tail.epoch_time is not None and run_dir is not None:
                     window = cfg.latest_interval * tail.epoch_time
-                    if t >= deadline - window:
+                    if t < deadline - window:
+                        # not (or no longer, with a better epoch time) in the window: a checkpoint written
+                        # before entering it must not count as "the next one"
+                        window_checkpoint = "unset"
+                    else:
                         checkpoint = last_checkpoint_epoch(run_dir, cfg.checkpoint_settle_s, t)
                         if window_checkpoint == "unset":
                             window_checkpoint = checkpoint

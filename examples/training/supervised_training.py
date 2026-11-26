@@ -103,8 +103,11 @@ CONFIG = SupervisorConfig(
 
 # GPU train jobs: the SLURM time limit must exceed walltime_margin (15 min) + start-up (graph and JIT,
 # minutes). The watchdog reads the end time from SLURM, so nothing else needs to match it.
-RESOURCES_TRAIN = {"nodes": 1, "ntasks": 1, "cpus_per_task": 32, "gres": "gpu:2", "partition": "your_gpu_partition",
-                   "time": "2-00:00:00", "account": SLURM_ACCOUNT}
+# Set "mem" explicitly (the SLURM default per CPU can be too small), and on a partition that mixes GPU types
+# ask for a type with enough memory (e.g. "gpu:TeslaA100:2"): a plain "gpu:2" may land on an 11 GB card,
+# where deeph-train runs out of GPU memory. watchdog_J.log records the node and GPU each member got.
+RESOURCES_TRAIN = {"nodes": 1, "ntasks": 1, "cpus_per_task": 32, "mem": "64G", "gres": "gpu:2",
+                   "partition": "your_gpu_partition", "time": "2-00:00:00", "account": SLURM_ACCOUNT}
 # The supervise job parses logs and writes small files (seconds): the local-shell worker needs no resources.
 RESOURCES_SUPERVISE = None
 EXEC_CONFIG = {"pre_run": PRE_RUN}

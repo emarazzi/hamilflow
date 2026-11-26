@@ -133,6 +133,8 @@ def main(toml_path: str, spec_path: str) -> int:
                 checkpoint(run_dir, "latest", epoch, keep=10)
             with open(log, "a") as f:  # after the epoch's checkpoints, as deeph-train
                 logged = spec.get("logged_epoch_s", spec.get("epoch_s", 0.01))
+                if i == 0:  # deeph-train's first epoch of every run includes the JIT compilation
+                    logged = spec.get("first_logged_epoch_s", logged)
                 f.write(f"{stamp()} [train] Epoch {epoch} | Time {logged:.4f} s | "
                         f"Train-Loss {t:.6e} | Val-Loss {v:.6e} | Scale {s}\n")
             if os.getppid() != parent and not spec.get("orphan_ok"):  # the watchdog is gone: do not linger

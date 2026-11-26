@@ -3,6 +3,7 @@ and checkpoints at a fast pace. Every test kills the fake's process group at tea
 
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -211,6 +212,44 @@ def test_walltime_stop_right_after_a_latest_checkpoint(fold):
     # stopped soon after a latest checkpoint: at most half an interval (10 epochs) later
     assert info.last_checkpoint_epoch is not None and info.last_epoch - info.last_checkpoint_epoch <= 10 // 2
     assert time.time() - t0 < 2.6 + 1.0  # before the deadline, plus the stop
+
+
+def test_slow_first_epoch_does_not_open_the_walltime_window_early(fold):
+    """Round 2 on the cluster: a resumed run's first epoch took 122 s (JIT) against ~26 s later. Estimated
+    from that epoch alone, the window (latest_interval x epoch time) was ~5x too wide, and its starting
+    checkpoint was never refreshed: the run stopped at an old latest, 8 epochs lost. Now the window opens
+    from the real pace, and the stop comes right after a checkpoint written inside it."""
+    t0 = time.time()
+    # first epoch logged as 5 s: with the old estimate the window was 10 x 5 = 50 s, i.e. open from the start
+    info, journal = run(fold, {"n_epochs": 10000, "epoch_s": 0.05, "logged_epoch_s": 0.1,
+                               "first_logged_epoch_s": 5.0, "val": [1e-2]},
+                        end_time=t0 + 4.6, walltime_margin=1.0)
+    stopped_after = time.time() - t0
+    assert info.reason == "walltime"
+    assert "right after the latest checkpoint" in journal
+    assert info.last_checkpoint_epoch is not None and info.last_epoch - info.last_checkpoint_epoch <= 10 // 2
+    assert stopped_after > 4.6 - 1.0 - 2 * 10 * 0.1  # not before the real window (deadline - 2 s here)
+    # every window the watchdog entered was computed from the real pace (10 x 0.1 s), never the JIT epoch (50 s)
+    windows = [float(w) for w in re.findall(r"within ([\d.]+) s of the walltime deadline", journal)]
+    assert windows and max(windows) <= 2 * 10 * 0.1
+
+
+def test_epoch_time_needs_two_epochs_after_the_first(tmp_path):
+    from hamilflow.training.supervisor.watchdog import _LogTail
+    log = tmp_path / "deepx.log"
+    tail = _LogTail(log)
+    lines = [f"[ x ] [train] Epoch {e} | Time {t} s | Train-Loss 1e-3 | Val-Loss 1e-3 | Scale 1.0\n"
+             for e, t in ((21, 122.4), (22, 26.0), (23, 26.2))]
+    for n, expected in ((1, None), (2, None), (3, 26.1)):
+        log.write_text("".join(lines[:n]))
+        tail.update()
+        assert tail.epoch_time == (None if expected is None else pytest.approx(expected))
+
+
+def test_journal_records_the_node_and_gpu(fold):
+    info, journal = run(fold, {"n_epochs": 3, "epoch_s": 0.01})
+    assert info.reason == "finished"
+    assert "node " in journal and "GPU: " in journal
 
 
 def test_hard_stop_on_nan_even_with_divergence_ask(fold):
