@@ -492,3 +492,57 @@ def test_final_run_dir_never_falls_back_to_a_run_without_a_best(tmp_path):
     (path / "_CHECKPOINT_METADATA").write_text("{}")
     member = {"logs": [str(only_latest / "deepx.log")], "runs": [{"round": 1, "run_dir": str(only_latest)}]}
     assert jobs.final_run_dir(member) is None  # inference loads best
+
+
+def _record(action, cause, reason="", overrides=None):
+    return {"action": action, "cause": cause, "reason": reason, "fold_overrides": overrides or {}}
+
+
+def test_summary_keeps_the_real_verdict_and_lists_every_trained_round():
+    """The shape of the first cluster test: member 1 crashed in round 1 (restart from scratch, no overrides),
+    then walltime resumes until max_rounds (6); member 2 was approved as overfit after round 5, then only a
+    placeholder record (cause "earlier") in round 6."""
+    resume = {"process": {"train": {"optimizer": {"init_learning_rate": 0.001},
+                                    "scheduler": {"min_learning_rate_scale": 1e-7, "patience": 8, "cooldown": 4,
+                                                  "rtol": 0.05}}}}
+    rounds = []
+    for n in range(1, 7):
+        m1 = (_record("resume", "crash") if n == 1 else
+              _record("give_up", "max_rounds", "max_rounds (6) reached") if n == 6 else
+              _record("resume", "walltime", overrides=resume))
+        m2 = (_record("done", "overfit", "overfitting: val/train grew from 1.02 to 1.36") if n == 5 else
+              _record("done", "earlier", "not trained this round") if n == 6 else
+              _record("resume", "walltime", overrides=resume))
+        rounds.append({"round": n, "members": {"1": m1, "2": m2}})
+    state = {
+        "status": "finished", "round": 6, "cycle_dir": "/x",
+        "base_overrides": {"process": {"train": {"optimizer": {"init_learning_rate": 1e-3},
+                                                 "scheduler": {"min_learning_rate_scale": 1e-7, "patience": 8,
+                                                               "cooldown": 4}}}},
+        "history": {"rounds": rounds, "start": {"1": {"continue_from": None, "fold_overrides": {}},
+                                                "2": {"continue_from": None, "fold_overrides": {}}}},
+        "members": {"1": {"logs": [], "runs": [{"round": n, "run_dir": None, "exit": None} for n in range(1, 7)]},
+                    "2": {"logs": [], "runs": [{"round": n, "run_dir": None, "exit": None} for n in range(1, 6)]}},
+    }
+    out = jobs.summary(state)["members"]
+    m2 = out["2"]
+    assert (m2["action"], m2["cause"], m2["decided_after_round"]) == ("done", "overfit", 5)
+    assert "1.36" in m2["reason"]
+    assert [s["round"] for s in m2["settings"]] == [1, 2, 3, 4, 5]
+    m1 = out["1"]
+    assert (m1["action"], m1["cause"], m1["decided_after_round"]) == ("give_up", "max_rounds", 6)
+    assert [(s["round"], s["action"]) for s in m1["settings"]] == [
+        (1, "start"), (2, "resume"), (3, "resume"), (4, "resume"), (5, "resume"), (6, "resume")]
+    expected = {"init_learning_rate": 1e-3, "min_learning_rate_scale": 1e-7, "patience": 8, "cooldown": 4,
+                "rtol": 0.05}
+    # round 1 (base + DeepH defaults) and round 2 (the crash restart repeated the start: no overrides) are complete
+    for s in m1["settings"]:
+        assert {k: s[k] for k in expected} == expected
+
+
+def test_proposal_note_points_to_the_cli(tmp_path):
+    from hamilflow.training.supervisor.policy import MemberAction, RoundDecision
+    decision = RoundDecision(round=1, actions={1: MemberAction(fold=1, action="done", cause="converged", reason="converged", status="converged")},
+                             shared_overrides={})
+    text = jobs.write_proposal(tmp_path / "proposal.toml", decision).read_text()
+    assert "hamilflow-train-supervisor approve" in text and "step" not in text

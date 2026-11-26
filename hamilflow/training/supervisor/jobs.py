@@ -25,7 +25,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +35,7 @@ from jobflow import Flow, OnMissing, Response, job
 from ..._logging import job_logging
 from ..ensemble import deep_merge, fold_dir, train_toml_name, write_ensemble_train_tomls
 from ..log_analysis import format_report, read_training_curve
+from ..write_train_infer_toml import ProcessTrainConfig
 from .policy import ExitInfo, RoundDecision, SupervisorConfig, append_history, new_history, round_decision
 from .watchdog import last_checkpoint_epoch, run_supervised
 
@@ -109,7 +110,7 @@ def _strip_none(value):
 
 def write_proposal(path, decision: RoundDecision) -> Path:
     """``round_{n}/proposal.toml``: per member, the action of the next round and its TOML overrides,
-    editable. Read back with ``read_proposal`` (step 6). A member without ``continue_from`` starts from
+    editable. Read back with ``read_proposal`` (``approve``). A member without ``continue_from`` starts from
     scratch; ``needs_approval`` marks the actions the policy asks about."""
     members = {}
     for j, action in sorted(decision.actions.items()):
@@ -122,7 +123,7 @@ def write_proposal(path, decision: RoundDecision) -> Path:
         "round": decision.round + 1,
         "after_round": decision.round,
         "note": ("Edit action (done, resume, retune, restart_lower_lr, give_up), continue_from and fold_overrides "
-                 "per member, then approve (hamilflow-train-supervisor approve, step 6). Members whose action "
+                 "per member, then run `hamilflow-train-supervisor approve <cycle> [--edit]`. Members whose action "
                  "is not resume/retune/restart_lower_lr are not trained."),
         "shared_overrides": decision.shared_overrides,
         "members": members,
@@ -272,23 +273,43 @@ def final_run_dir(member: Mapping) -> str | None:
     return None
 
 
+_SETTING_KEYS = {"optimizer": ("init_learning_rate",),
+                 "scheduler": ("min_learning_rate_scale", "patience", "cooldown", "rtol")}
+
+
+def _round_settings(base: Mapping, fold_overrides: Mapping | None) -> dict:
+    """The LR and scheduler settings a round's train.toml ran with: the shared overrides, then the member's."""
+    defaults = asdict(ProcessTrainConfig())  # DeepH defaults for the keys the overrides leave out (e.g. rtol)
+    train = deep_merge(deep_merge(defaults, base.get("process", {}).get("train", {})),
+                       (fold_overrides or {}).get("process", {}).get("train", {}))
+    return {k: train[part][k] for part, keys in _SETTING_KEYS.items() for k in keys if k in train.get(part, {})}
+
+
 def summary(state: Mapping) -> dict:
     """The final output: per member, its final run dir (``final_run_dir``), verdict and the settings of each
-    round it trained (rounds with a recorded run only). A member the user's ``finish`` stopped while it
-    would have trained on gets the action ``finished_by_user``."""
+    round it trained (rounds with a recorded run only, round 1 included).
+
+    The verdict is the member's last real decision: the placeholder records of the rounds after it stopped
+    (cause ``earlier``, "not trained this round") are skipped, so a member stopped as overfit in round 5
+    stays ``done / overfit``. A member the user's ``finish`` stopped while it would have trained on gets the
+    action ``finished_by_user``."""
     by_user = bool(state.get("finish_requested"))
+    base = state.get("base_overrides", {})
+    start = state["history"].get("start", {})
     members = {}
     for key, member in state["members"].items():
         records = [(r["round"], r["members"].get(key)) for r in state["history"]["rounds"]]
-        last = next((rec for _, rec in reversed(records) if rec is not None), None)
-        trained = {run["round"] for run in member["runs"]}
+        decided = [(n, rec) for n, rec in records if rec is not None and rec.get("cause") != "earlier"]
+        last_round, last = decided[-1] if decided else (None, None)
+        by_round = dict(records)
         settings = []
-        for n, rec in records:
-            if rec is None or rec["action"] not in ("resume", "retune", "restart_lower_lr") or n + 1 not in trained:
-                continue
-            train = rec["fold_overrides"].get("process", {}).get("train", {})
-            settings.append({"round": n + 1, "action": rec["action"],
-                             **{k: v for part in ("optimizer", "scheduler") for k, v in train.get(part, {}).items()}})
+        for n in sorted({run["round"] for run in member["runs"]}):
+            if n == 1:
+                action, overrides = "start", (start.get(key) or {}).get("fold_overrides")
+            else:
+                rec = by_round.get(n - 1) or {}
+                action, overrides = rec.get("action"), rec.get("fold_overrides")
+            settings.append({"round": n, "action": action, **_round_settings(base, overrides)})
         action = None if last is None else last["action"]
         if by_user and action in ("resume", "retune", "restart_lower_lr"):
             action = "finished_by_user"
@@ -298,6 +319,7 @@ def summary(state: Mapping) -> dict:
             "cause": None if last is None else last["cause"],
             "reason": None if last is None else last["reason"],
             "overfitting": False if last is None else last.get("overfitting", False),
+            "decided_after_round": last_round,
             "settings": settings,
         }
     return {"status": state["status"], "round": state["round"], "cycle_dir": state["cycle_dir"], "members": members}

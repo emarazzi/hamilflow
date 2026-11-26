@@ -271,7 +271,7 @@ def test_finish_while_running_lets_the_supervise_job_end_the_cycle(awaiting):
     final = json.loads(jobs.summary_path(awaiting).read_text())
     member = final["members"]["1"]
     assert member["action"] == "finished_by_user"
-    assert [s["round"] for s in member["settings"]] == [2]  # round 3 was decided but never ran
+    assert [s["round"] for s in member["settings"]] == [1, 2]  # round 1 included; round 3 was decided but never ran
 
 
 def test_summary_and_infer_tomls(tmp):
