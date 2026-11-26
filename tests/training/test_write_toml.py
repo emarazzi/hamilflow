@@ -161,3 +161,17 @@ def test_infer_rejects_training_graph_types(tmp_path, graph_type):
 def test_infer_rejects_training_only_keys():
     with pytest.raises(KeyError, match="common_orbital_types"):
         validate_keys(InferConfig, {"data": {"graph": {"common_orbital_types": "s1"}}})
+
+
+def test_integer_given_for_a_float_key_is_written_as_a_float(tmp_path):
+    # DeepH rejects `gaussian_basis_rmax = 8` (an int in TOML): float-typed keys must come out as floats
+    overrides = {
+        "model": {"net_type": "normal", "advanced": {"net_irreps": "8x0e", "gaussian_basis_rmax": 8}},
+        "process": {"train": {"optimizer": {"init_learning_rate": 1}, "scheduler": {"patience": 20}}},
+    }
+    path = write_train_toml(overrides, tmp_path)
+    text = path.read_text()
+    assert "gaussian_basis_rmax = 8.0" in text and "init_learning_rate = 1.0" in text
+    assert "patience = 20\n" in text  # int-typed keys stay ints
+    config = read_toml(path)
+    assert isinstance(config["model"]["advanced"]["gaussian_basis_rmax"], float)

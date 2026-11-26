@@ -208,11 +208,16 @@ def validate_keys(schema_cls, overrides: dict, path: str = "") -> None:
 
 def apply_overrides(instance, overrides: dict):
     instance = copy.deepcopy(instance)
+    hints = get_type_hints(type(instance))
     for key, value in overrides.items():
         current = getattr(instance, key)
         if isinstance(value, dict) and is_dataclass(current):
             setattr(instance, key, apply_overrides(current, value))
         else:
+            # DeepH rejects an int where it expects a float (e.g. gaussian_basis_rmax = 8), and TOML
+            # writes 8 as an int: store float-typed keys as floats
+            if hints.get(key) is float and isinstance(value, int) and not isinstance(value, bool):
+                value = float(value)
             setattr(instance, key, value)
     return instance
 
