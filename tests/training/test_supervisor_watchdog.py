@@ -149,7 +149,10 @@ def test_preexisting_run_dirs_are_ignored(fold):
 
 
 def test_trainer_crash_is_crashed(fold):
-    info, _ = run(fold, {"n_epochs": 50, "crash_at": 12})
+    # the crash exits right after epoch 12, with no tear-down: the epoch-10 checkpoint is then only 2 epochs
+    # old, and one younger than checkpoint_settle_s is (by design) not trusted. 0.05 s epochs against a
+    # 0.01 s settle keep it 10x older than that window (0.01 s epochs failed on CI: trusted 1, not 10)
+    info, _ = run(fold, {"n_epochs": 50, "crash_at": 12, "epoch_s": 0.05}, checkpoint_settle_s=0.01)
     assert (info.reason, info.return_code, info.last_epoch, info.last_checkpoint_epoch) == ("crashed", 1, 12, 10)
     assert info.run_dir is not None
 
