@@ -135,6 +135,14 @@ def write_proposal(path, decision: RoundDecision) -> Path:
     return path
 
 
+def save_proposal(path, proposal: Mapping) -> Path:
+    """Write a proposal dict as read by ``read_proposal`` (e.g. after ``approve --set``) back to TOML."""
+    data = _strip_none({**proposal, "members": {str(j): m for j, m in proposal["members"].items()}})
+    with open(path, "wb") as f:
+        tomli_w.dump(data, f)
+    return Path(path)
+
+
 def read_proposal(path) -> dict:
     """The proposal as ``{"round": n + 1, "shared_overrides": ..., "members": {fold: {"action",
     "continue_from" (None: from scratch), "fold_overrides", "live_actions", ...}}}``, validated."""
@@ -277,7 +285,7 @@ _SETTING_KEYS = {"optimizer": ("init_learning_rate",),
                  "scheduler": ("min_learning_rate_scale", "patience", "cooldown", "rtol")}
 
 
-def _round_settings(base: Mapping, fold_overrides: Mapping | None) -> dict:
+def round_settings(base: Mapping, fold_overrides: Mapping | None) -> dict:
     """The LR and scheduler settings a round's train.toml ran with: the shared overrides, then the member's."""
     defaults = asdict(ProcessTrainConfig())  # DeepH defaults for the keys the overrides leave out (e.g. rtol)
     train = deep_merge(deep_merge(defaults, base.get("process", {}).get("train", {})),
@@ -309,7 +317,7 @@ def summary(state: Mapping) -> dict:
             else:
                 rec = by_round.get(n - 1) or {}
                 action, overrides = rec.get("action"), rec.get("fold_overrides")
-            settings.append({"round": n, "action": action, **_round_settings(base, overrides)})
+            settings.append({"round": n, "action": action, **round_settings(base, overrides)})
         action = None if last is None else last["action"]
         if by_user and action in ("resume", "retune", "restart_lower_lr"):
             action = "finished_by_user"

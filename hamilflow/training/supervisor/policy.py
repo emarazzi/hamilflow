@@ -559,6 +559,27 @@ def _resume_overrides(curve, cfg: SupervisorConfig) -> dict:
     return _scheduler_overrides(curve, curve.lr0, cfg.min_scale / ratio)
 
 
+def plain_resume(fold: int, member_logs: Sequence, run_dir, exit_info: ExitInfo | Mapping | None,
+                 cfg: SupervisorConfig, shared_overrides: Mapping | None = None) -> tuple[dict, dict]:
+    """``(continue_from, fold_overrides)`` of a plain resume of ``run_dir``, as ``round_decision`` builds it:
+    load ``cfg.resume_from`` with the optimizer kept and the member's current settings, pinned to the
+    trusted checkpoint when a newer one on disk is not trusted. For ``approve --set J.action=resume``.
+    Raises ValueError when the run has no trusted latest checkpoint to resume from."""
+    cfg = resolve_min_scale(cfg, shared_overrides)
+    info = ExitInfo.from_dict(exit_info) if isinstance(exit_info, Mapping) else exit_info
+    logs = [p for p in member_logs if has_epochs(p)]
+    if run_dir is None or not logs:
+        raise ValueError(f"member {fold}: no run with logged epochs to resume")
+    if cfg.resume_from == "latest" and (info is None or not info.last_checkpoint_epoch):
+        raise ValueError(f"member {fold}: its last run has no trusted latest checkpoint; edit the proposal instead")
+    curve = analyze_training_logs([logs], **cfg.analysis_kwargs()).members[0].curve
+    action = MemberAction(fold, "resume", "user", "resume (set by the user)", "", "resume",
+                          continue_from={"previous_output_dir": str(run_dir), "load_model_type": cfg.resume_from},
+                          fold_overrides=_resume_overrides(curve, cfg))
+    _pin_checkpoint(action, info)
+    return action.continue_from, action.fold_overrides
+
+
 def _gate(action: MemberAction, cfg: SupervisorConfig, resume: MemberAction | None) -> MemberAction:
     """Apply the policy mode of ``action.policy``: ``auto`` keeps it, ``ask`` keeps it and flags it,
     ``off`` replaces it by what not acting means: the plain ``resume`` for the stop actions and a

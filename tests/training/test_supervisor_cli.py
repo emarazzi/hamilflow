@@ -119,10 +119,34 @@ def test_status_with_jobs_when_jobflow_remote_is_not_available(awaiting):
     assert code == cli.ERROR and "jobflow-remote not available" in out
 
 
-def test_review_prints_the_proposal_and_the_report(awaiting):
+def test_review_is_compact_by_default_and_full_on_request(awaiting):
     code, out = run_cli("review", awaiting)
-    assert code == cli.OK
-    assert "proposal.toml" in out and 'action = "retune"' in out and "---- LR reductions ----" in out
+    assert code == cli.OK, out
+    assert "round 1 → proposal for round 2: 2 members, 2 need approval (*)" in out
+    assert "1 *" in out and "retune" in out
+    assert "patience 120 → " in out and "NEW optimizer" in out and "from best of r1" in out
+    assert "noise-dominated onset" in out and "suggested (rtol" in out  # the evidence of a retune
+    assert f"approve {awaiting} --set 1.patience=15" in out and "lr " in out  # commands; the LR a retune starts at
+    assert "---- LR reductions ----" not in out and 'action = "retune"' not in out
+    code, full = run_cli("review", awaiting, "--full")
+    assert code == cli.OK and "proposal.toml" in full and 'action = "retune"' in full and "---- LR reductions" in full
+
+
+def test_review_one_member_and_json(awaiting):
+    code, out = run_cli("review", awaiting, "--member", 2)
+    assert code == cli.OK and "member 2 *: retune" in out and "member 1" not in out
+    code, out = run_cli("review", awaiting, "--json")
+    view = json.loads(out)
+    assert [m["fold"] for m in view["members"]] == [1, 2]
+    assert view["members"][0]["action"] == "retune" and view["members"][0]["spark"]
+    assert run_cli("review", awaiting, "--member", 9)[0] == cli.ERROR
+
+
+def test_sparkline():
+    from hamilflow.training.supervisor.review import sparkline
+    line = sparkline([1.0, 0.1, 0.01, 0.001], width=4)
+    assert line == "█▅▃▁" or (len(line) == 4 and line[0] == "█" and line[-1] == "▁")
+    assert sparkline([1.0]) == "" and sparkline([0.5, 0.5]) == "▁▁"
 
 
 def test_unknown_cycle_is_an_error(tmp_path):
@@ -363,3 +387,63 @@ def test_approve_names_the_members_left_out_of_an_edited_proposal(awaiting, tmp_
     assert not (fold_dir(awaiting, 2) / "train_r2.toml").exists()
     record = jobs.read_state(awaiting)["history"]["rounds"][0]["members"]["2"]
     assert (record["action"], record["cause"]) == ("done", "removed_by_user")
+
+
+# ---------------------------------- approve --set ----------------------------------
+
+
+def _scheduler(cycle, fold):
+    with open(fold_dir(cycle, fold) / "train_r2.toml", "rb") as f:
+        return tomllib.load(f)["process"]["train"]
+
+
+def test_approve_set_changes_values_and_records_them(awaiting):
+    code, out = run_cli("approve", awaiting, "--set", "1.patience=15", "--set", "1.cooldown=7", submit=Submitted())
+    assert code == cli.OK, out
+    assert "set 1.patience=15" in out and "patience 120 → 15" in out
+    train1, train2 = _scheduler(awaiting, 1), _scheduler(awaiting, 2)
+    assert (train1["scheduler"]["patience"], train1["scheduler"]["cooldown"]) == (15, 7)
+    assert train2["scheduler"]["patience"] != 15  # member 2 as proposed
+    record = jobs.read_state(awaiting)["history"]["rounds"][0]["members"]["1"]
+    assert record["fold_overrides"]["process"]["train"]["scheduler"]["patience"] == 15
+    proposal = jobs.read_proposal(jobs.round_dir(awaiting, 1) / "proposal.toml")
+    assert proposal["members"][1]["fold_overrides"]["process"]["train"]["scheduler"]["patience"] == 15
+
+
+def test_approve_set_action_resume_and_done(awaiting):
+    code, out = run_cli("approve", awaiting, "--set", "1.action=resume", "--set", "2.action=done", submit=Submitted())
+    assert code == cli.OK, out
+    train1 = _scheduler(awaiting, 1)
+    assert train1["continued"]["load_model_type"] == "latest" and train1["continued"]["new_optimizer"] is False
+    assert train1["scheduler"]["patience"] == 120  # its current settings, no retune
+    assert "/outputs_r1/" in train1["continued"]["previous_output_dir"]
+    assert not (fold_dir(awaiting, 2) / "train_r2.toml").exists()
+    record = jobs.read_state(awaiting)["history"]["rounds"][0]["members"]
+    assert (record["1"]["action"], record["2"]["action"], record["2"]["cause"]) == ("resume", "done", "user")
+
+
+@pytest.mark.parametrize(("sets", "message"), [
+    (["1.patiense=3"], "unknown key"),
+    (["1.patience=abc"], "must be a int"),
+    (["patience=3"], "expected J.key=value"),
+    (["9.patience=3"], "not a member"),
+    (["1.action=retune"], "edit the proposal"),
+    (["2.action=done", "2.patience=5"], "does not train"),
+])
+def test_approve_set_rejects_bad_input_and_changes_nothing(awaiting, sets, message):
+    before = jobs.read_state(awaiting)
+    proposal_path = jobs.round_dir(awaiting, 1) / "proposal.toml"
+    proposal_before = proposal_path.read_text()
+    argv = [x for item in sets for x in ("--set", item)]
+    submit = Submitted()
+    code, out = run_cli("approve", awaiting, *argv, submit=submit)
+    assert code == cli.ERROR and message in out
+    assert jobs.read_state(awaiting) == before and proposal_path.read_text() == proposal_before and not submit.calls
+
+
+def test_approve_set_dry_run_leaves_the_proposal(awaiting):
+    proposal_path = jobs.round_dir(awaiting, 1) / "proposal.toml"
+    before = proposal_path.read_text()
+    code, out = run_cli("approve", awaiting, "--set", "1.patience=15", "--dry-run", submit=Submitted())
+    assert code == cli.OK and "patience 120 → 15" in out and "dry run" in out
+    assert proposal_path.read_text() == before

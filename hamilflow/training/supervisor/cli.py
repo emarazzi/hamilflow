@@ -5,8 +5,8 @@ current logs, writes small files, and makes at most one jobflow-remote call (``s
 job states, ``approve`` submits a flow). Exit codes: 0 ok, 1 error, 2 refused.
 
     hamilflow-train-supervisor status  <cycle_dir> [--jobs]
-    hamilflow-train-supervisor review  <cycle_dir>
-    hamilflow-train-supervisor approve <cycle_dir> [--edit] [--dry-run] [--resubmit]
+    hamilflow-train-supervisor review  <cycle_dir> [--member J] [--full] [--json]
+    hamilflow-train-supervisor approve <cycle_dir> [--set J.key=value ...] [--edit] [--dry-run] [--resubmit]
     hamilflow-train-supervisor stop    <cycle_dir> [--member J] [--clear]
     hamilflow-train-supervisor finish  <cycle_dir> [--force]
     hamilflow-train-supervisor summary <cycle_dir> [--json] [--infer-tomls overrides.json [--infer-name infer]]
@@ -21,12 +21,13 @@ import re
 import shlex
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from ..ensemble import deep_merge, fold_dir, train_outputs_dir, write_ensemble_infer_tomls, write_ensemble_train_tomls
 from ..write_train_infer_toml import TrainConfig, validate_keys
-from . import jobs
+from . import jobs, review
+from .policy import SupervisorConfig, plain_resume
 from .watchdog import find_new_run_dir
 
 OK, ERROR, REFUSED = 0, 1, 2
@@ -160,13 +161,98 @@ def cmd_review(args, out) -> int:
     cycle_dir = Path(args.cycle_dir)
     state = jobs.read_state(cycle_dir)
     path = _pending_proposal(cycle_dir, state)
-    print(f"# {path}", file=out)
-    print(path.read_text(), file=out)
-    report = path.parent / "report.txt"
-    if report.is_file():
-        print(f"# {report}", file=out)
-        print(report.read_text(), file=out)
+    if args.full:
+        print(f"# {path}", file=out)
+        print(path.read_text(), file=out)
+        report = path.parent / "report.txt"
+        if report.is_file():
+            print(f"# {report}", file=out)
+            print(report.read_text(), file=out)
+        return OK
+    view = review.build_review(cycle_dir, state, jobs.read_proposal(path))
+    if args.member is not None:
+        if str(args.member) not in state["members"]:
+            raise ValueError(f"member {args.member} is not a member of this cycle")
+        view["members"] = [m for m in view["members"] if m["fold"] == args.member]
+    if args.json:
+        print(json.dumps(view, indent=1), file=out)
+    else:
+        print(review.format_review(view, cycle=args.cycle_dir), file=out)
     return OK
+
+
+# approve --set: J.key=value, with short names for the usual scheduler/optimizer keys
+_SET_KEYS = {"patience": ("scheduler", "patience", int), "cooldown": ("scheduler", "cooldown", int),
+             "rtol": ("scheduler", "rtol", float), "factor": ("scheduler", "factor", float),
+             "lr": ("optimizer", "init_learning_rate", float),
+             "min_scale": ("scheduler", "min_learning_rate_scale", float)}
+_SET_RE = re.compile(r"(\d+)\.([A-Za-z_][\w.]*)=(.+)")
+
+
+def _parse_value(raw: str):
+    if raw.lower() in ("true", "false"):
+        return raw.lower() == "true"
+    for cast in (int, float):
+        try:
+            return cast(raw)
+        except ValueError:
+            pass
+    return raw
+
+
+def _set_nested(d: dict, keys: Sequence[str], value) -> None:
+    for key in keys[:-1]:
+        d = d.setdefault(key, {})
+        if not isinstance(d, dict):
+            raise TypeError(f"cannot set {'.'.join(keys)}: {key} is not a table")
+    d[keys[-1]] = value
+
+
+def _apply_sets(proposal: dict, sets: Sequence[str], state: Mapping, out) -> None:
+    """Apply ``--set J.key=value`` items in order. Keys: ``action`` (resume, done, give_up), the short
+    names in ``_SET_KEYS``, or a full train.toml path (``process.train.scheduler.patience``)."""
+    cfg = SupervisorConfig.from_dict(state["cfg"])
+    for item in sets:
+        match = _SET_RE.fullmatch(item.strip())
+        if match is None:
+            raise ValueError(f"--set {item!r}: expected J.key=value, e.g. 1.patience=15 or 2.action=resume")
+        j, key, raw = int(match.group(1)), match.group(2), match.group(3)
+        if str(j) not in state["members"]:
+            raise ValueError(f"--set {item!r}: member {j} is not a member of this cycle")
+        member = proposal["members"].setdefault(j, {"action": "done", "cause": "user", "reason": "",
+                                                    "status": "", "fold_overrides": {}, "live_actions": {}})
+        if key == "action":
+            if raw in ("done", "give_up"):
+                member.update(action=raw, cause="user", reason=f"{raw} (set by the user)",
+                              continue_from=None, fold_overrides={})
+            elif raw == "resume":
+                runs = [r for r in state["members"][str(j)]["runs"] if r.get("run_dir")]
+                last = runs[-1] if runs else {}
+                cont, overrides = plain_resume(j, state["members"][str(j)]["logs"], last.get("run_dir"),
+                                               last.get("exit"), cfg, state["base_overrides"])
+                member.update(action="resume", cause="user", reason="resume (set by the user)",
+                              continue_from=cont, fold_overrides=overrides, live_actions={})
+            else:
+                raise ValueError(f"--set {item!r}: action can be resume, done or give_up here; for a retune or "
+                                 "a restart edit the proposal (--edit)")
+        elif key in _SET_KEYS or key.startswith(("process.", "data.", "model.", "system.")):
+            if member["action"] not in _TRAINS:
+                raise ValueError(f"--set {item!r}: member {j} does not train ({member['action']}); set "
+                                 f"{j}.action=resume first")
+            if key in _SET_KEYS:
+                part, name, cast = _SET_KEYS[key]
+                try:
+                    value = cast(raw)
+                except ValueError:
+                    raise ValueError(f"--set {item!r}: {key} must be a {cast.__name__}") from None
+                _set_nested(member.setdefault("fold_overrides", {}), ["process", "train", part, name], value)
+            else:
+                _set_nested(member.setdefault("fold_overrides", {}), key.split("."), _parse_value(raw))
+        else:
+            raise ValueError(f"--set {item!r}: unknown key {key!r}; use action, {', '.join(_SET_KEYS)} or a "
+                             "full train.toml path such as process.train.scheduler.patience")
+        member["needs_approval"] = False
+        print(f"set {item}", file=out)
 
 
 def _validate(proposal, state) -> None:
@@ -216,6 +302,8 @@ def cmd_approve(args, out, submit: Callable | None = None, editor_env: dict | No
     proposal = jobs.read_proposal(path)
     if proposal.get("after_round") != state["round"]:
         raise Refused(f"{path} is for round {proposal.get('after_round')}, state.json awaits round {state['round']}")
+    if args.set:
+        _apply_sets(proposal, args.set, state, out)
     _validate(proposal, state)
     next_round = state["round"] + 1
     pending = sorted(j for j, m in proposal["members"].items() if m["action"] in _TRAINS)
@@ -226,13 +314,18 @@ def cmd_approve(args, out, submit: Callable | None = None, editor_env: dict | No
     fold_overrides = {j: proposal["members"][j]["fold_overrides"] for j in pending}
     live_actions = {j: proposal["members"][j]["live_actions"] for j in pending}
     print(f"round {next_round}: members {pending}", file=out)
+    views = {m["fold"]: m for m in review.build_review(cycle_dir, state, proposal)["members"]}
     for j in pending:
-        print(f"  member {j}: {proposal['members'][j]['action']}", file=out)
+        view = views[j]
+        changes = "; ".join(view["changes"]) if view["changes"] else "settings unchanged"
+        print(f"  member {j}: {proposal['members'][j]['action']}, starts {view['start']}; {changes}", file=out)
     if removed:
         print(f"  members {removed} are not in the proposal: treated as not training (done)", file=out)
     if args.dry_run:
         print("dry run: no TOML written, nothing submitted", file=out)
         return OK
+    if args.set:  # keep the proposal file what was approved
+        jobs.save_proposal(path, proposal)
 
     write_ensemble_train_tomls(
         deep_merge(state["base_overrides"], proposal.get("shared_overrides", {})), state["cycle_dir"], state["k"],
@@ -243,6 +336,7 @@ def cmd_approve(args, out, submit: Callable | None = None, editor_env: dict | No
     for j, member in proposal["members"].items():
         decided = record["members"].setdefault(str(j), {})
         decided.update({key: member[key] for key in ("action", "continue_from", "fold_overrides", "live_actions")})
+        decided.update({key: member[key] for key in ("cause", "reason") if member.get(key)})  # e.g. --set
         decided["needs_approval"], decided["approved"] = False, True
     for j in removed:
         decided = record["members"].setdefault(str(j), {})
@@ -375,10 +469,16 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="the round, each member's state, alerts and STOP files")
     p.add_argument("cycle_dir")
     p.add_argument("--jobs", action="store_true", help="also the jobflow-remote job states (reads the DB)")
-    p = sub.add_parser("review", help="print the pending proposal and the round's report")
+    p = sub.add_parser("review", help="the pending proposal: per member what is proposed, why, and what changes")
     p.add_argument("cycle_dir")
+    p.add_argument("--member", type=int, help="this member only")
+    p.add_argument("--full", action="store_true", help="the raw proposal.toml and the whole analysis report")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("approve", help="write the next round's TOMLs from the proposal and submit it")
     p.add_argument("cycle_dir")
+    p.add_argument("--set", action="append", metavar="J.KEY=VALUE",
+                   help="change member J before approving: action=resume|done|give_up, patience, cooldown, rtol, "
+                        "factor, lr, min_scale, or a full train.toml path; repeatable, applied in order")
     p.add_argument("--edit", action="store_true", help="open the proposal in $EDITOR first")
     p.add_argument("--dry-run", action="store_true", help="check and show, write and submit nothing")
     p.add_argument("--resubmit", action="store_true",

@@ -63,11 +63,22 @@ members' logs what each member does next. See
 ```bash
 python examples/training/supervised_training.py          # writes round 1 and submits the flow
 hamilflow-train-supervisor status  CYCLE_DIR [--jobs]    # rounds, members, epochs/LR, alerts
-hamilflow-train-supervisor review  CYCLE_DIR             # a pending proposal and the round's report
-hamilflow-train-supervisor approve CYCLE_DIR [--edit]    # writes the next round and submits it
+hamilflow-train-supervisor review  CYCLE_DIR             # what is proposed per member, why, what changes
+hamilflow-train-supervisor approve CYCLE_DIR [--set 1.patience=15 ...] [--edit]   # writes the next round, submits
 hamilflow-train-supervisor stop    CYCLE_DIR [--member J]
 hamilflow-train-supervisor summary CYCLE_DIR --infer-tomls infer_overrides.json
 ```
+
+**Reviewing a proposal.** `review` prints one line per member (proposed action, `*` if it needs your
+approval, epochs, best val, LR scale, reductions, val/train and a val-loss sparkline), then for each member
+where its next run starts (e.g. `from best of r1, NEW optimizer`) and only the settings that change
+(`patience 120 → 25; cooldown 50 → 12; lr 0.002 (carried over)`), the evidence behind the decisions that
+need approval (the overfit trend per LR stage, or a retune's onset and suggested patience), and
+ready-to-copy commands. `review --member J` shows one member, `--json` the same as JSON, `--full` the raw
+`proposal.toml` and the whole analysis report. `approve --set J.key=value` (repeatable, applied in order)
+changes the proposal before approving: `action=resume|done|give_up` (resume fills in a plain resume from the
+member's last run), `patience`, `cooldown`, `rtol`, `factor`, `lr`, `min_scale`, or a full train.toml path
+(`process.train.scheduler.patience`). It is validated like `--edit` and saved to `proposal.toml`.
 
 **Stopping.** Never `scancel` or `jf job cancel` a train job: jobflow then marks it FAILED and the chain
 breaks. Use `hamilflow-train-supervisor stop` (it writes `STOP_ROUND` or `STOP_J`, obeyed within `poll_s`,
