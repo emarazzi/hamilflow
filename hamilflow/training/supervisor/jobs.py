@@ -319,13 +319,14 @@ def summary(state: Mapping) -> dict:
                 action, overrides = rec.get("action"), rec.get("fold_overrides")
             settings.append({"round": n, "action": action, **round_settings(base, overrides)})
         action = None if last is None else last["action"]
+        reason = None if last is None else last["reason"]
         if by_user and action in ("resume", "retune", "restart_lower_lr"):
-            action = "finished_by_user"
+            action, reason = "finished_by_user", f"finished by the user; would have been: {action} ({reason})"
         members[key] = {
             "final_run_dir": final_run_dir(member),
             "action": action,
             "cause": None if last is None else last["cause"],
-            "reason": None if last is None else last["reason"],
+            "reason": reason,
             "overfitting": False if last is None else last.get("overfitting", False),
             "decided_after_round": last_round,
             "settings": settings,

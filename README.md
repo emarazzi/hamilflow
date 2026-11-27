@@ -77,6 +77,12 @@ files follow, then the commands for what can be done next. `--jobs` adds the job
 line per round, and the fix for a FAILED or REMOTE_ERROR job; `--json` the same as JSON. It only reads the
 ends of the current logs and the watchdog journals.
 
+**The end of a cycle.** `summary` prints one line per member: its verdict in words (converged, stopped:
+overfitting, max rounds reached, finished by the user, …), the rounds it trained, its epochs and best val,
+and its final model (the run holding the lineage's best val, relative to the cycle); then each member's
+settings per round, the first in full and only what changed after it (`r1 start: lr 0.001, patience 300, …
+· r2 retune: patience 15, cooldown 7 · r3 resume`). `--json` is what `summary.json` holds.
+
 **Reviewing a proposal.** `review` prints one line per member (proposed action, `*` if it needs your
 approval, epochs, best val, LR scale, reductions, val/train and a val-loss sparkline), then for each member
 where its next run starts (e.g. `from best of r1, NEW optimizer`) and only the settings that change

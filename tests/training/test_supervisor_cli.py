@@ -389,7 +389,12 @@ def test_summary_and_infer_tomls(tmp):
     cycle = supervised(tmp, actions={"retune": "auto"}, max_rounds=2)
     assert jobs.read_state(cycle)["status"] == "finished"
     code, out = run_cli("summary", cycle)
-    assert code == cli.OK and "member 1: give_up (max_rounds)" in out and "round 2 retune" in out
+    assert code == cli.OK, out
+    assert "cycle1: finished after round 2 of 2" in out
+    row = next(line for line in out.splitlines() if line.strip().startswith("1 "))
+    assert "max rounds reached" in row and " 2 " in row and "(best)" in row and "outputs_r" in row
+    assert "1: r1 start: lr 0.002, patience 120, cooldown 50" in out and "r2 retune: patience" in out
+    assert "--infer-tomls overrides.json" in out and "warm_start_from" in out
     code, out = run_cli("summary", cycle, "--json")
     final = json.loads(out)
     run_1 = final["members"]["1"]["final_run_dir"]
@@ -534,3 +539,27 @@ def test_approve_set_dry_run_leaves_the_proposal(awaiting):
     code, out = run_cli("approve", awaiting, "--set", "1.patience=15", "--dry-run", submit=Submitted())
     assert code == cli.OK and "patience 120 → 15" in out and "dry run" in out
     assert proposal_path.read_text() == before
+
+
+def test_summary_settings_line_and_verdicts():
+    from hamilflow.training.supervisor.status import _settings_line, verdict
+    base = {"init_learning_rate": 1e-3, "patience": 8, "cooldown": 4, "rtol": 0.05}
+    settings = [{"round": 1, "action": "start", **base}] + [{"round": n, "action": "resume", **base}
+                                                             for n in range(2, 6)]
+    settings.append({"round": 6, "action": "retune", **base, "patience": 15, "cooldown": 7})
+    settings.append({"round": 7, "action": "resume", **base, "patience": 15, "cooldown": 7})
+    assert _settings_line(settings) == ("r1 start: lr 0.001, patience 8, cooldown 4, rtol 0.05 · r2–r5 resume · "
+                                        "r6 retune: patience 15, cooldown 7 · r7 resume")
+    assert verdict({"action": "done", "cause": "overfit"}) == "stopped: overfitting"
+    assert verdict({"action": "finished_by_user", "cause": "stopped"}) == "finished by the user"
+    assert verdict({"action": "give_up", "cause": "weird"}) == "give_up (weird)"
+
+
+def test_summary_of_a_cycle_finished_by_the_user_says_so(awaiting):
+    run_cli("approve", awaiting, submit=Submitted())
+    (jobs.supervisor_dir(awaiting) / "FINISH").write_text("")
+    state = jobs.read_state(awaiting)
+    state["finish_requested"], state["status"] = True, "finished"
+    final = jobs.summary(state)["members"]["1"]
+    assert final["action"] == "finished_by_user"
+    assert final["reason"].startswith("finished by the user; would have been: retune")

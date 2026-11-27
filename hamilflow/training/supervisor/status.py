@@ -128,6 +128,10 @@ def build_status(cycle_dir, state: Mapping, now: float | None = None) -> dict:
                 doing = "stopping" if "stopping" in journal else "training"
         elif proposal is not None:
             doing = "waiting for approval"
+        elif record and state["status"] == "finished" and state.get("finish_requested") \
+                and record["action"] in ("resume", "retune", "restart_lower_lr"):
+            doing = "finished by user"
+            record = {**record, "action": "finished", "cause": "user"}
         else:
             doing = _ENDED.get(record["action"], "not training") if record else "-"
         stop_in = None
@@ -142,14 +146,16 @@ def build_status(cycle_dir, state: Mapping, now: float | None = None) -> dict:
         members.append({
             "fold": j, "doing": doing, "run_round": jobs_round_of(run), "decided": decided, "proposed": proposed,
             "stop_in_s": stop_in, "alert": journal.get("alert") or _alert_file(here, fold),
-            "stop_file": (here / f"STOP_{fold}").exists(), **numbers,
+            "stop_file": state["status"] == "running" and (here / f"STOP_{fold}").exists(), **numbers,
         })
     return {
         "name": cycle_dir.resolve().name, "cycle_dir": str(cycle_dir), "round": n,
         "max_rounds": state["cfg"].get("max_rounds"), "status": state["status"],
-        "finish_requested": bool(state.get("finish_requested")) or jobs.finish_path(cycle_dir).exists(),
+        "finish_requested": state["status"] != "finished" and (bool(state.get("finish_requested"))
+                                                             or jobs.finish_path(cycle_dir).exists()),
         "finish_file": jobs.finish_path(cycle_dir).exists() and state["status"] == "running",
-        "stop_round": (here / "STOP_ROUND").exists(), "proposal": proposal is not None, "members": members,
+        "stop_round": state["status"] == "running" and (here / "STOP_ROUND").exists(),
+        "proposal": proposal is not None, "members": members,
     }
 
 
@@ -213,4 +219,99 @@ def format_status(view: Mapping, cycle: str = "<cycle>", jobs_lines: list[str] |
         width = max(len(label) for label, _ in steps) + 1
         out += ["", "next:"] + [f"  {label + ':':<{width + 1}}hamilflow-train-supervisor {cmd.replace('<cycle>', cycle)}"
                                 for label, cmd in steps]
+    return "\n".join(out)
+
+
+# ---------------------------------- summary ----------------------------------
+
+_VERDICTS = {
+    ("done", "converged"): "converged",
+    ("done", "overfit"): "stopped: overfitting",
+    ("done", "user"): "done (set by the user)",
+    ("done", "removed_by_user"): "done (removed from the proposal)",
+    ("give_up", "max_rounds"): "max rounds reached",
+    ("give_up", "crash"): "gave up after crashes",
+    ("give_up", "diverged"): "gave up: diverged",
+    ("give_up", "finished"): "ended without converging",
+}
+_SETTING_LABELS = (("init_learning_rate", "lr"), ("patience", "patience"), ("cooldown", "cooldown"),
+                   ("rtol", "rtol"), ("min_learning_rate_scale", "min scale"))
+
+
+def verdict(member: Mapping) -> str:
+    if member["action"] == "finished_by_user":
+        return "finished by the user"
+    return _VERDICTS.get((member["action"], member["cause"]), f"{member['action']} ({member['cause']})")
+
+
+def _settings_line(settings: list[dict]) -> str:
+    """``r1 start: lr 0.001, patience 20, … · r2 retune: patience 15, cooldown 7 · r3 resume``: the first
+    round in full, then only what changed."""
+    parts, before = [], {}  # [first round, last round, action, changes]
+    for entry in settings:
+        changed = [f"{label} {_fmt(entry[key])}" for key, label in _SETTING_LABELS
+                   if key in entry and before.get(key) != entry[key]]
+        if not changed and parts and not parts[-1][3] and parts[-1][2] == entry["action"]:
+            parts[-1][1] = entry["round"]  # r2-r6 resume: a run of rounds that changed nothing
+        else:
+            parts.append([entry["round"], entry["round"], entry["action"], changed])
+        before = entry
+    return " · ".join(f"r{a}{f'–r{b}' if b != a else ''} {action}" + (f": {', '.join(ch)}" if ch else "")
+                      for a, b, action, ch in parts)
+
+
+def _fmt(value) -> str:
+    return f"{value:.3g}" if isinstance(value, float) else str(value)
+
+
+def build_summary_view(cycle_dir, state: Mapping, final: Mapping) -> dict:
+    """The summary (``jobs.summary``) plus, per member, the epochs and best val of its lineage."""
+    from ..log_analysis import has_epochs, read_training_curve
+
+    cycle_dir = Path(cycle_dir)
+    members = []
+    for fold, member in sorted(final["members"].items(), key=lambda kv: int(kv[0])):
+        logs = [p for p in state["members"][fold]["logs"] if Path(p).is_file() and has_epochs(p)]
+        epochs = best = None
+        if logs:
+            try:
+                curve = read_training_curve(logs)
+                epochs, best = len(curve.val), float(np.nanmin(curve.val))
+            except (ValueError, OSError):
+                pass
+        run = member["final_run_dir"]
+        shown = run
+        if run is not None:
+            try:
+                shown = str(Path(run).relative_to(state["cycle_dir"]))
+            except ValueError:
+                pass
+        members.append({"fold": int(fold), "verdict": verdict(member), "reason": member["reason"],
+                        "rounds": len(member["settings"]), "epochs": epochs, "best_val": best,
+                        "final_model": shown, "settings": _settings_line(member["settings"])})
+    return {"name": cycle_dir.resolve().name, "status": final["status"], "round": final["round"],
+            "max_rounds": state["cfg"].get("max_rounds"), "members": members}
+
+
+def format_summary(view: Mapping, cycle: str = "<cycle>") -> str:
+    of = f" of {view['max_rounds']}" if view.get("max_rounds") else ""
+    if view["status"] == "finished":
+        head = f"{view['name']}: finished after round {view['round']}{of}"
+    else:
+        head = f"{view['name']}: round {view['round']}{of}, {view['status'].replace('_', ' ')} (verdicts so far)"
+    out = [head, ""]
+    width = max([len(m["verdict"]) for m in view["members"]] + [7])
+    out.append(f"  {'member':6s}  {'verdict':{width}s}  {'rounds':>6s}  {'epochs':>6s}  {'best val':>8s}  final model")
+    for m in view["members"]:
+        epochs = "-" if m["epochs"] is None else str(m["epochs"])
+        best = "-" if m["best_val"] is None else f"{m['best_val']:.2e}"
+        model = "none (no complete best checkpoint)" if m["final_model"] is None else f"{m['final_model']} (best)"
+        out.append(f"  {m['fold']:<6d}  {m['verdict']:{width}s}  {m['rounds']:>6d}  {epochs:>6s}  {best:>8s}  {model}")
+    out += ["", "settings per round (changes only after the first):"]
+    out += [f"  {m['fold']}: {m['settings']}" for m in view["members"]]
+    steps = [("infer TOMLs", "summary <cycle> --infer-tomls overrides.json"), ("as JSON", "summary <cycle> --json")]
+    width = max(len(label) for label, _ in steps) + 1
+    out += ["", "next:"] + [f"  {label + ':':<{width + 1}}hamilflow-train-supervisor {cmd.replace('<cycle>', cycle)}"
+                            for label, cmd in steps]
+    out.append(f"  {'next cycle:':<{width + 1}}make(new_cycle, continue_from=warm_start_from(\"{cycle}\"))  (python)")
     return "\n".join(out)

@@ -403,12 +403,8 @@ def cmd_summary(args, out) -> int:
     if args.json:
         print(json.dumps(final, indent=1), file=out)
     else:
-        print(f"{final['cycle_dir']}: round {final['round']}, {final['status']}", file=out)
-        for fold, member in sorted(final["members"].items(), key=lambda kv: int(kv[0])):
-            print(f"  member {fold}: {member['action']} ({member['cause']}) -> {member['final_run_dir']}", file=out)
-            for settings in member["settings"]:
-                shown = {k: v for k, v in settings.items() if k not in ("round", "action")}
-                print(f"    round {settings['round']} {settings['action']}: {shown}", file=out)
+        view = status_view.build_summary_view(cycle_dir, state, final)
+        print(status_view.format_summary(view, cycle=args.cycle_dir), file=out)
     if args.infer_tomls is None:
         return OK
     overrides = json.loads(Path(args.infer_tomls).read_text())
