@@ -162,6 +162,13 @@ def test_status_jobs_are_grouped_per_round(awaiting):
     assert "r2  supervise WAITING, train 1 RUNNING, train 2 FAILED" in out
     assert "store_inputs etc.: COMPLETED 1" in out
     assert "train_member_2_r2 [5] FAILED: the job itself died" in out
+    assert out.index("jobs:") < out.index("next:") and "status " + str(awaiting) + " --jobs" not in out
+
+
+def test_status_names_the_cycle_when_given_as_dot(awaiting, monkeypatch):
+    monkeypatch.chdir(awaiting)
+    code, out = run_cli("status", ".")
+    assert code == cli.OK and out.startswith("cycle1: round 1 of 10")
 
 
 def test_status_with_jobs_points_out_a_failed_supervise_job_and_remote_errors(awaiting):

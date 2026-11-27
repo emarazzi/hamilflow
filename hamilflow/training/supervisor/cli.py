@@ -68,10 +68,12 @@ def cmd_status(args, out, job_controller=_job_controller) -> int:
             view["jobs"] = _job_rows(state, job_controller)
         print(json.dumps(view, indent=1), file=out)
         return OK
-    print(status_view.format_status(view, cycle=args.cycle_dir), file=out)
-    if args.jobs:
-        return _print_jobs(state, out, job_controller)
-    return OK
+    if not args.jobs:
+        print(status_view.format_status(view, cycle=args.cycle_dir), file=out)
+        return OK
+    lines, code = _jobs_lines(state, job_controller)
+    print(status_view.format_status(view, cycle=args.cycle_dir, jobs_lines=lines), file=out)
+    return code
 
 
 _JOB_NAME = re.compile(r"^(?:train_member_(?P<fold>\d+)|supervise_round)_r(?P<round>\d+)$")
@@ -90,12 +92,11 @@ def _job_rows(state, job_controller) -> list[dict] | str:
             for i in infos]
 
 
-def _print_jobs(state, out, job_controller) -> int:
-    """The jobs per round on one line each, then the way out of a stuck one."""
+def _jobs_lines(state, job_controller) -> tuple[list[str], int]:
+    """The jobs per round on one line each, then the way out of a stuck one; and the exit code."""
     rows = _job_rows(state, job_controller)
     if isinstance(rows, str):
-        print(f"\njobs: {rows}", file=out)
-        return ERROR
+        return [f"jobs: {rows}"], ERROR
     by_round, other, problems = {}, {}, []
     for row in rows:
         match = _JOB_NAME.match(row["name"])
@@ -113,14 +114,11 @@ def _print_jobs(state, out, job_controller) -> int:
         elif row["state"] == "REMOTE_ERROR":
             problems.append(f"{row['name']} [{row['db_id']}] REMOTE_ERROR (files not transferred, worker "
                             f"unreachable?): `jf job retry {row['db_id']}`")
-    print("\njobs:", file=out)
-    for n in sorted(by_round):
-        print(f"  r{n}  {', '.join(sorted(by_round[n]))}", file=out)
+    lines = ["jobs:"] + [f"  r{n}  {', '.join(sorted(by_round[n]))}" for n in sorted(by_round)]
     if other:
-        print(f"  store_inputs etc.: {', '.join(f'{k} {v}' for k, v in sorted(other.items()))}", file=out)
-    for problem in problems:
-        print(f"  ! {problem}", file=out)
-    return OK
+        lines.append(f"  store_inputs etc.: {', '.join(f'{k} {v}' for k, v in sorted(other.items()))}")
+    lines += [f"  ! {problem}" for problem in problems]
+    return lines, OK
 
 
 def cmd_review(args, out) -> int:

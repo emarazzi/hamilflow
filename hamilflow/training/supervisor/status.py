@@ -142,7 +142,7 @@ def build_status(cycle_dir, state: Mapping, now: float | None = None) -> dict:
             "stop_file": (here / f"STOP_{fold}").exists(), **numbers,
         })
     return {
-        "name": cycle_dir.name, "cycle_dir": str(cycle_dir), "round": n,
+        "name": cycle_dir.resolve().name, "cycle_dir": str(cycle_dir), "round": n,
         "max_rounds": state["cfg"].get("max_rounds"), "status": state["status"],
         "finish_requested": bool(state.get("finish_requested")) or jobs.finish_path(cycle_dir).exists(),
         "finish_file": jobs.finish_path(cycle_dir).exists() and state["status"] == "running",
@@ -163,7 +163,8 @@ def _alert_file(here: Path, fold: str) -> str | None:
     return f"{lines.get('status', '')}: {lines.get('reason', '')}".strip(": ")
 
 
-def format_status(view: Mapping, cycle: str = "<cycle>") -> str:
+def format_status(view: Mapping, cycle: str = "<cycle>", jobs_lines: list[str] | None = None) -> str:
+    """``jobs_lines``: the ``--jobs`` block, printed before the next steps (which then skip ``--jobs``)."""
     of = f" of {view['max_rounds']}" if view.get("max_rounds") else ""
     state = view["status"].replace("_", " ")
     finish = " (finish requested: ends after this round)" if view["finish_requested"] else ""
@@ -198,9 +199,13 @@ def format_status(view: Mapping, cycle: str = "<cycle>") -> str:
         steps += [("see the proposal", "review <cycle>"), ("approve it", "approve <cycle> [--set J.key=value]")]
     elif view["status"] == "running":
         steps += [("stop the round", "stop <cycle>"), ("stop one member", "stop <cycle> --member J"),
-                  ("end after this round", "finish <cycle>"), ("job states", "status <cycle> --jobs")]
+                  ("end after this round", "finish <cycle>")]
+        if jobs_lines is None:
+            steps.append(("job states", "status <cycle> --jobs"))
     elif view["status"] == "finished":
         steps += [("final models", "summary <cycle> [--infer-tomls overrides.json]")]
+    if jobs_lines:
+        out += [""] + jobs_lines
     if steps:
         width = max(len(label) for label, _ in steps) + 1
         out += ["", "next:"] + [f"  {label + ':':<{width + 1}}hamilflow-train-supervisor {cmd.replace('<cycle>', cycle)}"
