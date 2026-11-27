@@ -62,12 +62,20 @@ members' logs what each member does next. See
 
 ```bash
 python examples/training/supervised_training.py          # writes round 1 and submits the flow
-hamilflow-train-supervisor status  CYCLE_DIR [--jobs]    # rounds, members, epochs/LR, alerts
+hamilflow-train-supervisor status  CYCLE_DIR [--jobs]    # what each member is doing now, alerts, STOP files
 hamilflow-train-supervisor review  CYCLE_DIR             # what is proposed per member, why, what changes
 hamilflow-train-supervisor approve CYCLE_DIR [--set 1.patience=15 ...] [--edit]   # writes the next round, submits
 hamilflow-train-supervisor stop    CYCLE_DIR [--member J]
 hamilflow-train-supervisor summary CYCLE_DIR --infer-tomls infer_overrides.json
 ```
+
+**Following a cycle.** `status` prints the round (N of `max_rounds`) and one line per member: what it is
+doing now (queued, starting, training, stopping, stopped (walltime/…), done, given up), its run, the last
+epoch's val, LR scale and LR, seconds per epoch, the time left before the watchdog's walltime stop, and the
+decision that put it in this round (or, while a proposal waits, what is proposed). Alerts, STOP and FINISH
+files follow, then the commands for what can be done next. `--jobs` adds the jobflow-remote states, one
+line per round, and the fix for a FAILED or REMOTE_ERROR job; `--json` the same as JSON. It only reads the
+ends of the current logs and the watchdog journals.
 
 **Reviewing a proposal.** `review` prints one line per member (proposed action, `*` if it needs your
 approval, epochs, best val, LR scale, reductions, val/train and a val-loss sparkline), then for each member

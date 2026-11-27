@@ -6,6 +6,7 @@ import os
 import signal
 import stat
 import sys
+import time
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -84,10 +85,83 @@ class Submitted:
 
 def test_status_without_the_db(awaiting):
     code, out = run_cli("status", awaiting)
+    assert code == cli.OK, out
+    assert "cycle1: round 1 of 10, awaiting approval" in out
+    row = next(line for line in out.splitlines() if line.strip().startswith("1 "))
+    assert "waiting for approval" in row and " r1 " in row and " 280 " in row and "2.0e-03" in row
+    assert row.rstrip().endswith("retune *")  # what is proposed, * = needs approval
+    assert f"review {awaiting}" in out and f"approve {awaiting}" in out
+    code, out = run_cli("status", awaiting, "--json")
+    view = json.loads(out)
+    assert view["status"] == "awaiting_approval" and view["members"][0]["epoch"] == 280
+
+
+def _live_round(tmp_path):
+    """A cycle in round 2: member 1 training (log + journal), member 2 queued (no journal yet), member 3
+    stopped at the walltime; an alert for member 1, STOP_3 and STOP_ROUND set."""
+    cycle = tmp_path / "cycle"
+    round_dir = jobs.round_dir(cycle, 2)
+    (round_dir / "alerts").mkdir(parents=True)
+    t0 = 1_800_000_000.0
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0))
+    for j in (1, 2, 3):
+        (fold_dir(cycle, j)).mkdir(parents=True)
+        (fold_dir(cycle, j) / "train_r2.toml").write_text('[data]\noutputs_dir = "./outputs_r2"\n')
+    run = fold_dir(cycle, 1) / "outputs_r2" / "2027-01-15_08-00-00"
+    run.mkdir(parents=True)
+    epochs = "".join(f"[ x ] [train] Epoch {e} | Time {122.0 if e == 21 else 25.0} s | Train-Loss 1e-3 | "
+                     f"Val-Loss {1e-3 / e:.6e} | Scale 0.5\n" for e in range(21, 31))
+    (run / "deepx.log").write_text("[ x ] [optimizer] ... initial learning rate `0.001`.\n" + epochs)
+    (round_dir / "watchdog_1.log").write_text(
+        f"[{stamp}] job end time from SLURM_JOB_END_TIME: in 1800 s, stop 600 s before\n"
+        f"[{stamp}] alert: overfit: val/train grew from 1.02 to 1.36\n")
+    (round_dir / "watchdog_3.log").write_text(
+        f"[{stamp}] job end time from SLURM_JOB_END_TIME: in 1800 s, stop 600 s before\n"
+        f"[{stamp}] end: walltime, exit code -2, last epoch 40, last checkpoint 40\n")
+    (round_dir / "alerts" / "member_1.txt").write_text("status: overfit\nreason: val/train grew from 1.02 to 1.36\n")
+    (round_dir / "STOP_3").write_text("")
+    (round_dir / "STOP_ROUND").write_text("")
+    resume = {"action": "resume", "cause": "walltime", "reason": "walltime: resume from latest"}
+    state = {"cycle_dir": str(cycle), "round": 2, "status": "running", "cfg": {"max_rounds": 6},
+             "history": {"rounds": [{"round": 1, "members": {str(j): resume for j in (1, 2, 3)}}]},
+             "members": {str(j): {"logs": [], "runs": []} for j in (1, 2, 3)}}
+    return cycle, state, t0
+
+
+def test_status_of_a_live_round(tmp_path):
+    from hamilflow.training.supervisor import status
+    cycle, state, t0 = _live_round(tmp_path)
+    view = status.build_status(cycle, state, now=t0 + 600)
+    m1, m2, m3 = view["members"]
+    assert (m1["doing"], m1["epoch"], m1["run_round"]) == ("training", 30, 2)
+    assert m1["s_per_epoch"] == 25.0  # the 122 s JIT epoch left out
+    assert m1["lr"] == pytest.approx(5e-4) and m1["stop_in_s"] == pytest.approx(600)  # 1800 - 600 - 600
+    assert "overfit" in m1["alert"]
+    assert m2["doing"] == "queued" and m2["epoch"] is None
+    assert m3["doing"] == "stopped (walltime)" and m3["stop_in_s"] is None and m3["stop_file"]
+    text = status.format_status(view, cycle="C")
+    assert "cycle: round 2 of 6, running" in text and "10 min" in text
+    assert "! member 1: overfit: val/train grew from 1.02 to 1.36" in text
+    assert "STOP_3 is set" in text and "STOP_ROUND is set" in text
+    assert "hamilflow-train-supervisor stop C --member J" in text
+
+
+def test_status_jobs_are_grouped_per_round(awaiting):
+    rows = [("train_member_1_r1", "COMPLETED"), ("train_member_2_r1", "COMPLETED"),
+            ("supervise_round_r1", "COMPLETED"), ("store_inputs", "COMPLETED"),
+            ("train_member_1_r2", "RUNNING"), ("train_member_2_r2", "FAILED"), ("supervise_round_r2", "WAITING")]
+    infos = [SimpleNamespace(name=n, db_id=str(i), state=SimpleNamespace(value=st)) for i, (n, st) in enumerate(rows)]
+
+    class Controller:
+        def get_jobs_info(self, flow_ids):
+            return infos
+
+    code, out = run_cli("status", awaiting, "--jobs", job_controller=lambda project: Controller())
     assert code == cli.OK
-    assert "round 1, awaiting_approval" in out
-    assert "member 1: retune (" in out and "epoch 280, val" in out and "scale 1" in out and "lr 0.002" in out
-    assert "proposal pending" in out
+    assert "r1  supervise COMPLETED, train 1 COMPLETED, train 2 COMPLETED" in out
+    assert "r2  supervise WAITING, train 1 RUNNING, train 2 FAILED" in out
+    assert "store_inputs etc.: COMPLETED 1" in out
+    assert "train_member_2_r2 [5] FAILED: the job itself died" in out
 
 
 def test_status_with_jobs_points_out_a_failed_supervise_job_and_remote_errors(awaiting):

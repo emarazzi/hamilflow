@@ -4,7 +4,7 @@ Runs on the login node, so it stays light: it reads state.json, the proposal, re
 current logs, writes small files, and makes at most one jobflow-remote call (``status --jobs`` reads the
 job states, ``approve`` submits a flow). Exit codes: 0 ok, 1 error, 2 refused.
 
-    hamilflow-train-supervisor status  <cycle_dir> [--jobs]
+    hamilflow-train-supervisor status  <cycle_dir> [--jobs] [--json]
     hamilflow-train-supervisor review  <cycle_dir> [--member J] [--full] [--json]
     hamilflow-train-supervisor approve <cycle_dir> [--set J.key=value ...] [--edit] [--dry-run] [--resubmit]
     hamilflow-train-supervisor stop    <cycle_dir> [--member J] [--clear]
@@ -24,16 +24,14 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from ..ensemble import deep_merge, fold_dir, train_outputs_dir, write_ensemble_infer_tomls, write_ensemble_train_tomls
+from ..ensemble import deep_merge, fold_dir, write_ensemble_infer_tomls, write_ensemble_train_tomls
 from ..write_train_infer_toml import TrainConfig, validate_keys
 from . import jobs, review
+from . import status as status_view
 from .policy import SupervisorConfig, plain_resume
-from .watchdog import find_new_run_dir
 
 OK, ERROR, REFUSED = 0, 1, 2
 _TRAINS = ("resume", "retune", "restart_lower_lr")
-_EPOCH_LINE = re.compile(r"Epoch (\d+) \| Time ([\d.]+) s \| Train-Loss (\S+) \| Val-Loss (\S+) \| Scale (\S+)")
-_LR0 = re.compile(r"initial learning rate `([\d.eE+-]+)`")
 
 
 class Refused(Exception):
@@ -41,48 +39,6 @@ class Refused(Exception):
 
 
 # ---------------------------------- helpers ----------------------------------
-
-
-def _read_ends(path: Path, size: int = 16384) -> tuple[str, str]:
-    """The first and the last ``size`` bytes of a log: its header and its latest epochs, not the whole file."""
-    with open(path, "rb") as f:
-        head = f.read(size).decode(errors="replace")
-        f.seek(max(0, path.stat().st_size - size))
-        tail = f.read().decode(errors="replace")
-    return head, tail
-
-
-def _log_now(log: Path) -> str:
-    """``epoch N, val v, scale s, lr l`` of the last epoch line of ``log`` (cheap: its ends only)."""
-    if not log.is_file():
-        return "no log yet"
-    head, tail = _read_ends(log)
-    lines = _EPOCH_LINE.findall(tail)
-    if not lines:
-        return "no epoch yet"
-    epoch, _time, _train, val, scale = lines[-1]
-    lr0 = _LR0.search(head)
-    lr = f", lr {float(lr0.group(1)) * float(scale):.3g}" if lr0 else ""
-    return f"epoch {epoch}, val {float(val):.3e}, scale {float(scale):.3g}{lr}"
-
-
-def _last_record(state, fold: str) -> dict | None:
-    for r in reversed(state["history"]["rounds"]):
-        if fold in r["members"]:
-            return r["members"][fold]
-    return None
-
-
-def _current_run(cycle_dir: Path, state, fold: str) -> str | None:
-    """The run of the current round (the newest run dir in its outputs folder: one small listing), else the
-    member's last recorded run."""
-    toml = fold_dir(cycle_dir, int(fold)) / jobs.train_toml_name(state["round"])
-    if state["status"] == "running" and toml.is_file():
-        run = find_new_run_dir(train_outputs_dir(cycle_dir, int(fold), round=state["round"]))
-        if run is not None:
-            return str(run)
-    recorded = [run["run_dir"] for run in state["members"][fold]["runs"] if run["run_dir"]]
-    return recorded[-1] if recorded else None
 
 
 def _pending_proposal(cycle_dir: Path, state) -> Path:
@@ -106,54 +62,64 @@ def _job_controller(project: str | None):
 def cmd_status(args, out, job_controller=_job_controller) -> int:
     cycle_dir = Path(args.cycle_dir)
     state = jobs.read_state(cycle_dir)
-    here = jobs.round_dir(cycle_dir, state["round"])
-    print(f"{state['cycle_dir']}: round {state['round']}, {state['status']}"
-          f"{' (finish requested)' if state.get('finish_requested') else ''}", file=out)
-    for fold in sorted(state["members"], key=int):
-        record = _last_record(state, fold)
-        verdict = "not decided yet" if record is None else f"{record['action']} ({record['cause']}): {record['reason']}"
-        run = _current_run(cycle_dir, state, fold)
-        now = "no run" if run is None else _log_now(Path(run) / "deepx.log")
-        print(f"  member {fold}: {verdict}", file=out)
-        print(f"    run {run}: {now}", file=out)
-        if (alert := here / "alerts" / f"member_{fold}.txt").is_file():
-            print(f"    alert: {alert.read_text().splitlines()[0]} ({alert})", file=out)
-        if (here / f"STOP_{fold}").exists():
-            print(f"    STOP_{fold} is set", file=out)
-    if (here / "STOP_ROUND").exists():
-        print(f"  STOP_ROUND is set in {here}", file=out)
-    if jobs.finish_path(cycle_dir).exists() and state["status"] == "running":
-        print("  FINISH is set: the round's supervise job will end the cycle", file=out)
-    if state["status"] == "awaiting_approval":
-        print(f"  proposal pending: {here / 'proposal.toml'} (review, then approve)", file=out)
-    if (report := here / "report.txt").is_file():
-        print(f"  report: {report}", file=out)
+    view = status_view.build_status(cycle_dir, state)
+    if args.json:
+        if args.jobs:
+            view["jobs"] = _job_rows(state, job_controller)
+        print(json.dumps(view, indent=1), file=out)
+        return OK
+    print(status_view.format_status(view, cycle=args.cycle_dir), file=out)
     if args.jobs:
         return _print_jobs(state, out, job_controller)
     return OK
 
 
-def _print_jobs(state, out, job_controller) -> int:
-    """The jobflow-remote states of this cycle's flows (read only), with the way out of a stuck one."""
+_JOB_NAME = re.compile(r"^(?:train_member_(?P<fold>\d+)|supervise_round)_r(?P<round>\d+)$")
+
+
+def _job_rows(state, job_controller) -> list[dict] | str:
+    """This cycle's jobs (read only from the jobflow-remote DB), or the reason they cannot be read."""
     flow_ids = [flow["uuid"] for flow in state.get("flows", [])]
     if not flow_ids:
-        print("  jobs: no flow id in state.json", file=out)
-        return ERROR
+        return "no flow id in state.json"
     try:
         infos = job_controller(state.get("project")).get_jobs_info(flow_ids=flow_ids)
     except Exception as error:  # noqa: BLE001 - jobflow-remote missing, no DB: say so, nothing else breaks
-        print(f"  jobs: jobflow-remote not available ({type(error).__name__}: {error})", file=out)
+        return f"jobflow-remote not available ({type(error).__name__}: {error})"
+    return [{"name": str(i.name), "db_id": str(i.db_id), "state": str(getattr(i.state, "value", i.state))}
+            for i in infos]
+
+
+def _print_jobs(state, out, job_controller) -> int:
+    """The jobs per round on one line each, then the way out of a stuck one."""
+    rows = _job_rows(state, job_controller)
+    if isinstance(rows, str):
+        print(f"\njobs: {rows}", file=out)
         return ERROR
-    print("  jobs:", file=out)
-    for info in infos:
-        job_state = getattr(info.state, "value", info.state)
-        print(f"    {info.name} [{info.db_id}]: {job_state}", file=out)
-        if job_state == "FAILED" and str(info.name).startswith(jobs.SUPERVISE_NAME):
-            print(f"      the supervise job failed: fix the cause (see its output), then `jf job rerun {info.db_id}`"
-                  " (it decides the round again, once)", file=out)
-        elif job_state == "REMOTE_ERROR":
-            print(f"      remote error (files not transferred, worker unreachable?): `jf job retry {info.db_id}`",
-                  file=out)
+    by_round, other, problems = {}, {}, []
+    for row in rows:
+        match = _JOB_NAME.match(row["name"])
+        if match:
+            what = f"train {match['fold']}" if match["fold"] else "supervise"
+            by_round.setdefault(int(match["round"]), []).append(f"{what} {row['state']}")
+        else:
+            other[row["state"]] = other.get(row["state"], 0) + 1
+        if row["state"] == "FAILED" and row["name"].startswith(jobs.SUPERVISE_NAME):
+            problems.append(f"{row['name']} [{row['db_id']}] FAILED: fix the cause (see its output), then "
+                            f"`jf job rerun {row['db_id']}` (it decides the round again, once)")
+        elif row["state"] == "FAILED":
+            problems.append(f"{row['name']} [{row['db_id']}] FAILED: the job itself died (node failure, or a "
+                            "SLURM kill: never scancel); the round's supervise job restarts the member")
+        elif row["state"] == "REMOTE_ERROR":
+            problems.append(f"{row['name']} [{row['db_id']}] REMOTE_ERROR (files not transferred, worker "
+                            f"unreachable?): `jf job retry {row['db_id']}`")
+    print("\njobs:", file=out)
+    for n in sorted(by_round):
+        print(f"  r{n}  {', '.join(sorted(by_round[n]))}", file=out)
+    if other:
+        print(f"  store_inputs etc.: {', '.join(f'{k} {v}' for k, v in sorted(other.items()))}", file=out)
+    for problem in problems:
+        print(f"  ! {problem}", file=out)
     return OK
 
 
@@ -466,9 +432,10 @@ def cmd_summary(args, out) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hamilflow-train-supervisor", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("status", help="the round, each member's state, alerts and STOP files")
+    p = sub.add_parser("status", help="the round and what each member is doing now, alerts, STOP files")
     p.add_argument("cycle_dir")
     p.add_argument("--jobs", action="store_true", help="also the jobflow-remote job states (reads the DB)")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("review", help="the pending proposal: per member what is proposed, why, and what changes")
     p.add_argument("cycle_dir")
     p.add_argument("--member", type=int, help="this member only")
