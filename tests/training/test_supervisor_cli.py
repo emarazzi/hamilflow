@@ -111,7 +111,12 @@ def _live_round(tmp_path):
     run.mkdir(parents=True)
     epochs = "".join(f"[ x ] [train] Epoch {e} | Time {122.0 if e == 21 else 25.0} s | Train-Loss 1e-3 | "
                      f"Val-Loss {1e-3 / e:.6e} | Scale 0.5\n" for e in range(21, 31))
-    (run / "deepx.log").write_text("[ x ] [optimizer] ... initial learning rate `0.001`.\n" + epochs)
+    header = ("[ x ] [dataloader] Train size: `25`. Val size: `25`. Test size: `0`.\n"
+              "[ x ] [dataloader] Data sharding way: `1`. Batch size: `1`.\n"
+              "[ x ] [optimizer] Using the optimizer `AdamW` with: ... initial learning rate `0.001`.\n"
+              "[ x ] [optimizer] Using the scheduler `ReduceOnPlateau` with: factor `0.5`, patience `20`, rtol "
+              "`0.05`, cooldown `10`, and accumulation size `25`.\n")
+    (run / "deepx.log").write_text(header + epochs)  # DeepH's header: the lineage count needs it
     (round_dir / "watchdog_1.log").write_text(
         f"[{stamp}] job end time from SLURM_JOB_END_TIME: in 1800 s, stop 600 s before\n"
         f"[{stamp}] alert: overfit: val/train grew from 1.02 to 1.36\n")
