@@ -146,6 +146,12 @@ def test_status_of_a_live_round(tmp_path):
     assert "hamilflow-train-supervisor stop C --member J" in text
 
 
+def test_status_durations():
+    from hamilflow.training.supervisor.status import duration
+    assert [duration(t) for t in (-5, 0, 20, 600, 2880, 3600, 6480, 6510, 170_000)] == [
+        "now", "now", "<1 min", "10 min", "48 min", "1 h 0 min", "1 h 48 min", "1 h 48 min", "47 h 13 min"]
+
+
 def test_status_jobs_are_grouped_per_round(awaiting):
     rows = [("train_member_1_r1", "COMPLETED"), ("train_member_2_r1", "COMPLETED"),
             ("supervise_round_r1", "COMPLETED"), ("store_inputs", "COMPLETED"),

@@ -83,12 +83,15 @@ def _last_record(state: Mapping, fold: str) -> dict | None:
 _ENDED = {"done": "done", "give_up": "given up", "finished_by_user": "finished by user"}
 
 
-def _minutes(seconds: float) -> str:
-    if seconds < 0:
+def duration(seconds: float) -> str:
+    """``48 min``, ``1 h 48 min`` (whole minutes, no decimal hours); ``<1 min``; ``now`` once past."""
+    if seconds <= 0:
         return "now"
-    if seconds < 3600:
-        return f"{seconds / 60:.0f} min"
-    return f"{seconds / 3600:.1f} h"
+    minutes = round(seconds / 60)
+    if minutes < 1:
+        return "<1 min"
+    hours, minutes = divmod(minutes, 60)
+    return f"{minutes} min" if hours == 0 else f"{hours} h {minutes} min"
 
 
 def build_status(cycle_dir, state: Mapping, now: float | None = None) -> dict:
@@ -172,16 +175,16 @@ def format_status(view: Mapping, cycle: str = "<cycle>", jobs_lines: list[str] |
     awaiting = view["proposal"]
     last_col = "proposed" if awaiting else "decision"
     out.append(f"  {'member':6s}  {'now':20s}  {'run':>3s}  {'epoch':>5s}  {'val':>8s}  {'scale':>6s}  {'lr':>7s}  "
-               f"{'s/ep':>4s}  {'stop in':>7s}  {last_col}")
+               f"{'s/ep':>4s}  {'stop in':>11s}  {last_col}")
     for m in view["members"]:
         def num(key, fmt, m=m):
             return "-" if m.get(key) is None else format(m[key], fmt)
-        stop_in = "-" if m["stop_in_s"] is None else _minutes(m["stop_in_s"])
+        stop_in = "-" if m["stop_in_s"] is None else duration(m["stop_in_s"])
         run = "-" if m["run_round"] is None else f"r{m['run_round']}"
         last = (m["proposed"] if awaiting else m["decided"]) or "-"
         out.append(f"  {m['fold']:<6d}  {m['doing']:20s}  {run:>3s}  {num('epoch', 'd'):>5s}  {num('val', '.2e'):>8s}  "
                    f"{num('scale', '.3g'):>6s}  {num('lr', '.1e'):>7s}  {num('s_per_epoch', '.0f'):>4s}  "
-                   f"{stop_in:>7s}  {last}")
+                   f"{stop_in:>11s}  {last}")
     flags = []
     for m in view["members"]:
         if m["alert"]:
