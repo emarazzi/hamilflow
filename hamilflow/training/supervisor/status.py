@@ -49,6 +49,26 @@ def _log_numbers(log: Path) -> dict:
             "s_per_epoch": float(np.median(times[-10:]))}
 
 
+def _lineage_epochs(logs: list, current: Path | None) -> int | None:
+    """Epochs of the member's lineage up to now: its earlier runs chained with the current one, without
+    their dead branches (DeepH restarts its count at 1 after a new-optimizer restart, e.g. a retune)."""
+    import warnings
+
+    from ..log_analysis import has_epochs, read_training_curve
+
+    chain = [p for p in logs if Path(p).is_file() and has_epochs(p)]
+    if current is not None and current.is_file() and has_epochs(current) and str(current) not in map(str, chain):
+        chain.append(current)
+    if not chain:
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the analysis warns about inferred cuts; not status's business
+            return len(read_training_curve(chain).val)
+    except (ValueError, OSError):
+        return None
+
+
 def _journal(path: Path) -> dict:
     """From a watchdog journal: when the walltime stop is due, how the run ended, the last alert."""
     if not path.is_file():
@@ -69,6 +89,26 @@ def _journal(path: Path) -> dict:
         elif text.startswith(("control file", "stopping right after", "within ")):
             info["stopping"] = text
     return info
+
+
+_CAUSE_LABELS = {"retune": "ensemble suggestion", "user": "set by the user", "stopped": "STOP file",
+                 "crash": "crash", "earlier": "earlier", "removed_by_user": "removed by the user",
+                 "finished": "ended without converging"}
+
+
+def cause_label(record: Mapping) -> str:
+    """The cause of a decision in words, for display (the stored cause names are unchanged): a retune the
+    member's own live rule asked for says which way its patience was off; one that only follows the
+    pooled suggestion says so."""
+    cause = record.get("cause") or ""
+    if cause == "mistuned":
+        reason = record.get("reason") or ""
+        if "patience too large" in reason:
+            return "own patience too large"
+        if "patience too small" in reason:
+            return "own patience too small"
+        return "own scheduler mistuned"
+    return _CAUSE_LABELS.get(cause, cause)
 
 
 def _last_record(state: Mapping, fold: str) -> dict | None:
@@ -113,9 +153,12 @@ def build_status(cycle_dir, state: Mapping, now: float | None = None) -> dict:
         if run is None:
             recorded = [r["run_dir"] for r in state["members"][fold]["runs"] if r["run_dir"]]
             run = Path(recorded[-1]) if recorded else None
-        numbers = {"epoch": None, "val": None, "scale": None, "lr": None, "s_per_epoch": None}
+        numbers = {"epoch": None, "val": None, "scale": None, "lr": None, "s_per_epoch": None,
+                   "lineage_epoch": None}
         if run is not None:
             numbers.update(_log_numbers(Path(run) / "deepx.log"))
+            if numbers["epoch"] is not None:
+                numbers["lineage_epoch"] = _lineage_epochs(state["members"][fold]["logs"], Path(run) / "deepx.log")
         journal = _journal(here / f"watchdog_{fold}.log") if trains_now else {}
         if trains_now:
             if not journal:
@@ -137,7 +180,7 @@ def build_status(cycle_dir, state: Mapping, now: float | None = None) -> dict:
         stop_in = None
         if trains_now and "stop_at" in journal and "ended" not in journal:
             stop_in = journal["stop_at"] - now
-        decided = None if record is None else f"{record['action']} ({record['cause']})"
+        decided = None if record is None else f"{record['action']} ({cause_label(record)})"
         proposed = None
         if proposal is not None:
             prop = proposal["members"].get(j)
@@ -180,7 +223,7 @@ def format_status(view: Mapping, cycle: str = "<cycle>", jobs_lines: list[str] |
     out = [f"{view['name']}: round {view['round']}{of}, {state}{finish}", ""]
     awaiting = view["proposal"]
     last_col = "proposed" if awaiting else "decision"
-    out.append(f"  {'member':6s}  {'now':20s}  {'run':>3s}  {'epoch':>5s}  {'val':>8s}  {'scale':>6s}  {'lr':>7s}  "
+    out.append(f"  {'member':6s}  {'now':20s}  {'run':>3s}  {'epoch (lineage)':>15s}  {'val':>8s}  {'scale':>6s}  {'lr':>7s}  "
                f"{'s/ep':>4s}  {'stop in':>11s}  {last_col}")
     for m in view["members"]:
         def num(key, fmt, m=m):
@@ -188,7 +231,10 @@ def format_status(view: Mapping, cycle: str = "<cycle>", jobs_lines: list[str] |
         stop_in = "-" if m["stop_in_s"] is None else duration(m["stop_in_s"])
         run = "-" if m["run_round"] is None else f"r{m['run_round']}"
         last = (m["proposed"] if awaiting else m["decided"]) or "-"
-        out.append(f"  {m['fold']:<6d}  {m['doing']:20s}  {run:>3s}  {num('epoch', 'd'):>5s}  {num('val', '.2e'):>8s}  "
+        epoch = num("epoch", "d")
+        if m.get("lineage_epoch") is not None and m["lineage_epoch"] != m.get("epoch"):
+            epoch = f"{epoch} ({m['lineage_epoch']})"
+        out.append(f"  {m['fold']:<6d}  {m['doing']:20s}  {run:>3s}  {epoch:>15s}  {num('val', '.2e'):>8s}  "
                    f"{num('scale', '.3g'):>6s}  {num('lr', '.1e'):>7s}  {num('s_per_epoch', '.0f'):>4s}  "
                    f"{stop_in:>11s}  {last}")
     flags = []

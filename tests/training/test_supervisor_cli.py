@@ -134,13 +134,14 @@ def test_status_of_a_live_round(tmp_path):
     view = status.build_status(cycle, state, now=t0 + 600)
     m1, m2, m3 = view["members"]
     assert (m1["doing"], m1["epoch"], m1["run_round"]) == ("training", 30, 2)
+    assert m1["lineage_epoch"] == 10  # its logged epochs 21-30: the lineage count, not DeepH's numbering
     assert m1["s_per_epoch"] == 25.0  # the 122 s JIT epoch left out
     assert m1["lr"] == pytest.approx(5e-4) and m1["stop_in_s"] == pytest.approx(600)  # 1800 - 600 - 600
     assert "overfit" in m1["alert"]
     assert m2["doing"] == "queued" and m2["epoch"] is None
     assert m3["doing"] == "stopped (walltime)" and m3["stop_in_s"] is None and m3["stop_file"]
     text = status.format_status(view, cycle="C")
-    assert "cycle: round 2 of 6, running" in text and "10 min" in text
+    assert "cycle: round 2 of 6, running" in text and "10 min" in text and "30 (10)" in text
     assert "! member 1: overfit: val/train grew from 1.02 to 1.36" in text
     assert "STOP_3 is set" in text and "STOP_ROUND is set" in text
     assert "hamilflow-train-supervisor stop C --member J" in text
@@ -563,3 +564,13 @@ def test_summary_of_a_cycle_finished_by_the_user_says_so(awaiting):
     final = jobs.summary(state)["members"]["1"]
     assert final["action"] == "finished_by_user"
     assert final["reason"].startswith("finished by the user; would have been: retune")
+
+
+def test_cause_labels_in_words():
+    from hamilflow.training.supervisor.status import cause_label
+    assert cause_label({"cause": "mistuned", "reason": "watchdog: patience too large: still at the initial LR"}) \
+        == "own patience too large"
+    assert cause_label({"cause": "mistuned", "reason": "patience too small: first reduction at epoch 40"}) \
+        == "own patience too small"
+    assert cause_label({"cause": "retune", "reason": "pooled suggestion patience 15 ..."}) == "ensemble suggestion"
+    assert cause_label({"cause": "walltime"}) == "walltime"

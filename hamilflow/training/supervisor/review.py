@@ -18,6 +18,7 @@ from ..ensemble import deep_merge
 from ..log_analysis import analyze_training_logs, has_epochs
 from . import jobs
 from .policy import SupervisorConfig, resolve_min_scale
+from .status import cause_label
 
 TRAINS = ("resume", "retune", "restart_lower_lr")
 _BARS = "▁▂▃▄▅▆▇█"
@@ -75,17 +76,13 @@ def _source(prop: Mapping, member_state: Mapping) -> str:
     return f"from {where}{epoch_text}, {optimizer}"
 
 
-_SHORT_REASONS = {
-    "mistuned": "scheduler mistuned (live rule): retune to the pooled suggestion",
-    "retune": "the pooled patience/cooldown suggestion differs from the current settings: retune",
-}
-
-
 def short_reason(prop: Mapping) -> str:
-    """One line for the table: a fixed phrase for retunes (their full reason lists every value, shown in
-    the change line anyway), else the reason up to its first ';'."""
-    if prop.get("cause") in _SHORT_REASONS and prop.get("action") == "retune":
-        return _SHORT_REASONS[prop["cause"]]
+    """One line for the table: for a retune, why in words (its full reason lists every value, shown in the
+    change line anyway), else the reason up to its first ';'."""
+    if prop.get("action") == "retune" and prop.get("cause") == "mistuned":
+        return f"{cause_label(prop)} (its live rule): retune to the pooled suggestion"
+    if prop.get("action") == "retune" and prop.get("cause") == "retune":
+        return "the ensemble suggestion differs from its current patience/cooldown: retune"
     return (prop.get("reason") or "").split(";")[0]
 
 

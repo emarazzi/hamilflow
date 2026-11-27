@@ -71,7 +71,8 @@ hamilflow-train-supervisor summary CYCLE_DIR --infer-tomls infer_overrides.json
 
 **Following a cycle.** `status` prints the round (N of `max_rounds`) and one line per member: what it is
 doing now (queued, starting, training, stopping, stopped (walltime/…), done, given up), its run, the last
-epoch's val, LR scale and LR, seconds per epoch, the time left before the watchdog's walltime stop, and the
+epoch (DeepH's number, which restarts at 1 after a new-optimizer restart, and in brackets the member's
+lineage epochs), the val, LR scale and LR, seconds per epoch, the time left before the watchdog's walltime stop, and the
 decision that put it in this round (or, while a proposal waits, what is proposed). Alerts, STOP and FINISH
 files follow, then the commands for what can be done next. `--jobs` adds the jobflow-remote states, one
 line per round, and the fix for a FAILED or REMOTE_ERROR job; `--json` the same as JSON. It only reads the
